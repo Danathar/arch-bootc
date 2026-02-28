@@ -15,10 +15,12 @@ Use this repo as your own bootc image source, build locally, boot it in a VM, cr
 This repo already includes the following opinionated changes:
 
 - KDE Plasma desktop + SDDM enabled (graphical login by default)
+- Full KDE applications suite via `kde-applications-meta`
 - Temporary root dev login (`root` / `changeme`)
 - `NetworkManager` installed and enabled for first-boot DHCP
 - `sudo` installed (`visudo` included)
 - `vim` installed
+- `distrobox`, `flatpak`, and `konsole` installed
 - `nano` removed from the image
 - Local `just build-containerfile` uses `--security-opt label=disable` for more reliable rebuilds
 
