@@ -220,6 +220,8 @@ Your local users and host state persist across image updates (`/etc`, `/var/home
 
 ## How to add your own packages (AUR)
 
+> **Warning:** The AUR flow provided as a template has not been tested by the repository author yet. Use it at your own risk.
+
 If you want to add packages from the Arch User Repository (AUR), check the commented-out section in the `Containerfile` under "Optional AUR package layering".
 
 Because `bootc` is an immutable system, you must ensure that any AUR packages you install:
