@@ -16,6 +16,11 @@ This repo already includes the following opinionated changes:
 
 - KDE Plasma desktop + SDDM enabled (graphical login by default)
 - Full KDE applications suite via `kde-applications-meta`
+- Essential fonts (`noto-fonts`, `noto-fonts-emoji`, `noto-fonts-cjk`)
+- GStreamer media codecs (`gst-plugins-*`, `gst-libav`)
+- Bluetooth support installed and enabled (`bluez`, `bluez-utils`)
+- Archiving tools (`unzip`, `unrar`, `p7zip`)
+- Flathub remote pre-configured system-wide
 - Temporary root dev login (`root` / `changeme`)
 - `NetworkManager` installed and enabled for first-boot DHCP
 - `sudo` installed (`visudo` included)
