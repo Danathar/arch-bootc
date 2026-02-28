@@ -63,6 +63,7 @@ RUN echo "root:changeme" | chpasswd
 # `sudo` provides `visudo`; remove `nano` so `vim` is the editor available.
 RUN pacman -S --noconfirm \
     distrobox \
+    firefox \
     flatpak \
     konsole \
     networkmanager \

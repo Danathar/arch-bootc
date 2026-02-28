@@ -20,7 +20,7 @@ This repo already includes the following opinionated changes:
 - `NetworkManager` installed and enabled for first-boot DHCP
 - `sudo` installed (`visudo` included)
 - `vim` installed
-- `distrobox`, `flatpak`, and `konsole` installed
+- `distrobox`, `flatpak`, `konsole`, and `firefox` installed
 - `nano` removed from the image
 - Local `just build-containerfile` uses `--security-opt label=disable` for more reliable rebuilds
 
