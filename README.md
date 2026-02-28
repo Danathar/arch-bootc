@@ -154,7 +154,7 @@ Replace `<username>` and `<password>`:
 useradd -m -G wheel -s /bin/bash <username>
 echo '<username>:<password>' | chpasswd
 mkdir -p /etc/sudoers.d
-printf '%wheel ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/10-wheel
+echo '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/10-wheel
 chmod 0440 /etc/sudoers.d/10-wheel
 ```
 

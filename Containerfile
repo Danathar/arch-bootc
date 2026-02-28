@@ -11,11 +11,28 @@ RUN sed -i 's/^[[:space:]]*NoExtract/#&/' /etc/pacman.conf
 # Reinstall glibc to fix missing language files due to missing in the base image
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman pacman -Sy glibc --noconfirm
 
+# Core system and desktop packages.
+# Keep this list flat (one package per line) to make adding/removing packages easy.
 RUN pacman -Syu --noconfirm \
-    base cpio dracut linux linux-firmware ostree \
-    btrfs-progs e2fsprogs xfsprogs dosfstools \
-    skopeo podman dbus dbus-glib glib2 shadow \
-    plasma-meta sddm xorg-server && \
+    base \
+    cpio \
+    dbus \
+    dbus-glib \
+    dosfstools \
+    dracut \
+    e2fsprogs \
+    glib2 \
+    linux \
+    linux-firmware \
+    ostree \
+    plasma-meta \
+    podman \
+    sddm \
+    shadow \
+    skopeo \
+    xfsprogs \
+    btrfs-progs \
+    xorg-server && \
     pacman -S --clean --noconfirm
 
 # https://github.com/bootc-dev/bootc/issues/1801
@@ -41,16 +58,19 @@ RUN sed -i 's|^HOME=.*|HOME=/var/home|' "/etc/default/useradd" && \
 # Setup a temporary root password (changeme) for dev purposes.
 RUN echo "root:changeme" | chpasswd
 
-# Install admin/editor tools and enable NetworkManager for first-boot DHCP.
+# User/admin tools and networking.
 # `sudo` provides `visudo`; remove `nano` so `vim` is the editor available.
-RUN pacman -S --noconfirm networkmanager sudo vim && \
+RUN pacman -S --noconfirm \
+    distrobox \
+    flatpak \
+    konsole \
+    networkmanager \
+    sudo \
+    vim && \
     (pacman -Qq nano >/dev/null 2>&1 && pacman -Rns --noconfirm nano || true) && \
     pacman -S --clean --noconfirm && \
     mkdir -p /etc/systemd/system/multi-user.target.wants && \
     ln -sf /usr/lib/systemd/system/NetworkManager.service /etc/systemd/system/multi-user.target.wants/NetworkManager.service
-
-# Enable NetworkManager so VM NICs come up with DHCP on first boot.
-# (service symlink created above)
 
 # Enable graphical login for KDE
 RUN mkdir -p /etc/systemd/system/graphical.target.wants && \
