@@ -73,6 +73,31 @@ RUN pacman -S --noconfirm \
     mkdir -p /etc/systemd/system/multi-user.target.wants && \
     ln -sf /usr/lib/systemd/system/NetworkManager.service /etc/systemd/system/multi-user.target.wants/NetworkManager.service
 
+# Optional AUR package layering (disabled by default).
+# WARNING: AUR packages are community-maintained and may assume a traditional mutable Arch layout.
+# For bootc/ostree images, only layer packages that are compatible with an immutable root:
+# - no runtime writes to /usr
+# - no assumptions about classic mutable /var paths
+# - no interactive install/runtime requirements
+# Status (2026-02-28): this AUR flow is provided as a template and has not been tested in this repo.
+#
+# Example flow:
+# 1) Build/install `paru-bin` from AUR with a temporary unprivileged build user.
+# 2) Install your AUR package list.
+# 3) Remove temporary build user artifacts.
+#
+# RUN pacman -S --noconfirm --needed base-devel git && \
+#     useradd -m -s /bin/bash aurbuilder && \
+#     echo 'aurbuilder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/90-aurbuilder && \
+#     chmod 0440 /etc/sudoers.d/90-aurbuilder && \
+#     su - aurbuilder -c 'git clone https://aur.archlinux.org/paru-bin.git ~/paru-bin' && \
+#     su - aurbuilder -c 'cd ~/paru-bin && makepkg -si --noconfirm' && \
+#     su - aurbuilder -c 'paru -S --noconfirm <aur-package-1> <aur-package-2>' && \
+#     rm -rf /home/aurbuilder/paru-bin /home/aurbuilder/.cache && \
+#     userdel -r aurbuilder && \
+#     rm -f /etc/sudoers.d/90-aurbuilder && \
+#     pacman -S --clean --noconfirm
+
 # Enable graphical login for KDE
 RUN mkdir -p /etc/systemd/system/graphical.target.wants && \
     ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target && \
