@@ -14,7 +14,7 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=cache,dst=/usr/lib/sysimage/cache/p
 RUN pacman -Syu --noconfirm \
     base cpio dracut linux linux-firmware ostree \
     btrfs-progs e2fsprogs xfsprogs dosfstools \
-    skopeo podman dbus dbus-glib glib2 shadow \
+    skopeo podman dbus dbus-glib glib2 shadow networkmanager \
     plasma-meta sddm xorg-server && \
     pacman -S --clean --noconfirm
 
@@ -40,6 +40,10 @@ RUN sed -i 's|^HOME=.*|HOME=/var/home|' "/etc/default/useradd" && \
 
 # Setup a temporary root password (changeme) for dev purposes.
 RUN echo "root:changeme" | chpasswd
+
+# Enable NetworkManager so VM NICs come up with DHCP on first boot.
+RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
+    ln -sf /usr/lib/systemd/system/NetworkManager.service /etc/systemd/system/multi-user.target.wants/NetworkManager.service
 
 # Enable graphical login for KDE
 RUN mkdir -p /etc/systemd/system/graphical.target.wants && \
