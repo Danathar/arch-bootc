@@ -26,6 +26,11 @@ This repo already includes the following opinionated changes:
 - GStreamer media codecs (`gst-plugins-*`, `gst-libav`)
 - Bluetooth support installed and enabled (`bluez`, `bluez-utils`)
 - Archiving tools (`unzip`, `unrar`, `p7zip`)
+- Hardware utilities (`fwupd` for firmware, `smartmontools` for drive health)
+- Network discovery / mDNS configured and enabled (`avahi`, `nss-mdns`)
+- Printing stack installed and enabled (`cups`, `cups-pdf`)
+- CLI utilities (`wget`, `curl`, `rsync`, `xdg-user-dirs`, `openssh`)
+- Expanded filesystem support (`ntfs-3g`)
 - Flathub remote pre-configured system-wide
 - Temporary root dev login (`root` / `changeme`)
 - `NetworkManager` installed and enabled for first-boot DHCP
