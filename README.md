@@ -2,7 +2,7 @@
 
 [![build](https://github.com/Danathar/arch-bootc/actions/workflows/build.yaml/badge.svg)](https://github.com/Danathar/arch-bootc/actions/workflows/build.yaml)
 
-> **Note:** This image was created primarily with directed AI, though its been tested and inspected by hand. I feel it's important for anybody using stuff on github to have this information before using something they find.
+> **Note:** This repo was created primarily using directed AI, though its contents have been manually tested and inspected. I believe it's important for anyone using open-source tools on GitHub to have this context before relying on them.
 
 Reference [Arch Linux](https://archlinux.org/) container image preconfigured for [bootc](https://github.com/bootc-dev/bootc) usage.
 
