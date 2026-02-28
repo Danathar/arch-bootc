@@ -1,2 +1,8 @@
 cosign.key
 *.img
+output/
+config.toml
+build.log
+image-build.log
+qcow2-build.log
+virt-customize.log
