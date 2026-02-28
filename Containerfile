@@ -83,7 +83,7 @@ RUN pacman -S --noconfirm \
 #
 # Example flow:
 # 1) Build/install `paru-bin` from AUR with a temporary unprivileged build user.
-# 2) Install your AUR package list.
+# 2) Install your AUR package list (set `PACKAGE_LIST` in the command below).
 # 3) Remove temporary build user artifacts.
 #
 # RUN pacman -S --noconfirm --needed base-devel git && \
@@ -92,7 +92,7 @@ RUN pacman -S --noconfirm \
 #     chmod 0440 /etc/sudoers.d/90-aurbuilder && \
 #     su - aurbuilder -c 'git clone https://aur.archlinux.org/paru-bin.git ~/paru-bin' && \
 #     su - aurbuilder -c 'cd ~/paru-bin && makepkg -si --noconfirm' && \
-#     su - aurbuilder -c 'paru -S --noconfirm <aur-package-1> <aur-package-2>' && \
+#     su - aurbuilder -c 'PACKAGE_LIST="visual-studio-code-bin"; paru -S --noconfirm --needed ${PACKAGE_LIST}' && \
 #     rm -rf /home/aurbuilder/paru-bin /home/aurbuilder/.cache && \
 #     userdel -r aurbuilder && \
 #     rm -f /etc/sudoers.d/90-aurbuilder && \
