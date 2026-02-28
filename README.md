@@ -106,6 +106,41 @@ Verify:
 qemu-img info output/arch-bootc-100g.qcow2
 ```
 
+## Install On Bare Metal (Clean Reimage)
+
+Use this flow when you want to install directly to physical hardware from a Linux live environment.
+
+1. Build the container image and generate a bootable raw disk image (`ext4`):
+
+```bash
+just build-containerfile
+truncate -s 100G bootable.img
+just generate-bootable-image
+```
+
+2. Identify the target disk (example target: `/dev/nvme0n1`):
+
+```bash
+sudo lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL
+```
+
+3. Write the image to disk:
+
+```bash
+sudo dd if=bootable.img of=/dev/nvme0n1 bs=16M status=progress oflag=direct conv=fsync
+sync
+```
+
+4. Reboot and boot from that disk.
+
+5. First login is `root` / `changeme`, then create your own admin account using the commands in "Create Your Own Admin User".
+
+Notes:
+
+- `dd` erases the target disk completely. Double-check `of=` before running.
+- Keep Secure Boot disabled unless you manage your own signed boot chain.
+- If you want to preserve existing `/etc` and `/var/home` on an already-installed host, use `bootc switch` (see "Updating Installed Systems From Your Repo") instead of reimaging with `dd`.
+
 ## Create VM (User Session Track)
 
 This is the track used here: `qemu:///session`, 8GB RAM, 10 vCPU, UEFI, Secure Boot disabled.
@@ -176,3 +211,18 @@ reboot
 ```
 
 Your local users and host state persist across image updates (`/etc`, `/var/home`).
+
+## Upstream Bootcrew Compatibility Work (Why This Image Works)
+
+This project inherits key bootstrapping work from the upstream `bootcrew/arch-bootc` approach:
+
+- `bootc` is built from upstream source (`https://github.com/bootc-dev/bootc.git`) during image build because Arch official repos do not currently ship `bootc`.
+- Arch container base fixes are applied:
+  - pacman `/var` paths are relocated into `/usr/lib/sysimage` for bootc-style immutable layout behavior
+  - `NoExtract` rules are disabled so language/help content can be installed normally
+  - `glibc` is reinstalled to restore missing locale files from the base container
+- Initramfs and boot integration are prepared with `dracut` config for `ostree` + `bootc` modules.
+- Bootc/ostree filesystem layout and symlink structure is enforced (`/sysroot`, `/ostree`, `/var/home`, etc.) with composefs enabled.
+- Required metadata label is set for bootc-compatible images: `containers.bootc=1`.
+
+If you remove or change these compatibility steps, `bootc install/switch` behavior may break or become inconsistent.
