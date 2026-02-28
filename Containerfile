@@ -11,7 +11,12 @@ RUN sed -i 's/^[[:space:]]*NoExtract/#&/' /etc/pacman.conf
 # Reinstall glibc to fix missing language files due to missing in the base image
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman pacman -Sy glibc --noconfirm
 
-RUN pacman -Syu --noconfirm base cpio dracut linux linux-firmware ostree btrfs-progs e2fsprogs xfsprogs dosfstools skopeo podman dbus dbus-glib glib2 ostree shadow && pacman -S --clean --noconfirm
+RUN pacman -Syu --noconfirm \
+    base cpio dracut linux linux-firmware ostree \
+    btrfs-progs e2fsprogs xfsprogs dosfstools \
+    skopeo podman dbus dbus-glib glib2 shadow \
+    plasma-meta sddm xorg-server && \
+    pacman -S --clean --noconfirm
 
 # https://github.com/bootc-dev/bootc/issues/1801
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
@@ -36,6 +41,12 @@ RUN sed -i 's|^HOME=.*|HOME=/var/home|' "/etc/default/useradd" && \
 # Setup a temporary root passwd (changeme) for dev purposes
 # RUN pacman -S whois --noconfirm
 # RUN usermod -p "$(echo "changeme" | mkpasswd -s)" root
+
+# Enable graphical login for KDE
+RUN mkdir -p /etc/systemd/system/graphical.target.wants && \
+    ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target && \
+    ln -sf /usr/lib/systemd/system/sddm.service /etc/systemd/system/graphical.target.wants/sddm.service && \
+    ln -sf /usr/lib/systemd/system/sddm.service /etc/systemd/system/display-manager.service
 
 # https://bootc-dev.github.io/bootc/bootc-images.html#standard-metadata-for-bootc-compatible-images
 LABEL containers.bootc 1
