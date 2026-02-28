@@ -24,6 +24,7 @@ RUN pacman -Syu --noconfirm \
     glib2 \
     linux \
     linux-firmware \
+    kde-applications-meta \
     ostree \
     plasma-meta \
     podman \
