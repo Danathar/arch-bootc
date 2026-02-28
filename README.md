@@ -10,6 +10,18 @@ Reference [Arch Linux](https://archlinux.org/) container image preconfigured for
 
 Use this repo as your own bootc image source, build locally, boot it in a VM, create your own user, and later update installed systems with `bootc switch`.
 
+## Current Customizations In This Repo
+
+This repo already includes the following opinionated changes:
+
+- KDE Plasma desktop + SDDM enabled (graphical login by default)
+- Temporary root dev login (`root` / `changeme`)
+- `NetworkManager` installed and enabled for first-boot DHCP
+- `sudo` installed (`visudo` included)
+- `vim` installed
+- `nano` removed from the image
+- Local `just build-containerfile` uses `--security-opt label=disable` for more reliable rebuilds
+
 ## Prerequisites
 
 - Linux host with `podman`, `qemu-img`, `virt-install`, `virsh`, `git`, `just`, `gh`
@@ -21,13 +33,13 @@ Use this repo as your own bootc image source, build locally, boot it in a VM, cr
 ### Option A: Fork (recommended for tracking upstream)
 
 ```bash
-gh repo fork bootcrew/arch-bootc --clone=false
+gh repo fork Danathar/arch-bootc --clone=false
 ```
 
 ### Option B: Template (clean starting history)
 
 ```bash
-gh repo create <your-user>/arch-bootc --public --template bootcrew/arch-bootc --clone=false
+gh repo create <your-user>/arch-bootc --public --template Danathar/arch-bootc --clone=false
 ```
 
 ## Clone Your Repo
@@ -35,7 +47,7 @@ gh repo create <your-user>/arch-bootc --public --template bootcrew/arch-bootc --
 ```bash
 git clone https://github.com/<your-user>/arch-bootc.git
 cd arch-bootc
-git remote add upstream https://github.com/bootcrew/arch-bootc.git
+git remote add upstream https://github.com/Danathar/arch-bootc.git
 ```
 
 ## Enable GitHub Actions + Cosign Secret
