@@ -33,7 +33,19 @@ RUN pacman -Syu --noconfirm \
     skopeo \
     xfsprogs \
     btrfs-progs \
-    xorg-server && \
+    xorg-server \
+    noto-fonts \
+    noto-fonts-emoji \
+    noto-fonts-cjk \
+    gst-plugins-good \
+    gst-plugins-bad \
+    gst-plugins-ugly \
+    gst-libav \
+    bluez \
+    bluez-utils \
+    unzip \
+    unrar \
+    p7zip && \
     pacman -S --clean --noconfirm
 
 # https://github.com/bootc-dev/bootc/issues/1801
@@ -72,7 +84,8 @@ RUN pacman -S --noconfirm \
     (pacman -Qq nano >/dev/null 2>&1 && pacman -Rns --noconfirm nano || true) && \
     pacman -S --clean --noconfirm && \
     mkdir -p /etc/systemd/system/multi-user.target.wants && \
-    ln -sf /usr/lib/systemd/system/NetworkManager.service /etc/systemd/system/multi-user.target.wants/NetworkManager.service
+    ln -sf /usr/lib/systemd/system/NetworkManager.service /etc/systemd/system/multi-user.target.wants/NetworkManager.service && \
+    ln -sf /usr/lib/systemd/system/bluetooth.service /etc/systemd/system/multi-user.target.wants/bluetooth.service
 
 # Optional AUR package layering (disabled by default).
 # WARNING: AUR packages are community-maintained and may assume a traditional mutable Arch layout.
@@ -104,6 +117,10 @@ RUN mkdir -p /etc/systemd/system/graphical.target.wants && \
     ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target && \
     ln -sf /usr/lib/systemd/system/sddm.service /etc/systemd/system/graphical.target.wants/sddm.service && \
     ln -sf /usr/lib/systemd/system/sddm.service /etc/systemd/system/display-manager.service
+
+# Pre-configure Flathub system-wide remote
+RUN mkdir -p /etc/flatpak/remotes.d && \
+    curl -o /etc/flatpak/remotes.d/flathub.flatpakrepo https://flathub.org/repo/flathub.flatpakrepo
 
 # https://bootc-dev.github.io/bootc/bootc-images.html#standard-metadata-for-bootc-compatible-images
 LABEL containers.bootc 1
