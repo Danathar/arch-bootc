@@ -1,5 +1,9 @@
 # Arch Linux Bootc
 
+[![build](https://github.com/Danathar/arch-bootc/actions/workflows/build.yaml/badge.svg)](https://github.com/Danathar/arch-bootc/actions/workflows/build.yaml)
+
+> **Note:** This image was created primarily with directed AI, though its been tested and inspected by hand. I feel it's important for anybody using stuff on github to have this information before using something they find.
+
 Reference [Arch Linux](https://archlinux.org/) container image preconfigured for [bootc](https://github.com/bootc-dev/bootc) usage.
 
 <img width="2335" height="1296" alt="image" src="https://github.com/user-attachments/assets/0a19ad09-fdb6-4b7f-96f0-28ae9df12889" />
