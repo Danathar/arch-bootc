@@ -24,6 +24,13 @@ RUN pacman -Syu --noconfirm \
     glib2 \
     linux \
     linux-firmware \
+    intel-ucode \
+    amd-ucode \
+    vulkan-radeon \
+    vulkan-intel \
+    vulkan-mesa-layers \
+    libva-intel-driver \
+    libva-mesa-driver \
     kde-applications-meta \
     ostree \
     plasma-meta \
