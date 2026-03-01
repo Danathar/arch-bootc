@@ -95,9 +95,11 @@ RUN echo "root:changeme" | chpasswd
 RUN pacman -S --noconfirm \
     distrobox \
     firefox \
+    firewalld \
     flatpak \
     konsole \
     networkmanager \
+    power-profiles-daemon \
     sudo \
     vim && \
     (pacman -Qq nano >/dev/null 2>&1 && pacman -Rns --noconfirm nano || true) && \
@@ -105,6 +107,8 @@ RUN pacman -S --noconfirm \
     sed -i 's/^hosts: .*/hosts: mymachines mdns_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] files myhostname dns/' /etc/nsswitch.conf && \
     mkdir -p /etc/systemd/system/multi-user.target.wants && \
     ln -sf /usr/lib/systemd/system/NetworkManager.service /etc/systemd/system/multi-user.target.wants/NetworkManager.service && \
+    ln -sf /usr/lib/systemd/system/firewalld.service /etc/systemd/system/multi-user.target.wants/firewalld.service && \
+    ln -sf /usr/lib/systemd/system/power-profiles-daemon.service /etc/systemd/system/multi-user.target.wants/power-profiles-daemon.service && \
     ln -sf /usr/lib/systemd/system/bluetooth.service /etc/systemd/system/multi-user.target.wants/bluetooth.service && \
     ln -sf /usr/lib/systemd/system/avahi-daemon.service /etc/systemd/system/multi-user.target.wants/avahi-daemon.service && \
     ln -sf /usr/lib/systemd/system/cups.service /etc/systemd/system/multi-user.target.wants/cups.service && \

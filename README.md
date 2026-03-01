@@ -22,6 +22,8 @@ This repo already includes the following opinionated changes:
 
 - KDE Plasma desktop + SDDM enabled (graphical login by default)
 - Full KDE applications suite via `kde-applications-meta`
+- CPU microcode (`intel-ucode`, `amd-ucode`)
+- Vulkan and Mesa drivers (`vulkan-radeon`, `vulkan-intel`, `vulkan-mesa-layers`, `libva-intel-driver`, `libva-mesa-driver`)
 - Essential fonts (`noto-fonts`, `noto-fonts-emoji`, `noto-fonts-cjk`)
 - GStreamer media codecs (`gst-plugins-*`, `gst-libav`)
 - Bluetooth support installed and enabled (`bluez`, `bluez-utils`)
@@ -34,6 +36,8 @@ This repo already includes the following opinionated changes:
 - Flathub remote pre-configured system-wide
 - Temporary root dev login (`root` / `changeme`)
 - `NetworkManager` installed and enabled for first-boot DHCP
+- `firewalld` installed and enabled (for NetworkManager zone integration)
+- `power-profiles-daemon` installed and enabled (for KDE power management)
 - `sudo` installed (`visudo` included)
 - `vim` installed
 - `distrobox`, `flatpak`, `konsole`, and `firefox` installed
