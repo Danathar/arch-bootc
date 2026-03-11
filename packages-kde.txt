@@ -5,7 +5,7 @@ libva-intel-driver
 libva-mesa-driver
 kde-applications-meta
 plasma-meta
-sddm
+plasma-login-manager
 xorg-server
 noto-fonts
 noto-fonts-emoji

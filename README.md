@@ -20,7 +20,7 @@ Use this repo as your own bootc image source, build locally, boot it in a VM, cr
 
 This repo already includes the following opinionated changes:
 
-- KDE Plasma desktop + SDDM enabled (graphical login by default)
+- KDE Plasma desktop + Plasma Login Manager enabled (graphical login by default)
 - Full KDE applications suite via `kde-applications-meta`
 - CPU microcode (`intel-ucode`, `amd-ucode`)
 - Vulkan and Mesa drivers (`vulkan-radeon`, `vulkan-intel`, `vulkan-mesa-layers`, `libva-intel-driver`, `libva-mesa-driver`)

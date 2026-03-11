@@ -80,8 +80,8 @@ RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
 # Enable graphical login for KDE
 RUN mkdir -p /etc/systemd/system/graphical.target.wants && \
     ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target && \
-    ln -sf /usr/lib/systemd/system/sddm.service /etc/systemd/system/graphical.target.wants/sddm.service && \
-    ln -sf /usr/lib/systemd/system/sddm.service /etc/systemd/system/display-manager.service
+    ln -sf /usr/lib/systemd/system/plasmalogin.service /etc/systemd/system/graphical.target.wants/plasmalogin.service && \
+    ln -sf /usr/lib/systemd/system/plasmalogin.service /etc/systemd/system/display-manager.service
 
 # Pre-configure Flathub system-wide remote
 RUN mkdir -p /etc/flatpak/remotes.d && \
