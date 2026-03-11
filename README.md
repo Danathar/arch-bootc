@@ -41,6 +41,7 @@ This repo already includes the following opinionated changes:
 - `sudo` installed (`visudo` included)
 - `vim` installed
 - `distrobox`, `flatpak`, `konsole`, and `firefox` installed
+- Homebrew integration via `ublue-os/brew` (pre-configured to extract on first boot for UID 1000)
 - `nano` removed from the image
 - Local `just build-containerfile` uses `--security-opt label=disable` for more reliable rebuilds
 
@@ -159,7 +160,10 @@ sync
 *(Notes: `dd` erases the target disk completely. Double-check `of=` before running. Keep Secure Boot disabled unless you manage your own signed boot chain.)*
 
 4. Reboot and boot from that disk.
-5. Proceed to the "Post-Installation / First Boot" section below.
+   - **Note:** On the first boot after installation, the system will prompt you to select your timezone before proceeding to the graphical login.
+   - Because it boots directly into the graphical login screen, you will need to switch to a virtual console (usually `Ctrl`+`Alt`+`F3`) and log in as `root`.
+   - Add your user using the commands detailed in the "Post-Installation / First Boot" section below.
+   - Reboot the system for good measure.
 
 ### 6. Create VM (User Session Track)
 This is the track used here: `qemu:///session`, 8GB RAM, 10 vCPU, UEFI, Secure Boot disabled.
@@ -200,7 +204,8 @@ Default dev root account in this image:
 Once logged in, create your own admin account. Replace `<username>` and `<password>`:
 
 ```bash
-useradd -m -G wheel -s /bin/bash <username>
+# Ensure the user has UID 1000 to use the pre-configured Homebrew
+useradd -m -u 1000 -G wheel -s /bin/bash <username>
 echo '<username>:<password>' | chpasswd
 mkdir -p /etc/sudoers.d
 echo '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/10-wheel
