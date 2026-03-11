@@ -34,7 +34,7 @@ This repo already includes the following opinionated changes:
 - CLI utilities (`wget`, `curl`, `rsync`, `xdg-user-dirs`, `openssh`)
 - Expanded filesystem support (`ntfs-3g`)
 - Flathub remote pre-configured system-wide
-- Temporary root dev login (`root` / `changeme`)
+- Hardcoded root password is locked for security (configure via cloud-init or SSH keys)
 - `NetworkManager` installed and enabled for first-boot DHCP
 - `firewalld` installed and enabled (for NetworkManager zone integration)
 - `power-profiles-daemon` installed and enabled (for KDE power management)
@@ -112,8 +112,16 @@ git remote add upstream https://github.com/Danathar/arch-bootc.git
 ```
 
 ### 3. Build Locally
+By default, this repository builds two images: a `base` image (CLI only) and a `kde` image (Desktop).
+
+**Build Desktop Image (Default):**
 ```bash
 just build-containerfile
+```
+
+**Build Base Image (CLI only):**
+```bash
+just build-base
 ```
 
 If you want log files you can tail:
@@ -197,11 +205,9 @@ Then run the `virt-install` command again.
 
 ## Post-Installation / First Boot
 
-Default dev root account in this image:
-- user: `root`
-- password: `changeme`
+> **Important:** The root account is locked by default. You should configure user accounts via cloud-init, standard users in your builder tool, or inject an SSH key during image generation.
 
-Once logged in, create your own admin account. Replace `<username>` and `<password>`:
+If you somehow gained root access (e.g. via virtual console or live media), create your own admin account. Replace `<username>` and `<password>`:
 
 ```bash
 # Ensure the user has UID 1000 to use the pre-configured Homebrew

@@ -1,4 +1,4 @@
-FROM docker.io/archlinux/archlinux:latest
+FROM docker.io/archlinux/archlinux:latest AS base
 
 # Move everything from `/var` to `/usr/lib/sysimage` so behavior around pacman remains the same on `bootc usroverlay`'d systems
 RUN grep "= */var" /etc/pacman.conf | sed "/= *\/var/s/.*=// ; s/ //" | xargs -n1 sh -c 'mkdir -p "/usr/lib/sysimage/$(dirname $(echo $1 | sed "s@/var/@@"))" && mv -v "$1" "/usr/lib/sysimage/$(echo "$1" | sed "s@/var/@@")"' '' && \
@@ -9,65 +9,15 @@ RUN grep "= */var" /etc/pacman.conf | sed "/= *\/var/s/.*=// ; s/ //" | xargs -n
 RUN sed -i 's/^[[:space:]]*NoExtract/#&/' /etc/pacman.conf
 
 # Reinstall glibc to fix missing language files due to missing in the base image
-RUN --mount=type=tmpfs,dst=/tmp --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman pacman -Sy glibc --noconfirm
+RUN --mount=type=tmpfs,dst=/tmp --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman pacman -Syu glibc --noconfirm
 
-# Core system and desktop packages.
-# Keep this list flat (one package per line) to make adding/removing packages easy.
-RUN pacman -Syu --noconfirm \
-    base \
-    base-devel \
-    git \
-    cpio \
-    dbus \
-    dbus-glib \
-    dosfstools \
-    dracut \
-    e2fsprogs \
-    glib2 \
-    linux \
-    linux-firmware \
-    intel-ucode \
-    amd-ucode \
-    vulkan-radeon \
-    vulkan-intel \
-    vulkan-mesa-layers \
-    libva-intel-driver \
-    libva-mesa-driver \
-    kde-applications-meta \
-    ostree \
-    plasma-meta \
-    podman \
-    sddm \
-    shadow \
-    skopeo \
-    xfsprogs \
-    btrfs-progs \
-    xorg-server \
-    noto-fonts \
-    noto-fonts-emoji \
-    noto-fonts-cjk \
-    gst-plugins-good \
-    gst-plugins-bad \
-    gst-plugins-ugly \
-    gst-libav \
-    bluez \
-    bluez-utils \
-    unzip \
-    unrar \
-    p7zip \
-    fwupd \
-    smartmontools \
-    avahi \
-    nss-mdns \
-    cups \
-    cups-pdf \
-    wget \
-    curl \
-    rsync \
-    xdg-user-dirs \
-    openssh \
-    ntfs-3g && \
-    pacman -S --clean --noconfirm
+# Install core base packages from external file
+COPY packages-base.txt /tmp/packages-base.txt
+RUN --mount=type=tmpfs,dst=/tmp/pacman-cache --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
+    pacman -Syu --noconfirm $(cat /tmp/packages-base.txt) && \
+    (pacman -Qq nano >/dev/null 2>&1 && pacman -Rns --noconfirm nano || true) && \
+    pacman -S --clean --noconfirm && \
+    rm /tmp/packages-base.txt
 
 # https://github.com/bootc-dev/bootc/issues/1801
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
@@ -90,57 +40,42 @@ RUN sed -i 's|^HOME=.*|HOME=/var/home|' "/etc/default/useradd" && \
     printf "d /var/roothome 0700 root root -\nd /run/media 0755 root root -" | tee -a "/usr/lib/tmpfiles.d/bootc-base-dirs.conf" && \
     printf '[composefs]\nenabled = yes\n[sysroot]\nreadonly = true\n' | tee "/usr/lib/ostree/prepare-root.conf"
 
-# Setup a temporary root password (changeme) for dev purposes.
-RUN echo "root:changeme" | chpasswd
+# Remove hardcoded root password and lock it for security
+RUN passwd -l root
 
-# User/admin tools and networking.
-# `sudo` provides `visudo`; remove `nano` so `vim` is the editor available.
-RUN pacman -S --noconfirm \
-    distrobox \
-    firefox \
-    firewalld \
-    flatpak \
-    konsole \
-    networkmanager \
-    power-profiles-daemon \
-    sudo \
-    vim && \
-    (pacman -Qq nano >/dev/null 2>&1 && pacman -Rns --noconfirm nano || true) && \
-    pacman -S --clean --noconfirm && \
-    sed -i 's/^hosts: .*/hosts: mymachines mdns_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] files myhostname dns/' /etc/nsswitch.conf && \
+# Network and basic services configuration
+RUN sed -i 's/^hosts: .*/hosts: mymachines mdns_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] files myhostname dns/' /etc/nsswitch.conf && \
     mkdir -p /etc/systemd/system/multi-user.target.wants && \
     ln -sf /usr/lib/systemd/system/NetworkManager.service /etc/systemd/system/multi-user.target.wants/NetworkManager.service && \
     ln -sf /usr/lib/systemd/system/firewalld.service /etc/systemd/system/multi-user.target.wants/firewalld.service && \
+    ln -sf /usr/lib/systemd/system/sshd.service /etc/systemd/system/multi-user.target.wants/sshd.service
+
+# https://bootc-dev.github.io/bootc/bootc-images.html#standard-metadata-for-bootc-compatible-images
+LABEL containers.bootc 1
+
+RUN bootc container lint
+
+# Copy ublue-os/brew and enable its systemd services
+COPY --from=ghcr.io/ublue-os/brew:latest /system_files /
+RUN systemctl preset brew-setup.service brew-update.timer brew-upgrade.timer
+
+
+# --- Desktop Layer ---
+FROM base AS kde
+
+# Install KDE and desktop packages from external file
+COPY packages-kde.txt /tmp/packages-kde.txt
+RUN --mount=type=tmpfs,dst=/tmp/pacman-cache --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
+    pacman -Syu --noconfirm $(cat /tmp/packages-kde.txt) && \
+    pacman -S --clean --noconfirm && \
+    rm /tmp/packages-kde.txt
+
+# Additional desktop services
+RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
     ln -sf /usr/lib/systemd/system/power-profiles-daemon.service /etc/systemd/system/multi-user.target.wants/power-profiles-daemon.service && \
     ln -sf /usr/lib/systemd/system/bluetooth.service /etc/systemd/system/multi-user.target.wants/bluetooth.service && \
     ln -sf /usr/lib/systemd/system/avahi-daemon.service /etc/systemd/system/multi-user.target.wants/avahi-daemon.service && \
-    ln -sf /usr/lib/systemd/system/cups.service /etc/systemd/system/multi-user.target.wants/cups.service && \
-    ln -sf /usr/lib/systemd/system/sshd.service /etc/systemd/system/multi-user.target.wants/sshd.service
-
-# Optional AUR package layering (disabled by default).
-# WARNING: AUR packages are community-maintained and may assume a traditional mutable Arch layout.
-# For bootc/ostree images, only layer packages that are compatible with an immutable root:
-# - no runtime writes to /usr
-# - no assumptions about classic mutable /var paths
-# - no interactive install/runtime requirements
-# Status (2026-02-28): this AUR flow is provided as a template and has not been tested in this repo.
-#
-# Example flow:
-# 1) Build/install `paru-bin` from AUR with a temporary unprivileged build user.
-# 2) Install your AUR package list (set `PACKAGE_LIST` in the command below).
-# 3) Remove temporary build user artifacts.
-#
-# RUN pacman -S --noconfirm --needed base-devel git && \
-#     useradd -m -s /bin/bash aurbuilder && \
-#     echo 'aurbuilder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/90-aurbuilder && \
-#     chmod 0440 /etc/sudoers.d/90-aurbuilder && \
-#     su - aurbuilder -c 'git clone https://aur.archlinux.org/paru-bin.git ~/paru-bin' && \
-#     su - aurbuilder -c 'cd ~/paru-bin && makepkg -si --noconfirm' && \
-#     su - aurbuilder -c 'PACKAGE_LIST="visual-studio-code-bin"; paru -S --noconfirm --needed ${PACKAGE_LIST}' && \
-#     rm -rf /home/aurbuilder/paru-bin /home/aurbuilder/.cache && \
-#     userdel -r aurbuilder && \
-#     rm -f /etc/sudoers.d/90-aurbuilder && \
-#     pacman -S --clean --noconfirm
+    ln -sf /usr/lib/systemd/system/cups.service /etc/systemd/system/multi-user.target.wants/cups.service
 
 # Enable graphical login for KDE
 RUN mkdir -p /etc/systemd/system/graphical.target.wants && \
@@ -152,11 +87,4 @@ RUN mkdir -p /etc/systemd/system/graphical.target.wants && \
 RUN mkdir -p /etc/flatpak/remotes.d && \
     curl -o /etc/flatpak/remotes.d/flathub.flatpakrepo https://flathub.org/repo/flathub.flatpakrepo
 
-# https://bootc-dev.github.io/bootc/bootc-images.html#standard-metadata-for-bootc-compatible-images
-LABEL containers.bootc 1
-
 RUN bootc container lint
-
-# Copy ublue-os/brew and enable its systemd services
-COPY --from=ghcr.io/ublue-os/brew:latest /system_files /
-RUN systemctl preset brew-setup.service brew-update.timer brew-upgrade.timer

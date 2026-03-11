@@ -33,6 +33,10 @@ jobs:
   build_push:
     name: Build and push image
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [base, kde]
 
     permissions:
       contents: read
@@ -44,7 +48,11 @@ jobs:
         run: |
           # Lowercase the image uri
           echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
+          if [ "${{ matrix.flavor }}" = "kde" ]; then
+            echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
+          else
+            echo "IMAGE_NAME=${IMAGE_NAME,,}-${{ matrix.flavor }}" >> ${GITHUB_ENV}
+          fi
 
       # These stage versions are pinned by https://github.com/renovatebot/renovate
       - name: Checkout
@@ -95,6 +103,7 @@ jobs:
           containerfiles: |
             ./Containerfile
           image: ${{ env.IMAGE_NAME }}
+          target: ${{ matrix.flavor }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           oci: true

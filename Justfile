@@ -10,6 +10,9 @@ container_runtime := env("CONTAINER_RUNTIME", `command -v podman >/dev/null 2>&1
 build-containerfile $image_name=image_name:
     sudo {{container_runtime}} build --security-opt label=disable -f Containerfile -t "${image_name}:latest" .
 
+build-base $image_name=image_name:
+    sudo {{container_runtime}} build --security-opt label=disable --target base -f Containerfile -t "${image_name}-base:latest" .
+
 bootc *ARGS:
     sudo {{container_runtime}} run \
         --rm --privileged --pid=host \
