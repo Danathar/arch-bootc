@@ -103,7 +103,7 @@ jobs:
           containerfiles: |
             ./Containerfile
           image: ${{ env.IMAGE_NAME }}
-          target: ${{ matrix.flavor }}
+          extra-args: "--target ${{ matrix.flavor }}"
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           oci: true
