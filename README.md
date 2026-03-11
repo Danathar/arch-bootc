@@ -65,18 +65,34 @@ If the GHCR package is private, authenticate first:
 sudo podman login ghcr.io
 ```
 
-Build a `qcow2` image directly from GHCR:
+### 1. Create a user config
+Because the root account is locked by default, you must inject a user during the image generation process. Create a `config.toml` file:
+
+```toml
+# config.toml
+[[customizations.user]]
+name = "myuser"
+password = "hashed_password_here"
+groups = ["wheel"]
+key = "ssh-rsa AAAAB3Nza..." # Optional: add your SSH public key
+```
+*(Note: To generate a hashed password, you can run `openssl passwd -6`)*
+
+### 2. Build the disk image
+Build a `qcow2` image directly from GHCR, passing your configuration:
 
 ```bash
 mkdir -p output
 sudo podman run --rm -it --privileged --pull=newer \
   --security-opt label=type:unconfined_t \
   -v "$(pwd)/output:/output" \
+  -v "$(pwd)/config.toml:/config.toml:ro" \
   -v /var/lib/containers/storage:/var/lib/containers/storage \
   quay.io/centos-bootc/bootc-image-builder:latest \
   --type qcow2 \
   --rootfs ext4 \
   --chown "$(id -u):$(id -g)" \
+  --config /config.toml \
   ghcr.io/Danathar/arch-bootc:latest
 ```
 *(Note: Replace `Danathar/arch-bootc` with `<your-user>/arch-bootc` if you are using your own fork's image).*
