@@ -1,20 +1,21 @@
 ---
 name: Build container image
 on:
-  pull_request:
-    branches:
-      - main
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-  schedule:
-    - cron: "05 10 * * *" # 10:05am UTC everyday
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
+  # Disabled — image builds have moved to the mono repo.
+  # pull_request:
+  #   branches:
+  #     - main
+  #   paths-ignore:
+  #     - "**/*.md"
+  #     - "docs/**"
+  # schedule:
+  #   - cron: "05 10 * * *"
+  # push:
+  #   branches:
+  #     - main
+  #   paths-ignore:
+  #     - "**/*.md"
+  #     - "docs/**"
   workflow_dispatch:
 
 env:
