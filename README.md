@@ -1,3 +1,7 @@
+# This repository is deprecated!
+
+Moved to <https://github.com/bootcrew/mono>
+
 # Arch Linux Bootc
 
 [![build](https://github.com/Danathar/arch-bootc/actions/workflows/build.yaml/badge.svg)](https://github.com/Danathar/arch-bootc/actions/workflows/build.yaml)
