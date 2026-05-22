@@ -234,6 +234,34 @@ echo '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/10-wheel
 chmod 0440 /etc/sudoers.d/10-wheel
 ```
 
+Homebrew is extracted by `brew-setup.service` on first boot to:
+
+```bash
+/var/home/linuxbrew/.linuxbrew
+```
+
+The image installs system-wide shell integration so future users and new
+terminal sessions automatically get `brew` on `PATH`:
+
+- `/etc/profile.d/homebrew.sh` for POSIX shells and Bash
+- `/etc/fish/conf.d/homebrew.fish` for Fish
+- `/etc/zsh/zprofile.d/homebrew.zsh` for Zsh login shells
+
+If you need to use Homebrew in an already-open shell before logging out/in or
+opening a new terminal, run:
+
+```bash
+eval "$(/var/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+```
+
+If `brew` is still unavailable after opening a new shell, check the first-boot
+setup service:
+
+```bash
+sudo systemctl status brew-setup.service
+sudo journalctl -u brew-setup.service -b --no-pager
+```
+
 Optional hardening:
 ```bash
 passwd -l root
