@@ -282,6 +282,24 @@ Your local users and host state persist across image updates (`/etc`, `/var/home
 
 ---
 
+## Comparing packages between deployments
+
+After an update, run `ostree-pkg-diff` to see which packages were added,
+removed, or version-changed between the running deployment and the previous
+deployment. The command self-elevates with `sudo` when needed.
+
+```bash
+ostree-pkg-diff
+```
+
+To preview what it would compare without making changes, run:
+
+```bash
+ostree-pkg-diff --dry-run
+```
+
+---
+
 ## How to add your own packages (AUR)
 
 > **Warning:** The AUR flow provided as a template has not been tested by the repository author yet. Use it at your own risk.

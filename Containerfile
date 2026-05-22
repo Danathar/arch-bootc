@@ -13,16 +13,18 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=cache,dst=/usr/lib/sysimage/cache/p
 
 # Install core base packages from external file
 COPY packages-base.txt /tmp/packages-base.txt
-RUN --mount=type=tmpfs,dst=/tmp/pacman-cache --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
+RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
     pacman -Syu --noconfirm $(cat /tmp/packages-base.txt) && \
     (pacman -Qq nano >/dev/null 2>&1 && pacman -Rns --noconfirm nano || true) && \
     pacman -S --clean --noconfirm && \
     rm /tmp/packages-base.txt
 
 # https://github.com/bootc-dev/bootc/issues/1801
+# renovate: datasource=github-releases depName=bootc-dev/bootc
+ARG BOOTC_VERSION=v1.15.2
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     pacman -S --noconfirm rust go-md2man && \
-    git clone "https://github.com/bootc-dev/bootc.git" /tmp/bootc && \
+    git clone --branch "${BOOTC_VERSION}" --depth 1 "https://github.com/bootc-dev/bootc.git" /tmp/bootc && \
     make -C /tmp/bootc bin install-all && \
     printf "systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n" | tee /usr/lib/dracut/dracut.conf.d/30-bootcrew-fix-bootc-module.conf && \
     printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" ostree bootc "' | tee "/usr/lib/dracut/dracut.conf.d/30-bootcrew-bootc-container-build.conf" && \
@@ -68,7 +70,7 @@ FROM base AS kde
 
 # Install KDE and desktop packages from external file
 COPY packages-kde.txt /tmp/packages-kde.txt
-RUN --mount=type=tmpfs,dst=/tmp/pacman-cache --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
+RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
     pacman -Syu --noconfirm $(cat /tmp/packages-kde.txt) && \
     pacman -S --clean --noconfirm && \
     rm /tmp/packages-kde.txt
