@@ -40,6 +40,9 @@ RUN sed -i 's|^HOME=.*|HOME=/var/home|' "/etc/default/useradd" && \
     printf "d /var/roothome 0700 root root -\nd /run/media 0755 root root -" | tee -a "/usr/lib/tmpfiles.d/bootc-base-dirs.conf" && \
     printf '[composefs]\nenabled = yes\n[sysroot]\nreadonly = true\n' | tee "/usr/lib/ostree/prepare-root.conf"
 
+# Keep small EFI System Partitions from filling with stale bootc kernel/initrd artifacts.
+COPY system_files/ /
+
 # Remove hardcoded root password and lock it for security
 RUN passwd -l root
 

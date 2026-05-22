@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Remove bootc kernel/initramfs directories from the EFI System Partition (ESP)
+# when they are no longer referenced by any BLS entry.
+#
+# bootc writes kernel/initramfs artifacts from the image into the ESP, while
+# active deployments are referenced by /loader/entries/*.conf.  If an upgrade
+# is interrupted or cleanup misses old artifacts, a small ESP can fill up and
+# make future upgrades fail while writing BLS/initrd files.
+
+usage() {
+  cat <<'USAGE'
+Usage: arch-bootc-prune-esp [--dry-run]
+
+Prunes unreferenced /EFI/Linux/<deployment>/ directories from mounted ESPs.
+Set BOOTC_PRUNE_ESP_PATH=/path/to/esp to target a specific ESP.
+USAGE
+}
+
+dry_run=0
+case "${1:-}" in
+  --dry-run) dry_run=1 ;;
+  -h|--help) usage; exit 0 ;;
+  "") ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+log() {
+  printf '%s\n' "$*"
+}
+
+add_candidate() {
+  local esp="$1"
+  [[ -n "$esp" ]] || return 0
+  [[ -d "$esp/EFI/Linux" && -d "$esp/loader/entries" ]] || return 0
+  printf '%s\n' "$esp"
+}
+
+find_esps() {
+  if [[ -n "${BOOTC_PRUNE_ESP_PATH:-}" ]]; then
+    add_candidate "$BOOTC_PRUNE_ESP_PATH"
+    return 0
+  fi
+
+  # Common bootc/systemd-boot mount points first.
+  add_candidate /boot/efi
+  add_candidate /boot
+  add_candidate /efi
+
+  # Then any mounted vfat filesystem that looks like an ESP.
+  if command -v findmnt >/dev/null 2>&1; then
+    findmnt -rn -t vfat -o TARGET 2>/dev/null | while IFS= read -r target; do
+      add_candidate "$target"
+    done
+  fi
+}
+
+prune_esp() {
+  local esp="$1"
+  declare -A keep=()
+  local entry key path rest rel dir candidate
+
+  shopt -s nullglob
+
+  for entry in "$esp"/loader/entries/*.conf; do
+    while read -r key path rest || [[ -n "${key:-}" ]]; do
+      # BLS entries use absolute ESP-relative paths like:
+      #   linux /EFI/Linux/<id>/vmlinuz
+      #   initrd /EFI/Linux/<id>/initrd
+      case "$key" in
+        linux|initrd)
+          path="${path%$'\r'}"
+          if [[ "$path" == /EFI/Linux/*/* ]]; then
+            rel="${path#/}"
+            dir="${rel%/*}"
+            keep["$esp/$dir"]=1
+          fi
+          ;;
+      esac
+    done < "$entry"
+  done
+
+  if (( ${#keep[@]} == 0 )); then
+    log "arch-bootc-prune-esp: $esp: no referenced bootc EFI artifacts found; refusing to prune"
+    return 0
+  fi
+
+  for candidate in "$esp"/EFI/Linux/*; do
+    [[ -d "$candidate" ]] || continue
+    if [[ -n "${keep[$candidate]+x}" ]]; then
+      log "arch-bootc-prune-esp: keeping ${candidate#$esp/}"
+      continue
+    fi
+
+    if (( dry_run )); then
+      log "arch-bootc-prune-esp: would prune ${candidate#$esp/}"
+    else
+      log "arch-bootc-prune-esp: pruning ${candidate#$esp/}"
+      rm -rf --one-file-system -- "$candidate"
+    fi
+  done
+}
+
+mapfile -t esps < <(find_esps | sort -u)
+
+if (( ${#esps[@]} == 0 )); then
+  log "arch-bootc-prune-esp: no mounted ESP with EFI/Linux and loader/entries found"
+  exit 0
+fi
+
+for esp in "${esps[@]}"; do
+  prune_esp "$esp"
+done

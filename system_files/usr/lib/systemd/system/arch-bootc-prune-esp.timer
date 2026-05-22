@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically prune unreferenced bootc EFI artifacts
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1d
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target

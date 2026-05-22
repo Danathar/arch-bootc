@@ -1,0 +1,13 @@
+[Unit]
+Description=Prune unreferenced bootc artifacts from the EFI System Partition
+Documentation=https://bootc.dev/bootc/bootc-images.html
+After=local-fs.target
+Before=bootc-fetch-apply-updates.service
+ConditionPathExists=/usr/libexec/arch-bootc-prune-esp
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/arch-bootc-prune-esp
+
+[Install]
+WantedBy=multi-user.target
