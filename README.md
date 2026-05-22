@@ -93,9 +93,9 @@ sudo podman run --rm -it --privileged --pull=newer \
   --rootfs ext4 \
   --chown "$(id -u):$(id -g)" \
   --config /config.toml \
-  ghcr.io/Danathar/arch-bootc:latest
+  ghcr.io/Danathar/arch-bootc-kde:latest
 ```
-*(Note: Replace `Danathar/arch-bootc` with `<your-user>/arch-bootc` if you are using your own fork's image).*
+*(Note: Replace `Danathar/arch-bootc-kde` with `<your-user>/arch-bootc-kde` if you are using your own fork's image).*
 
 - Output is written under `output/qcow2/` (usually `output/qcow2/disk.qcow2`).
 - Optional: enlarge the virtual disk size before creating the VM:
@@ -129,6 +129,7 @@ git remote add upstream https://github.com/Danathar/arch-bootc.git
 
 ### 3. Build Locally
 By default, this repository builds two images: a `base` image (CLI only) and a `kde` image (Desktop).
+The published GHCR images follow the same naming: `arch-bootc-base` and `arch-bootc-kde`.
 
 **Build Desktop Image (Default):**
 ```bash
@@ -274,7 +275,7 @@ passwd -l root
 Once installed, switch to your GHCR image and reboot:
 
 ```bash
-bootc switch ghcr.io/<your-user>/arch-bootc:latest
+bootc switch ghcr.io/<your-user>/arch-bootc-kde:latest
 reboot
 ```
 
