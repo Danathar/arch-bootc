@@ -75,6 +75,15 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
     pacman -S --clean --noconfirm && \
     rm /tmp/packages-kde.txt
 
+# Fix KDE PIM/Akonadi startup delays by ensuring mariadb is present, and avoid
+# blocking Plasma startup on the networkd wait-online unit. This image uses
+# NetworkManager for networking.
+RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
+    pacman -S --needed --noconfirm mariadb packagekit-qt6 && \
+    systemctl enable NetworkManager.service && \
+    systemctl disable systemd-networkd-wait-online.service && \
+    pacman -S --clean --noconfirm
+
 # Additional desktop services
 RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
     ln -sf /usr/lib/systemd/system/power-profiles-daemon.service /etc/systemd/system/multi-user.target.wants/power-profiles-daemon.service && \

@@ -36,6 +36,7 @@ This repo already includes the following opinionated changes:
 - Flathub remote pre-configured system-wide
 - Hardcoded root password is locked for security (configure via cloud-init or SSH keys)
 - `NetworkManager` installed and enabled for first-boot DHCP
+- KDE PIM/Akonadi dependencies included (`mariadb`, `packagekit-qt6`) and `systemd-networkd-wait-online.service` disabled to avoid Plasma startup delays
 - `firewalld` installed and enabled (for NetworkManager zone integration)
 - `power-profiles-daemon` installed and enabled (for KDE power management)
 - `sudo` installed (`visudo` included)
