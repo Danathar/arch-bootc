@@ -282,6 +282,41 @@ reboot
 
 Your local users and host state persist across image updates (`/etc`, `/var/home`).
 
+### Troubleshooting: composefs garbage collection error after upgrade
+
+This image currently builds `bootc v1.15.2` and installs with the native
+composefs backend. If `bootc upgrade` successfully fetches the new image but
+then fails during `Running composefs garbage collection` with an error like:
+
+```text
+Deleting state directory for deployment ...
+Removing dir "state/deploy/<deployment-id>": No such file or directory
+```
+
+check whether the new deployment was still staged:
+
+```bash
+sudo bootc status
+```
+
+If a staged deployment is present, the image update likely completed and only
+the post-upgrade cleanup failed. Reboot to activate the staged deployment:
+
+```bash
+sudo reboot
+```
+
+After reboot, confirm the active deployment with:
+
+```bash
+sudo bootc status
+```
+
+Avoid running unsupported internal composefs garbage-collection commands unless
+upstream bootc documentation specifically recommends them. Prefer upgrading to a
+newer upstream `bootc` release when one is available and confirmed to address
+the composefs GC failure.
+
 ---
 
 ## Comparing packages between deployments
