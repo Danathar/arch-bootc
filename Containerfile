@@ -1,4 +1,4 @@
-FROM docker.io/archlinux/archlinux:latest AS base
+FROM docker.io/archlinux/archlinux:latest AS base-core
 
 # Move everything from `/var` to `/usr/lib/sysimage` so behavior around pacman remains the same on `bootc usroverlay`'d systems
 RUN grep "= */var" /etc/pacman.conf | sed "/= *\/var/s/.*=// ; s/ //" | xargs -n1 sh -c 'mkdir -p "/usr/lib/sysimage/$(dirname $(echo $1 | sed "s@/var/@@"))" && mv -v "$1" "/usr/lib/sysimage/$(echo "$1" | sed "s@/var/@@")"' '' && \
@@ -72,8 +72,25 @@ COPY --from=ghcr.io/ublue-os/brew:latest /system_files /
 RUN systemctl preset brew-setup.service brew-update.timer brew-upgrade.timer
 
 
+# --- base (CLI) target ---
+# Tag every package-owned file with a chunkah `user.component` (its pacman
+# package) so the CI rechunk step can split OCI layers per package, minimizing
+# the bytes `bootc upgrade` downloads. Gated on CHUNK_TAG=1 (set by CI) so local
+# `just` builds skip the cost and stay byte-identical otherwise.
+FROM base-core AS base
+ARG CHUNK_TAG=0
+RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
+    if [ "${CHUNK_TAG}" = "1" ]; then \
+      pacman -S --needed --noconfirm attr && \
+      pacman -Qq | while IFS= read -r pkg; do \
+        pacman -Qlq "$pkg" | sed '/\/$/d' | tr '\n' '\0' | \
+          xargs -0 -r setfattr -n user.component -v "pkg:$pkg" 2>/dev/null || true ; \
+      done ; \
+    fi
+
+
 # --- Desktop Layer ---
-FROM base AS kde
+FROM base-core AS kde
 
 # Install KDE and desktop packages from external file
 COPY packages-kde.txt /tmp/packages-kde.txt
@@ -109,3 +126,15 @@ RUN mkdir -p /etc/flatpak/remotes.d && \
     curl -o /etc/flatpak/remotes.d/flathub.flatpakrepo https://flathub.org/repo/flathub.flatpakrepo
 
 RUN bootc container lint
+
+# Tag files with their pacman package for chunkah per-package layering (see the
+# base target above). Gated on CHUNK_TAG=1 so local builds are unaffected.
+ARG CHUNK_TAG=0
+RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
+    if [ "${CHUNK_TAG}" = "1" ]; then \
+      pacman -S --needed --noconfirm attr && \
+      pacman -Qq | while IFS= read -r pkg; do \
+        pacman -Qlq "$pkg" | sed '/\/$/d' | tr '\n' '\0' | \
+          xargs -0 -r setfattr -n user.component -v "pkg:$pkg" 2>/dev/null || true ; \
+      done ; \
+    fi

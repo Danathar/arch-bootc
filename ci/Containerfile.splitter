@@ -1,0 +1,23 @@
+# Vendored from https://github.com/coreos/chunkah (Containerfile.splitter).
+# Used by .github/workflows/build.yaml to re-split an already-built image into
+# content-based (per-pacman-package) OCI layers so `bootc upgrade` only
+# downloads the packages that actually changed.
+#
+# `buildah build --from <SRC>` overrides the `overridden` base below with the
+# image to rechunk; chunkah reads its rootfs (and the user.component xattrs we
+# set in the main Containerfile) and writes a freshly layered image.
+
+# renovate: datasource=docker depName=quay.io/coreos/chunkah
+ARG CHUNKAH=quay.io/coreos/chunkah:v0.6.0
+ARG CHUNKAH_ARGS=""
+ARG CHUNKAH_CONFIG_STR
+
+FROM overridden AS target
+FROM ${CHUNKAH} AS chunkah
+ARG CHUNKAH_CONFIG_STR
+ARG CHUNKAH_ARGS
+RUN --mount=type=bind,target=/run/src,rw \
+    --mount=from=target,target=/chunkah,ro \
+      chunkah build ${CHUNKAH_ARGS} --output oci:/run/src/out
+
+FROM oci:out

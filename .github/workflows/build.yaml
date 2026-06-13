@@ -116,7 +116,38 @@ jobs:
           extra-args: "--target ${{ matrix.flavor }}"
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
+          # Tag files with their pacman package (CHUNK_TAG=1) only when we will
+          # publish, so PR builds skip the cost. Consumed by the rechunk step.
+          build-args: |
+            CHUNK_TAG=${{ (github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && '1' || '0' }}
           oci: true
+
+      - name: Rechunk image with chunkah
+        id: rechunk
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        run: |
+          set -euo pipefail
+          FIRST_TAG="$(echo '${{ steps.metadata.outputs.tags }}' | awk '{print $1}')"
+          SRC="${IMAGE_NAME}:${FIRST_TAG}"
+          CTX="$(mktemp -d)"
+          echo "::group::Rechunking ${SRC} into per-package layers"
+          buildah build \
+            --skip-unused-stages=false \
+            --from "${SRC}" \
+            -f "${GITHUB_WORKSPACE}/ci/Containerfile.splitter" \
+            --build-arg CHUNKAH_ARGS="--max-layers 96" \
+            --build-arg CHUNKAH_CONFIG_STR="$(podman inspect "${SRC}")" \
+            -t "${IMAGE_NAME}:chunked" \
+            "${CTX}"
+          echo "::endgroup::"
+          # Point every published tag at the rechunked image so the existing
+          # push/sign steps operate on it unchanged.
+          for tag in ${{ steps.metadata.outputs.tags }}; do
+            buildah tag "${IMAGE_NAME}:chunked" "${IMAGE_NAME}:${tag}"
+          done
+          # The original (pre-chunk) image is now untagged; reclaim its disk.
+          buildah rmi --prune || true
+          echo "Rechunked layer count: $(podman inspect "${IMAGE_NAME}:chunked" --format '{{len .RootFS.Layers}}' 2>/dev/null || echo '?')"
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3
