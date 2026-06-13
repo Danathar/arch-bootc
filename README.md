@@ -219,6 +219,28 @@ virsh -c qemu:///session undefine arch-bootc-local --nvram || true
 ```
 Then run the `virt-install` command again.
 
+### Running commands in the VM from the host (QEMU guest agent)
+
+The image installs `qemu-guest-agent`, and `virt-install` attaches the
+`org.qemu.guest_agent.0` channel by default for Linux guests. The agent is
+started automatically by its udev rule once the VM boots, so you can run
+commands inside the VM from the host without SSH or a console login:
+
+```bash
+# Verify the agent is connected
+virsh -c qemu:///session qemu-agent-command arch-bootc-local '{"execute":"guest-ping"}'
+
+# Run a command in the guest (returns a PID), then read its output
+virsh -c qemu:///session qemu-agent-command arch-bootc-local \
+  '{"execute":"guest-exec","arguments":{"path":"/usr/bin/bootc","arg":["status"],"capture-output":true}}'
+virsh -c qemu:///session qemu-agent-command arch-bootc-local \
+  '{"execute":"guest-exec-status","arguments":{"pid":<PID>}}'
+```
+
+(`out-data` in the result is base64-encoded.) Usermode networking (`--network
+user`) has no inbound route for SSH, so the guest agent is the simplest way to
+drive the VM from the host.
+
 ---
 
 ## Post-Installation / First Boot

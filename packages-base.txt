@@ -24,6 +24,7 @@ wget
 curl
 rsync
 openssh
+qemu-guest-agent
 ntfs-3g
 distrobox
 firewalld
