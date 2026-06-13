@@ -129,24 +129,25 @@ jobs:
           set -euo pipefail
           FIRST_TAG="$(echo '${{ steps.metadata.outputs.tags }}' | awk '{print $1}')"
           SRC="${IMAGE_NAME}:${FIRST_TAG}"
-          CTX="$(mktemp -d)"
+          # chunkah reads the source rootfs (and the user.component xattrs set in
+          # the Containerfile) and streams a re-layered oci-archive to stdout,
+          # which we load straight into storage. CHUNKAH_CONFIG_STR carries the
+          # original image config (labels incl. containers.bootc, cmd, env).
+          export CHUNKAH_CONFIG_STR="$(podman inspect "${SRC}")"
           echo "::group::Rechunking ${SRC} into per-package layers"
-          buildah build \
-            --skip-unused-stages=false \
-            --from "${SRC}" \
-            -f "${GITHUB_WORKSPACE}/ci/Containerfile.splitter" \
-            --build-arg CHUNKAH_ARGS="--max-layers 96" \
-            --build-arg CHUNKAH_CONFIG_STR="$(podman inspect "${SRC}")" \
-            -t "${IMAGE_NAME}:chunked" \
-            "${CTX}"
+          podman run --rm \
+            --mount=type=image,src="${SRC}",dest=/chunkah \
+            -e CHUNKAH_CONFIG_STR \
+            quay.io/coreos/chunkah:v0.6.0 \
+            build --max-layers 96 -t "${IMAGE_NAME}:chunked" \
+            | podman load
           echo "::endgroup::"
           # Point every published tag at the rechunked image so the existing
           # push/sign steps operate on it unchanged.
           for tag in ${{ steps.metadata.outputs.tags }}; do
-            buildah tag "${IMAGE_NAME}:chunked" "${IMAGE_NAME}:${tag}"
+            podman tag "${IMAGE_NAME}:chunked" "${IMAGE_NAME}:${tag}"
           done
-          # The original (pre-chunk) image is now untagged; reclaim its disk.
-          buildah rmi --prune || true
+          podman image prune -f || true
           echo "Rechunked layer count: $(podman inspect "${IMAGE_NAME}:chunked" --format '{{len .RootFS.Layers}}' 2>/dev/null || echo '?')"
 
       - name: Login to GitHub Container Registry
