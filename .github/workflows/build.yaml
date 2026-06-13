@@ -134,9 +134,11 @@ jobs:
           # which we load straight into storage. CHUNKAH_CONFIG_STR carries the
           # original image config (labels incl. containers.bootc, cmd, env).
           export CHUNKAH_CONFIG_STR="$(podman inspect "${SRC}")"
+          # Pre-pull so the run below emits only the oci-archive on stdout.
+          podman pull -q quay.io/coreos/chunkah:v0.6.0
           echo "::group::Rechunking ${SRC} into per-package layers"
           podman run --rm \
-            --mount=type=image,src="${SRC}",dest=/chunkah \
+            --mount=type=image,src="${SRC}",dst=/chunkah \
             -e CHUNKAH_CONFIG_STR \
             quay.io/coreos/chunkah:v0.6.0 \
             build --max-layers 96 -t "${IMAGE_NAME}:chunked" \
