@@ -176,32 +176,53 @@ qemu-img info output/arch-bootc-100g.qcow2
 ```
 
 ### 5. Install On Bare Metal (Clean Reimage)
-Use this flow when you want to install directly to physical hardware from a Linux live environment.
+Install directly to physical hardware from any Linux live environment. This reuses
+the same `bootc-image-builder` + `config.toml` flow as Path A — just emitting a
+**raw** disk image instead of `qcow2`. That `config.toml` is what injects your
+user account; because the root account is locked, installing *without* it leaves
+you at a graphical login you cannot sign into.
 
-1. Build the container image and generate a bootable raw disk image (`ext4`):
+1. Create your `config.toml` (user, hashed password, optional SSH key) exactly as
+   in [Path A step 1](#1-create-a-user-config).
+
+2. Build a **raw** disk image. Point the builder at the published GHCR image (or
+   at a local `localhost/arch-bootc-kde:latest` after `just build-containerfile`):
 ```bash
-just build-containerfile
-truncate -s 100G bootable.img
-just generate-bootable-image
+mkdir -p output
+sudo podman run --rm -it --privileged --pull=newer \
+  --security-opt label=type:unconfined_t \
+  -v "$(pwd)/output:/output" \
+  -v "$(pwd)/config.toml:/config.toml:ro" \
+  -v /var/lib/containers/storage:/var/lib/containers/storage \
+  quay.io/centos-bootc/bootc-image-builder:latest \
+  --type raw \
+  --rootfs ext4 \
+  --chown "$(id -u):$(id -g)" \
+  --config /config.toml \
+  ghcr.io/Danathar/arch-bootc-kde:latest
 ```
+   The image is written to `output/image/disk.raw`.
 
-2. Identify the target disk (example target: `/dev/nvme0n1`):
+3. Identify the target disk:
 ```bash
 sudo lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL
 ```
+   > ⚠️ **`dd` to the wrong device irreversibly destroys it.** Confirm the target
+   > is your intended install disk and is **not mounted** before continuing.
 
-3. Write the image to disk:
+4. Write the image to disk (example target `/dev/nvme0n1`):
 ```bash
-sudo dd if=bootable.img of=/dev/nvme0n1 bs=16M status=progress oflag=direct conv=fsync
+sudo dd if=output/image/disk.raw of=/dev/nvme0n1 bs=16M status=progress oflag=direct conv=fsync
 sync
 ```
-*(Notes: `dd` erases the target disk completely. Double-check `of=` before running. Keep Secure Boot disabled unless you manage your own signed boot chain.)*
+   *(Keep Secure Boot disabled unless you manage your own signed boot chain. The
+   raw image is the builder's default size; grow the root filesystem afterward if
+   your disk is larger.)*
 
-4. Reboot and boot from that disk.
-   - **Note:** On the first boot after installation, the system will prompt you to select your timezone before proceeding to the graphical login.
-   - Because it boots directly into the graphical login screen, you will need to switch to a virtual console (usually `Ctrl`+`Alt`+`F3`) and log in as `root`.
-   - Add your user using the commands detailed in the "Post-Installation / First Boot" section below.
-   - Reboot the system for good measure.
+5. Reboot and boot from that disk.
+   - On first boot the system prompts for timezone, then reaches the graphical login.
+   - Log in as the user you defined in `config.toml` — no locked-root or
+     virtual-console bootstrapping needed.
 
 ### 6. Create VM (User Session Track)
 This is the track used here: `qemu:///session`, 8GB RAM, 10 vCPU, UEFI, Secure Boot disabled.
