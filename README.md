@@ -304,40 +304,53 @@ reboot
 
 Your local users and host state persist across image updates (`/etc`, `/var/home`).
 
-### Troubleshooting: composefs garbage collection error after upgrade
+### Troubleshooting: composefs garbage collection error ("Invalid splitstream header magic value")
 
-This image currently builds `bootc v1.15.2` and installs with the native
-composefs backend. If `bootc upgrade` successfully fetches the new image but
-then fails during `Running composefs garbage collection` with an error like:
+This image installs with the native composefs backend. On `bootc v1.15.x`, a
+`bootc upgrade` could fetch and store the new image successfully but then fail
+during `Running composefs garbage collection` with:
 
 ```text
-Deleting state directory for deployment ...
-Removing dir "state/deploy/<deployment-id>": No such file or directory
+Running composefs garbage collection: ... Walking stream oci-manifest-sha256:<digest>:
+... Creating new splitstream reader: Invalid splitstream header magic value
 ```
 
-check whether the new deployment was still staged:
+**Cause — bootc/composefs-rs version skew, not disk corruption.** The on-disk
+splitstream header layout changed in composefs-rs commit `b7dc27065`
+(2026-03-17), which added `#[repr(C)]` to the header structs. Before that, the
+compiler reordered the fields and the `SplitStream` magic landed at byte offset
+18; after it, the magic sits at offset 0. `bootc v1.15.2` pins composefs-rs
+`2203e8f` (2026-03-06, *pre*-`repr(C)`), so it reads/writes the offset-18
+layout. If the system was originally installed with a newer toolchain that
+wrote the offset-0 layout, v1.15.2's GC cannot parse those streams and aborts
+with the error above — naming the specific stream it failed to read.
 
-```bash
-sudo bootc status
-```
+**Fix — build `bootc v1.16.0` or newer.** v1.16.0 pins composefs-rs `e2770757`
+(2026-05-28), which includes both the `repr(C)` offset-0 layout *and* "read and
+upgrade older composefs-rs repos" (`54d248f7a`), so its GC handles a mixed repo
+and the skew is gone. This image now builds v1.16.0 (see `BOOTC_VERSION` in the
+Containerfile).
 
-If a staged deployment is present, the image update likely completed and only
-the post-upgrade cleanup failed. Reboot to activate the staged deployment:
+**Recovering an affected machine:**
 
-```bash
-sudo reboot
-```
-
-After reboot, confirm the active deployment with:
-
-```bash
-sudo bootc status
-```
-
-Avoid running unsupported internal composefs garbage-collection commands unless
-upstream bootc documentation specifically recommends them. Prefer upgrading to a
-newer upstream `bootc` release when one is available and confirmed to address
-the composefs GC failure.
+1. The upgrade content usually applied even though GC errored — the new
+   deployment is staged. Confirm and reboot to activate it:
+   ```bash
+   sudo bootc status   # look for a staged deployment
+   sudo reboot
+   ```
+2. The upgrade that *installs* the v1.16.0 image still runs under the old bootc,
+   so GC may throw the error one final time; reboot anyway. Every `bootc
+   upgrade` after you are running v1.16.0 is clean.
+3. If a leftover image ref keeps tripping GC on an old (offset-0) stream, list
+   the refs and remove only ones **not** tied to your booted/rollback
+   deployments (these are tracked via boot entries, not `streams/refs`):
+   ```bash
+   sudo find /sysroot/composefs/streams/refs -type l -printf '%p -> %l\n'
+   # /sysroot is mounted read-only; bootc remounts it rw during its own
+   # operations. Hand-editing the composefs repo is unsupported — prefer the
+   # v1.16.0 upgrade, which resolves this without manual surgery.
+   ```
 
 ---
 
