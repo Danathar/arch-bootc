@@ -16,33 +16,45 @@ Use this repo as your own bootc image source, build locally, boot it in a VM, cr
 
 *Unlike a traditional Linux distribution where you install packages on a live system, you manage this system by editing the `Containerfile`, building a new container image, and instructing your host to boot from that image.*
 
+> ⚠️ **First boot:** The root account is locked by default. Whichever path you take, inject a user **before** install (via `config.toml` in Path A, or your builder) — otherwise you'll boot to a graphical login you can't sign into. On a bare-metal first boot the system also prompts for timezone, then drops to graphical login; switch to a virtual console (`Ctrl`+`Alt`+`F3`) to finish setup. See [Post-Installation / First Boot](#post-installation--first-boot).
+
 ## Current Customizations In This Repo
 
 This repo already includes the following opinionated changes:
 
+**Desktop & graphics**
 - KDE Plasma desktop + Plasma Login Manager enabled (graphical login by default)
 - Full KDE applications suite via `kde-applications-meta`
-- CPU microcode (`intel-ucode`, `amd-ucode`)
 - Vulkan and Mesa drivers (`vulkan-radeon`, `vulkan-intel`, `vulkan-mesa-layers`, `libva-intel-driver`, `libva-mesa-driver`)
 - Essential fonts (`noto-fonts`, `noto-fonts-emoji`, `noto-fonts-cjk`)
-- GStreamer media codecs (`gst-plugins-*`, `gst-libav`)
-- Bluetooth support installed and enabled (`bluez`, `bluez-utils`)
-- Archiving tools (`unzip`, `unrar`, `p7zip`)
-- Hardware utilities (`fwupd` for firmware, `smartmontools` for drive health)
-- Network discovery / mDNS configured and enabled (`avahi`, `nss-mdns`)
-- Printing stack installed and enabled (`cups`, `cups-pdf`)
-- CLI utilities (`wget`, `curl`, `rsync`, `xdg-user-dirs`, `openssh`)
-- Expanded filesystem support (`ntfs-3g`)
-- Flathub remote pre-configured system-wide
-- Hardcoded root password is locked for security (configure via cloud-init or SSH keys)
-- `NetworkManager` installed and enabled for first-boot DHCP
 - KDE PIM/Akonadi dependencies included (`mariadb`, `packagekit-qt6`) and `systemd-networkd-wait-online.service` disabled to avoid Plasma startup delays
-- `firewalld` installed and enabled (for NetworkManager zone integration)
-- `power-profiles-daemon` installed and enabled (for KDE power management)
-- `sudo` installed (`visudo` included)
-- `vim` installed
+
+**Media & applications**
+- GStreamer media codecs (`gst-plugins-*`, `gst-libav`)
 - `distrobox`, `flatpak`, `konsole`, and `firefox` installed
+- Flathub remote pre-configured system-wide
 - Homebrew integration via `ublue-os/brew` (pre-configured to extract on first boot for UID 1000)
+
+**Hardware & power**
+- CPU microcode (`intel-ucode`, `amd-ucode`)
+- Bluetooth support installed and enabled (`bluez`, `bluez-utils`)
+- Hardware utilities (`fwupd` for firmware, `smartmontools` for drive health)
+- Printing stack installed and enabled (`cups`, `cups-pdf`)
+- `power-profiles-daemon` installed and enabled (for KDE power management)
+- Expanded filesystem support (`ntfs-3g`)
+
+**Networking**
+- `NetworkManager` installed and enabled for first-boot DHCP
+- Network discovery / mDNS configured and enabled (`avahi`, `nss-mdns`)
+- `firewalld` installed and enabled (for NetworkManager zone integration)
+
+**System, security & CLI**
+- Hardcoded root password is locked for security (configure via cloud-init or SSH keys)
+- `sudo` installed (`visudo` included)
+- CLI utilities (`wget`, `curl`, `rsync`, `xdg-user-dirs`, `openssh`)
+- Archiving tools (`unzip`, `unrar`, `p7zip`)
+- `vim` installed
+- `qemu-guest-agent` installed for host-driven VM access (udev-activated only when run under QEMU/libvirt)
 - `nano` removed from the image
 - Local `just build-containerfile` uses `--security-opt label=disable` for more reliable rebuilds
 
@@ -243,6 +255,34 @@ drive the VM from the host.
 
 ---
 
+## Path C: Setting up CI/CD & Automated Builds
+
+If your repo is a fork, enable Actions in GitHub first.
+
+### Enable GitHub Actions + Cosign Secret
+
+Generate an empty-passphrase keypair:
+
+```bash
+COSIGN_PASSWORD="" cosign generate-key-pair
+```
+
+Upload private key as repository secret:
+
+```bash
+gh secret set SIGNING_SECRET < cosign.key
+```
+
+Commit public key:
+
+```bash
+git add cosign.pub
+git commit -m "chore: update cosign public key"
+git push origin main
+```
+
+---
+
 ## Post-Installation / First Boot
 
 > **Important:** The root account is locked by default. You should configure user accounts via cloud-init, standard users in your builder tool, or inject an SSH key during image generation.
@@ -384,34 +424,6 @@ Because `bootc` is an immutable system, you must ensure that any AUR packages yo
 - Have no interactive install or runtime requirements
 
 The template provided in the `Containerfile` uses a temporary, unprivileged build user to safely compile and install AUR packages during the container build process.
-
----
-
-## Path C: Setting up CI/CD & Automated Builds
-
-If your repo is a fork, enable Actions in GitHub first.
-
-### Enable GitHub Actions + Cosign Secret
-
-Generate an empty-passphrase keypair:
-
-```bash
-COSIGN_PASSWORD="" cosign generate-key-pair
-```
-
-Upload private key as repository secret:
-
-```bash
-gh secret set SIGNING_SECRET < cosign.key
-```
-
-Commit public key:
-
-```bash
-git add cosign.pub
-git commit -m "chore: update cosign public key"
-git push origin main
-```
 
 ---
 
