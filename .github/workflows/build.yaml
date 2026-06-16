@@ -130,9 +130,10 @@ jobs:
           set -euo pipefail
           FIRST_TAG="$(echo '${{ steps.metadata.outputs.tags }}' | awk '{print $1}')"
           SRC="${IMAGE_NAME}:${FIRST_TAG}"
-          CHUNKAH_OCI_DIR="${RUNNER_TEMP}/chunkah-${{ matrix.flavor }}-oci"
-          rm -rf "${CHUNKAH_OCI_DIR}"
-          mkdir -p "${CHUNKAH_OCI_DIR}"
+          CHUNKAH_WORK_DIR="${RUNNER_TEMP}/chunkah-${{ matrix.flavor }}"
+          CHUNKAH_OCI_DIR="${CHUNKAH_WORK_DIR}/oci"
+          rm -rf "${CHUNKAH_WORK_DIR}"
+          mkdir -p "${CHUNKAH_WORK_DIR}"
           df -h
 
           # Drop build containers and dangling intermediate layers before
@@ -153,11 +154,11 @@ jobs:
           echo "::group::Rechunking ${SRC} into per-package layers"
           podman run --rm \
             --mount=type=image,src="${SRC}",dst=/chunkah \
-            --mount=type=bind,src="${CHUNKAH_OCI_DIR}",dst=/out \
+            --mount=type=bind,src="${CHUNKAH_WORK_DIR}",dst=/out \
             -e CHUNKAH_CONFIG_STR \
             "${CHUNKAH_IMAGE}" \
             build --max-layers 96 --compressed \
-              --output oci:/out \
+              --output oci:/out/oci \
               -t "${IMAGE_NAME}:chunked"
           echo "::endgroup::"
 
