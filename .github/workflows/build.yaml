@@ -175,6 +175,21 @@ jobs:
           echo "CHUNKAH_OCI_DIR=${CHUNKAH_OCI_DIR}" >> "${GITHUB_ENV}"
           echo "Rechunked layer count: $(skopeo inspect --raw "oci:${CHUNKAH_OCI_DIR}:${IMAGE_NAME}:chunked" | jq '.layers | length')"
 
+      - name: Log in to GHCR for signing
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ github.token }}
+        run: |
+          # cosign uploads the signature blob to the registry and reads its
+          # credentials from ~/.docker/config.json, so authenticate there
+          # before signing. The push step below uses skopeo --dest-creds and
+          # does not rely on this login. Strip the owner path from
+          # IMAGE_REGISTRY (ghcr.io/owner -> ghcr.io) so docker logs in to the
+          # registry host that cosign's keychain matches on.
+          echo "${REGISTRY_PASSWORD}" | docker login "${IMAGE_REGISTRY%%/*}" \
+            -u "${REGISTRY_USER}" --password-stdin
+
       - name: Push To GHCR
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         id: push
