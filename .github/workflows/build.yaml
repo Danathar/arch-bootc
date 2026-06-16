@@ -24,6 +24,7 @@ env:
   IMAGE_NAME: "${{ github.event.repository.name }}"
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"
   DEFAULT_TAG: "latest"
+  CHUNKAH_IMAGE: "quay.io/coreos/chunkah:v0.6.0"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
@@ -47,8 +48,8 @@ jobs:
       - name: Prepare environment
         run: |
           # Lowercase the image uri
-          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
-          echo "IMAGE_NAME=${IMAGE_NAME,,}-${{ matrix.flavor }}" >> ${GITHUB_ENV}
+          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> "${GITHUB_ENV}"
+          echo "IMAGE_NAME=${IMAGE_NAME,,}-${{ matrix.flavor }}" >> "${GITHUB_ENV}"
 
       # These stage versions are pinned by https://github.com/renovatebot/renovate
       - name: Checkout
@@ -61,7 +62,7 @@ jobs:
           # E.G: 2022-02-08T15:38:15Z'
           # https://artifacthub.io/docs/topics/repositories/container-images/
           # https://linux.die.net/man/1/date
-          echo "date=$(date -u +%Y\-%m\-%d\T%H\:%M\:%S\Z)" >> $GITHUB_OUTPUT
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
 
       - name: Image Metadata
         uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5
@@ -129,50 +130,70 @@ jobs:
           set -euo pipefail
           FIRST_TAG="$(echo '${{ steps.metadata.outputs.tags }}' | awk '{print $1}')"
           SRC="${IMAGE_NAME}:${FIRST_TAG}"
+          CHUNKAH_OCI_DIR="${RUNNER_TEMP}/chunkah-${{ matrix.flavor }}-oci"
+          rm -rf "${CHUNKAH_OCI_DIR}"
+          mkdir -p "${CHUNKAH_OCI_DIR}"
+          df -h
+
+          # Drop build containers and dangling intermediate layers before
+          # rechunking. Keep the final source image; chunkah still needs it.
+          buildah rm --all || true
+          buildah prune -f || true
+          podman image prune -f || true
+          df -h
+
           # chunkah reads the source rootfs (and the user.component xattrs set in
-          # the Containerfile) and streams a re-layered oci-archive to stdout,
-          # which we load straight into storage. CHUNKAH_CONFIG_STR carries the
-          # original image config (labels incl. containers.bootc, cmd, env).
-          export CHUNKAH_CONFIG_STR="$(podman inspect "${SRC}")"
-          # Pre-pull so the run below emits only the oci-archive on stdout.
-          podman pull -q quay.io/coreos/chunkah:v0.6.0
+          # the Containerfile) and writes a compressed OCI layout directly to
+          # disk. Avoiding `podman load` keeps the large rechunked KDE image out
+          # of containers-storage and prevents GitHub-hosted runners from
+          # running out of space while copying blobs.
+          CHUNKAH_CONFIG_STR="$(podman inspect "${SRC}")"
+          export CHUNKAH_CONFIG_STR
+          podman pull -q "${CHUNKAH_IMAGE}"
           echo "::group::Rechunking ${SRC} into per-package layers"
           podman run --rm \
             --mount=type=image,src="${SRC}",dst=/chunkah \
+            --mount=type=bind,src="${CHUNKAH_OCI_DIR}",dst=/out \
             -e CHUNKAH_CONFIG_STR \
-            quay.io/coreos/chunkah:v0.6.0 \
-            build --max-layers 96 -t "${IMAGE_NAME}:chunked" \
-            | podman load
+            "${CHUNKAH_IMAGE}" \
+            build --max-layers 96 --compressed \
+              --output oci:/out \
+              -t "${IMAGE_NAME}:chunked"
           echo "::endgroup::"
-          # Point every published tag at the rechunked image so the existing
-          # push/sign steps operate on it unchanged.
-          for tag in ${{ steps.metadata.outputs.tags }}; do
-            podman tag "${IMAGE_NAME}:chunked" "${IMAGE_NAME}:${tag}"
-          done
-          podman image prune -f || true
-          echo "Rechunked layer count: $(podman inspect "${IMAGE_NAME}:chunked" --format '{{len .RootFS.Layers}}' 2>/dev/null || echo '?')"
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # The push step reads from the OCI layout directly with skopeo. Remove
+          # the original buildah/podman images now so pushing has maximum free
+          # space available.
+          for tag in ${{ steps.metadata.outputs.tags }}; do
+            podman rmi "${IMAGE_NAME}:${tag}" || true
+          done
+          podman rmi "${CHUNKAH_IMAGE}" || true
+          podman image prune -f || true
+          df -h
+
+          echo "CHUNKAH_OCI_DIR=${CHUNKAH_OCI_DIR}" >> "${GITHUB_ENV}"
+          echo "Rechunked layer count: $(skopeo inspect --raw "oci:${CHUNKAH_OCI_DIR}:${IMAGE_NAME}:chunked" | jq '.layers | length')"
 
       - name: Push To GHCR
-        uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c # v2
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         id: push
         env:
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ github.token }}
-        with:
-          registry: ${{ env.IMAGE_REGISTRY }}
-          image: ${{ env.IMAGE_NAME }}
-          tags: ${{ steps.metadata.outputs.tags }}
-          username: ${{ env.REGISTRY_USER }}
-          password: ${{ env.REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          command -v skopeo
+          IMAGE_FULL="${IMAGE_REGISTRY}/${IMAGE_NAME}"
+          SRC="oci:${CHUNKAH_OCI_DIR}:${IMAGE_NAME}:chunked"
+
+          for tag in ${{ steps.metadata.outputs.tags }}; do
+            echo "::group::Pushing ${IMAGE_FULL}:${tag}"
+            skopeo copy --retry-times 3 \
+              --dest-creds "${REGISTRY_USER}:${REGISTRY_PASSWORD}" \
+              "${SRC}" \
+              "docker://${IMAGE_FULL}:${tag}"
+            echo "::endgroup::"
+          done
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
