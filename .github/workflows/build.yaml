@@ -181,14 +181,22 @@ jobs:
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ github.token }}
         run: |
+          set -euo pipefail
           # cosign uploads the signature blob to the registry and reads its
           # credentials from ~/.docker/config.json, so authenticate there
           # before signing. The push step below uses skopeo --dest-creds and
-          # does not rely on this login. Strip the owner path from
-          # IMAGE_REGISTRY (ghcr.io/owner -> ghcr.io) so docker logs in to the
-          # registry host that cosign's keychain matches on.
-          echo "${REGISTRY_PASSWORD}" | docker login "${IMAGE_REGISTRY%%/*}" \
-            -u "${REGISTRY_USER}" --password-stdin
+          # does not rely on this login. Write the config file directly rather
+          # than running `docker login`: the Docker daemon's request to ghcr.io
+          # times out on the runner, while skopeo/cosign reach the registry
+          # fine. Strip the owner path from IMAGE_REGISTRY (ghcr.io/owner ->
+          # ghcr.io) so the entry matches the host cosign's keychain looks up.
+          registry_host="${IMAGE_REGISTRY%%/*}"
+          auth="$(printf '%s:%s' "${REGISTRY_USER}" "${REGISTRY_PASSWORD}" | base64 -w0)"
+          mkdir -p "${HOME}/.docker"
+          touch "${HOME}/.docker/config.json"
+          chmod 600 "${HOME}/.docker/config.json"
+          printf '{"auths":{"%s":{"auth":"%s"}}}\n' "${registry_host}" "${auth}" \
+            > "${HOME}/.docker/config.json"
 
       - name: Push To GHCR
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
