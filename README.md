@@ -330,7 +330,8 @@ terminal sessions automatically get `brew` on `PATH`:
 
 - `/etc/profile.d/homebrew.sh` for POSIX shells and Bash
 - `/etc/fish/conf.d/homebrew.fish` for Fish
-- `/etc/zsh/zprofile.d/homebrew.zsh` for Zsh login shells
+- Zsh login shells are covered automatically: `/etc/zsh/zprofile` sources
+  `/etc/profile`, which runs `/etc/profile.d/homebrew.sh`
 
 If you need to use Homebrew in an already-open shell before logging out/in or
 opening a new terminal, run:
