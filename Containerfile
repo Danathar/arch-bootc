@@ -53,7 +53,9 @@ RUN sed -i 's/^hosts: .*/hosts: mymachines mdns_minimal [NOTFOUND=return] resolv
     mkdir -p /etc/systemd/system/multi-user.target.wants && \
     ln -sf /usr/lib/systemd/system/NetworkManager.service /etc/systemd/system/multi-user.target.wants/NetworkManager.service && \
     ln -sf /usr/lib/systemd/system/firewalld.service /etc/systemd/system/multi-user.target.wants/firewalld.service && \
-    ln -sf /usr/lib/systemd/system/sshd.service /etc/systemd/system/multi-user.target.wants/sshd.service
+    ln -sf /usr/lib/systemd/system/sshd.service /etc/systemd/system/multi-user.target.wants/sshd.service && \
+    mkdir -p /etc/systemd/system/timers.target.wants && \
+    ln -sf /usr/lib/systemd/system/arch-bootc-prune-esp.timer /etc/systemd/system/timers.target.wants/arch-bootc-prune-esp.timer
 
 # qemu-guest-agent is installed via packages-base.txt. It is intentionally NOT
 # symlinked into multi-user.target.wants: the package ships a udev rule
