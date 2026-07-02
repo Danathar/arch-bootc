@@ -28,7 +28,7 @@ env:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build_push:
@@ -214,10 +214,13 @@ jobs:
             echo "::group::Pushing ${IMAGE_FULL}:${tag}"
             skopeo copy --retry-times 3 \
               --dest-creds "${REGISTRY_USER}:${REGISTRY_PASSWORD}" \
+              --digestfile "${RUNNER_TEMP}/push-digest" \
               "${SRC}" \
               "docker://${IMAGE_FULL}:${tag}"
             echo "::endgroup::"
           done
+
+          echo "digest=$(cat "${RUNNER_TEMP}/push-digest")" >> "${GITHUB_OUTPUT}"
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
@@ -226,10 +229,8 @@ jobs:
       - name: Sign container image
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         run: |
+          set -euo pipefail
           IMAGE_FULL="${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}"
-          for tag in ${{ steps.metadata.outputs.tags }}; do
-            cosign sign -y --key env://COSIGN_PRIVATE_KEY $IMAGE_FULL:$tag
-          done
+          cosign sign -y --key env://COSIGN_PRIVATE_KEY "${IMAGE_FULL}@${{ steps.push.outputs.digest }}"
         env:
-          COSIGN_EXPERIMENTAL: false
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
