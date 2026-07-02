@@ -88,6 +88,8 @@ RUN if [ "${CHUNK_TAG}" = "1" ]; then \
       done ; \
     fi
 
+RUN bootc container lint
+
 
 # --- Desktop Layer ---
 FROM base-core AS kde
@@ -125,8 +127,6 @@ RUN mkdir -p /etc/systemd/system/graphical.target.wants && \
 RUN mkdir -p /etc/flatpak/remotes.d && \
     curl -fsSL --retry 3 -o /etc/flatpak/remotes.d/flathub.flatpakrepo https://flathub.org/repo/flathub.flatpakrepo
 
-RUN bootc container lint
-
 # Tag files with their pacman package for chunkah per-package layering (see the
 # base target above). Gated on CHUNK_TAG=1 so local builds are unaffected.
 ARG CHUNK_TAG=0
@@ -136,3 +136,5 @@ RUN if [ "${CHUNK_TAG}" = "1" ]; then \
           xargs -0 -r setfattr -n user.component -v "pkg:$pkg" 2>/dev/null || true ; \
       done ; \
     fi
+
+RUN bootc container lint
