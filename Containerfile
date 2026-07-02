@@ -81,9 +81,7 @@ RUN systemctl preset brew-setup.service brew-update.timer brew-upgrade.timer
 # `just` builds skip the cost and stay byte-identical otherwise.
 FROM base-core AS base
 ARG CHUNK_TAG=0
-RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
-    if [ "${CHUNK_TAG}" = "1" ]; then \
-      pacman -S --needed --noconfirm attr && \
+RUN if [ "${CHUNK_TAG}" = "1" ]; then \
       pacman -Qq | while IFS= read -r pkg; do \
         pacman -Qlq "$pkg" | sed '/\/$/d' | tr '\n' '\0' | \
           xargs -0 -r setfattr -n user.component -v "pkg:$pkg" 2>/dev/null || true ; \
@@ -132,9 +130,7 @@ RUN bootc container lint
 # Tag files with their pacman package for chunkah per-package layering (see the
 # base target above). Gated on CHUNK_TAG=1 so local builds are unaffected.
 ARG CHUNK_TAG=0
-RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
-    if [ "${CHUNK_TAG}" = "1" ]; then \
-      pacman -S --needed --noconfirm attr && \
+RUN if [ "${CHUNK_TAG}" = "1" ]; then \
       pacman -Qq | while IFS= read -r pkg; do \
         pacman -Qlq "$pkg" | sed '/\/$/d' | tr '\n' '\0' | \
           xargs -0 -r setfattr -n user.component -v "pkg:$pkg" 2>/dev/null || true ; \
