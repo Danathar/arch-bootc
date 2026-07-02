@@ -125,7 +125,7 @@ RUN mkdir -p /etc/systemd/system/graphical.target.wants && \
 
 # Pre-configure Flathub system-wide remote
 RUN mkdir -p /etc/flatpak/remotes.d && \
-    curl -o /etc/flatpak/remotes.d/flathub.flatpakrepo https://flathub.org/repo/flathub.flatpakrepo
+    curl -fsSL --retry 3 -o /etc/flatpak/remotes.d/flathub.flatpakrepo https://flathub.org/repo/flathub.flatpakrepo
 
 RUN bootc container lint
 
