@@ -45,7 +45,7 @@ RUN sed -i 's|^HOME=.*|HOME=/var/home|' "/etc/default/useradd" && \
 # Keep small EFI System Partitions from filling with stale bootc kernel/initrd artifacts.
 COPY system_files/ /
 
-# Remove hardcoded root password and lock it for security
+# Lock the root account
 RUN passwd -l root
 
 # Network and basic services configuration
@@ -123,6 +123,28 @@ RUN mkdir -p /etc/systemd/system/graphical.target.wants && \
 # Pre-configure Flathub system-wide remote
 RUN mkdir -p /etc/flatpak/remotes.d && \
     curl -fsSL --retry 3 -o /etc/flatpak/remotes.d/flathub.flatpakrepo https://flathub.org/repo/flathub.flatpakrepo
+
+# --- Optional AUR package layering (UNTESTED, see README "How to add your
+# own packages (AUR)") ---
+# `bootc` images are immutable at runtime, so any AUR package you add here
+# must make no runtime writes to /usr, no assumptions about classic mutable
+# /var paths, and have no interactive install/runtime requirements. Uncomment
+# and adapt the block below to build one with makepkg using a temporary,
+# unprivileged build user (base-devel is already installed via
+# packages-base.txt).
+#
+# RUN useradd -m -u 10000 aurbuilder && \
+#     echo 'aurbuilder ALL=(ALL) NOPASSWD: /usr/bin/pacman' >> /etc/sudoers.d/aurbuilder && \
+#     su - aurbuilder -c ' \
+#       set -e && \
+#       cd /tmp && \
+#       curl -fsSL -o example-pkg.tar.gz "https://aur.archlinux.org/cgit/aur.git/snapshot/example-pkg.tar.gz" && \
+#       tar xf example-pkg.tar.gz && \
+#       cd example-pkg && \
+#       makepkg -si --noconfirm \
+#     ' && \
+#     rm -f /etc/sudoers.d/aurbuilder && \
+#     userdel -r aurbuilder
 
 # Tag files with their pacman package for chunkah per-package layering (see the
 # base target above). Gated on CHUNK_TAG=1 so local builds are unaffected.

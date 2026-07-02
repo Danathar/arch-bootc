@@ -106,7 +106,7 @@ sudo podman run --rm -it --privileged --pull=newer \
   --rootfs ext4 \
   --chown "$(id -u):$(id -g)" \
   --config /config.toml \
-  ghcr.io/Danathar/arch-bootc-kde:latest
+  ghcr.io/danathar/arch-bootc-kde:latest
 ```
 *(Note: Replace `Danathar/arch-bootc-kde` with `<your-user>/arch-bootc-kde` if you are using your own fork's image).*
 
@@ -186,7 +186,7 @@ you at a graphical login you cannot sign into.
    in [Path A step 1](#1-create-a-user-config).
 
 2. Build a **raw** disk image. Point the builder at the published GHCR image (or
-   at a local `localhost/arch-bootc-kde:latest` after `just build-containerfile`):
+   at a local `localhost/arch-bootc:latest` after `just build-containerfile`):
 ```bash
 mkdir -p output
 sudo podman run --rm -it --privileged --pull=newer \
@@ -199,7 +199,7 @@ sudo podman run --rm -it --privileged --pull=newer \
   --rootfs ext4 \
   --chown "$(id -u):$(id -g)" \
   --config /config.toml \
-  ghcr.io/Danathar/arch-bootc-kde:latest
+  ghcr.io/danathar/arch-bootc-kde:latest
 ```
    The image is written to `output/image/disk.raw`.
 
@@ -426,11 +426,8 @@ deployment. The command self-elevates with `sudo` when needed.
 ostree-pkg-diff
 ```
 
-To preview what it would compare without making changes, run:
-
-```bash
-ostree-pkg-diff --dry-run
-```
+The tool is read-only: it mounts both deployments read-only and never
+modifies anything on disk.
 
 ---
 
