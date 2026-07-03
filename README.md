@@ -180,6 +180,17 @@ mkdir -p output
 qemu-img convert -f raw -O qcow2 -S 4k bootable.img output/arch-bootc-100g.qcow2
 ```
 
+`generate-bootable-image` targets the KDE image (`arch-bootc:latest`) by
+default, matching `just build-containerfile`. If you built `base` or `xfce`
+instead, say so with `BUILD_FLAVOR` (it's just their `-base`/`-xfce` tag
+suffix — this is required, not optional, since otherwise it'll either fail
+to find an image or silently install a stale one from a different flavor
+you built earlier):
+
+```bash
+BUILD_FLAVOR=xfce just generate-bootable-image   # or BUILD_FLAVOR=base
+```
+
 Verify:
 ```bash
 qemu-img info output/arch-bootc-100g.qcow2
