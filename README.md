@@ -16,7 +16,10 @@ Use this repo as your own bootc image source, build locally, boot it in a VM, cr
 
 *Unlike a traditional Linux distribution where you install packages on a live system, you manage this system by editing the `Containerfile`, building a new container image, and instructing your host to boot from that image.*
 
-> ⚠️ **First boot:** The root account is locked by default. Whichever path you take, inject a user **before** install (via `config.toml` in Path A, or your builder) — otherwise you'll boot to a graphical login you can't sign into. See [Post-Installation / First Boot](#post-installation--first-boot).
+> ⚠️ **First boot:** The root account is locked by default and boots straight
+> to a graphical login you can't sign into. Bootstrap your first admin user
+> via the QEMU guest agent (local VM) or console access (bare metal) — see
+> [Post-Installation / First Boot](#post-installation--first-boot).
 
 ## Current Customizations In This Repo
 
@@ -49,7 +52,7 @@ This repo already includes the following opinionated changes:
 - `firewalld` installed and enabled (for NetworkManager zone integration)
 
 **System, security & CLI**
-- Root account is locked (no password login); configure user accounts via cloud-init, `config.toml`, or SSH keys
+- Root account is locked (no password login); bootstrap your first admin user via the QEMU guest agent or console access, then `wheel` gives it sudo
 - `sudo` installed, with `wheel` group members granted password-prompted sudo via `/etc/sudoers.d/10-wheel`
 - CLI utilities (`wget`, `curl`, `rsync`, `xdg-user-dirs`, `openssh`)
 - Archiving tools (`unzip`, `unrar`, `p7zip`)
@@ -78,50 +81,36 @@ If the GHCR package is private, authenticate first:
 sudo podman login ghcr.io
 ```
 
-### 1. Create a user config
-Because the root account is locked by default, you must inject a user during the image generation process. Create a `config.toml` file:
-
-```toml
-# config.toml
-[[customizations.user]]
-name = "myuser"
-password = "hashed_password_here"
-groups = ["wheel"]
-key = "ssh-rsa AAAAB3Nza..." # Optional: add your SSH public key
-```
-*(Note: To generate a hashed password, you can run `openssl passwd -6`)*
-
-> **Don't drop `groups = ["wheel"]`.** The image grants `sudo` only to
-> members of the `wheel` group (see [Post-Installation / First
-> Boot](#post-installation--first-boot)); it isn't automatic for every user
-> `config.toml` creates. Since root is locked, a user created here without
-> `wheel` has no way to gain admin privileges at all.
-
-### 2. Build the disk image
-Build a `qcow2` image directly from GHCR, passing your configuration:
+### 1. Create the disk image
+Because the root account is locked by default, first boot needs the [QEMU
+guest agent](#running-commands-in-the-vm-from-the-host-qemu-guest-agent) to
+bootstrap your first admin user — no `config.toml`, no external image builder.
+Install the published image directly to a raw disk file with `bootc install
+to-disk`:
 
 ```bash
 mkdir -p output
-sudo podman run --rm -it --privileged --pull=newer \
+truncate -s 100G output/bootable.img
+sudo podman run --rm -it --privileged --pid=host --pull=newer \
   --security-opt label=type:unconfined_t \
-  -v "$(pwd)/output:/output" \
-  -v "$(pwd)/config.toml:/config.toml:ro" \
-  -v /var/lib/containers/storage:/var/lib/containers/storage \
-  quay.io/centos-bootc/bootc-image-builder:latest \
-  --type qcow2 \
-  --rootfs ext4 \
-  --chown "$(id -u):$(id -g)" \
-  --config /config.toml \
-  ghcr.io/danathar/arch-bootc-kde:latest
+  -v /dev:/dev \
+  -v "$(pwd)/output:/data" \
+  ghcr.io/danathar/arch-bootc-kde:latest \
+  bootc install to-disk --composefs-backend --via-loopback /data/bootable.img \
+    --filesystem ext4 --wipe --bootloader systemd
 ```
-*(Note: Replace `Danathar/arch-bootc-kde` with `<your-user>/arch-bootc-kde` if you are using your own fork's image).*
+*(Note: Replace `danathar/arch-bootc-kde` with `<your-user>/arch-bootc-kde` if
+you are using your own fork's image).*
 
-- Output is written under `output/qcow2/` (usually `output/qcow2/disk.qcow2`).
-- Optional: enlarge the virtual disk size before creating the VM:
-
+### 2. Convert to QCOW2
 ```bash
-qemu-img resize output/qcow2/disk.qcow2 100G
+qemu-img convert -f raw -O qcow2 -S 4k output/bootable.img output/arch-bootc-100g.qcow2
+rm output/bootable.img
 ```
+
+Continue at [Create VM](#6-create-vm-user-session-track) using this qcow2,
+then [Post-Installation / First Boot](#post-installation--first-boot) to
+bootstrap your admin user via the guest agent.
 
 ---
 
@@ -182,54 +171,39 @@ qemu-img info output/arch-bootc-100g.qcow2
 ```
 
 ### 5. Install On Bare Metal (Clean Reimage)
-Install directly to physical hardware from any Linux live environment. This reuses
-the same `bootc-image-builder` + `config.toml` flow as Path A — just emitting a
-**raw** disk image instead of `qcow2`. That `config.toml` is what injects your
-user account; because the root account is locked, installing *without* it leaves
-you at a graphical login you cannot sign into.
+Install directly to physical hardware from any Linux live environment with
+`podman` available. `bootc install to-disk` writes straight to the target
+block device — no intermediate raw image file, no `dd`.
 
-1. Create your `config.toml` (user, hashed password, optional SSH key) exactly as
-   in [Path A step 1](#1-create-a-user-config).
-
-2. Build a **raw** disk image. Point the builder at the published GHCR image (or
-   at a local `localhost/arch-bootc:latest` after `just build-containerfile`):
-```bash
-mkdir -p output
-sudo podman run --rm -it --privileged --pull=newer \
-  --security-opt label=type:unconfined_t \
-  -v "$(pwd)/output:/output" \
-  -v "$(pwd)/config.toml:/config.toml:ro" \
-  -v /var/lib/containers/storage:/var/lib/containers/storage \
-  quay.io/centos-bootc/bootc-image-builder:latest \
-  --type raw \
-  --rootfs ext4 \
-  --chown "$(id -u):$(id -g)" \
-  --config /config.toml \
-  ghcr.io/danathar/arch-bootc-kde:latest
-```
-   The image is written to `output/image/disk.raw`.
-
-3. Identify the target disk:
+1. Identify the target disk:
 ```bash
 sudo lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL
 ```
-   > ⚠️ **`dd` to the wrong device irreversibly destroys it.** Confirm the target
-   > is your intended install disk and is **not mounted** before continuing.
+   > ⚠️ **This wipes the target device.** Confirm it's your intended install
+   > disk and is **not mounted** before continuing.
 
-4. Write the image to disk (example target `/dev/nvme0n1`):
+2. Install directly to the disk (example target `/dev/nvme0n1`; point at the
+   published GHCR image, or a local `localhost/arch-bootc:latest` after `just
+   build-containerfile`):
 ```bash
-sudo dd if=output/image/disk.raw of=/dev/nvme0n1 bs=16M status=progress oflag=direct conv=fsync
-sync
+sudo podman run --rm -it --privileged --pid=host --pull=newer \
+  --security-opt label=type:unconfined_t \
+  -v /dev:/dev \
+  ghcr.io/danathar/arch-bootc-kde:latest \
+  bootc install to-disk --composefs-backend /dev/nvme0n1 \
+    --filesystem ext4 --wipe --bootloader systemd
 ```
-   *(Keep Secure Boot disabled unless you manage your own signed boot chain. The
-   raw image is the builder's default size; grow the root filesystem afterward if
-   your disk is larger.)*
+   *(Keep Secure Boot disabled unless you manage your own signed boot chain;
+   grow the root filesystem afterward if your disk is larger than the
+   install's default sizing.)*
 
-5. Reboot and boot from that disk.
+3. Reboot and boot from that disk.
    - The image defaults to UTC, so first boot goes straight to the graphical
      login (change the timezone afterward with `timedatectl set-timezone`).
-   - Log in as the user you defined in `config.toml` — no locked-root or
-     virtual-console bootstrapping needed.
+   - The root account is locked and there's currently no automated way to
+     inject a user for a bare-metal install, so you'll need one-time console
+     access (physical, remote KVM/IPMI, or live media) to create your admin
+     account — see [Post-Installation / First Boot](#post-installation--first-boot).
 
 ### 6. Create VM (User Session Track)
 This is the track used here: `qemu:///session`, 8GB RAM, 10 vCPU, UEFI, Secure Boot disabled.
@@ -279,7 +253,21 @@ virsh -c qemu:///session qemu-agent-command arch-bootc-local \
 
 (`out-data` in the result is base64-encoded.) Usermode networking (`--network
 user`) has no inbound route for SSH, so the guest agent is the simplest way to
-drive the VM from the host.
+drive the VM from the host — including bootstrapping your first admin user,
+since `guest-exec` runs as `root`:
+
+```bash
+# Create the user
+virsh -c qemu:///session qemu-agent-command arch-bootc-local \
+  '{"execute":"guest-exec","arguments":{"path":"/usr/sbin/useradd","arg":["-m","-u","1000","-G","wheel","<username>"],"capture-output":true}}'
+
+# Set its password (input-data is base64 of "<username>:<password>\n")
+virsh -c qemu:///session qemu-agent-command arch-bootc-local \
+  '{"execute":"guest-exec","arguments":{"path":"/usr/sbin/chpasswd","arg":[],"capture-output":true,"input-data":"PHVzZXJuYW1lPjo8cGFzc3dvcmQ+Cg=="}}'
+```
+
+Check each command's `guest-exec-status` (as above) to confirm `"exitcode":0`.
+Log in as `<username>` from here on — `sudo` already works via `wheel`.
 
 ---
 
@@ -313,21 +301,26 @@ git push origin main
 
 ## Post-Installation / First Boot
 
-> **Important:** The root account is locked by default. You should configure user accounts via cloud-init, standard users in your builder tool, or inject an SSH key during image generation.
+> **Important:** The root account is locked by default (no password login).
+> Get in via the [QEMU guest
+> agent](#running-commands-in-the-vm-from-the-host-qemu-guest-agent) for a
+> local VM, or via console access (physical, remote KVM/IPMI, or live media)
+> for a bare-metal install.
 
 The image ships `/etc/sudoers.d/10-wheel`, so any user in the `wheel` group
 gets password-prompted `sudo` — this is opt-in per user (only whoever you add
-to `wheel` gains anything), not a blanket grant. This is the admin path for a
-user provisioned via `config.toml`'s `groups = ["wheel"]` (Path A/B step 1).
+to `wheel` gains anything), not a blanket grant.
 
-If you somehow gained root access (e.g. via virtual console or live media),
-create your own admin account. Replace `<username>` and `<password>`:
+Once you're in as `root`, create your own admin account. Replace `<username>`
+and `<password>`:
 
 ```bash
 # Ensure the user has UID 1000 to use the pre-configured Homebrew
 useradd -m -u 1000 -G wheel -s /bin/bash <username>
 echo '<username>:<password>' | chpasswd
 ```
+
+Log in as `<username>` from here on — `sudo` already works via `wheel`.
 
 Homebrew is extracted by `brew-setup.service` on first boot to:
 
@@ -356,11 +349,6 @@ setup service:
 ```bash
 sudo systemctl status brew-setup.service
 sudo journalctl -u brew-setup.service -b --no-pager
-```
-
-Optional hardening:
-```bash
-passwd -l root
 ```
 
 ---
