@@ -16,7 +16,7 @@ Use this repo as your own bootc image source, build locally, boot it in a VM, cr
 
 *Unlike a traditional Linux distribution where you install packages on a live system, you manage this system by editing the `Containerfile`, building a new container image, and instructing your host to boot from that image.*
 
-> ⚠️ **First boot:** The root account is locked by default. Whichever path you take, inject a user **before** install (via `config.toml` in Path A, or your builder) — otherwise you'll boot to a graphical login you can't sign into. On a bare-metal first boot the system also prompts for timezone, then drops to graphical login; switch to a virtual console (`Ctrl`+`Alt`+`F3`) to finish setup. See [Post-Installation / First Boot](#post-installation--first-boot).
+> ⚠️ **First boot:** The root account is locked by default. Whichever path you take, inject a user **before** install (via `config.toml` in Path A, or your builder) — otherwise you'll boot to a graphical login you can't sign into. See [Post-Installation / First Boot](#post-installation--first-boot).
 
 ## Current Customizations In This Repo
 
@@ -226,7 +226,8 @@ sync
    your disk is larger.)*
 
 5. Reboot and boot from that disk.
-   - On first boot the system prompts for timezone, then reaches the graphical login.
+   - The image defaults to UTC, so first boot goes straight to the graphical
+     login (change the timezone afterward with `timedatectl set-timezone`).
    - Log in as the user you defined in `config.toml` — no locked-root or
      virtual-console bootstrapping needed.
 
