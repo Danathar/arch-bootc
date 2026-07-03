@@ -173,3 +173,48 @@ RUN if [ "${CHUNK_TAG}" = "1" ]; then \
     fi
 
 RUN bootc container lint
+
+
+# --- Desktop Layer (XFCE) ---
+FROM base-core AS xfce
+
+# Install XFCE and desktop packages from external file
+COPY packages-xfce.txt /tmp/packages-xfce.txt
+RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
+    pacman -Syu --noconfirm $(cat /tmp/packages-xfce.txt) && \
+    pacman -S --clean --noconfirm && \
+    rm /tmp/packages-xfce.txt
+
+# Avoid blocking graphical startup on the networkd wait-online unit; this
+# image uses NetworkManager for networking.
+RUN systemctl disable systemd-networkd-wait-online.service
+
+# Additional desktop services
+RUN sed -i 's/^hosts: .*/hosts: mymachines mdns_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] files myhostname dns/' /etc/nsswitch.conf && \
+    mkdir -p /etc/systemd/system/multi-user.target.wants && \
+    ln -sf /usr/lib/systemd/system/power-profiles-daemon.service /etc/systemd/system/multi-user.target.wants/power-profiles-daemon.service && \
+    ln -sf /usr/lib/systemd/system/bluetooth.service /etc/systemd/system/multi-user.target.wants/bluetooth.service && \
+    ln -sf /usr/lib/systemd/system/avahi-daemon.service /etc/systemd/system/multi-user.target.wants/avahi-daemon.service && \
+    ln -sf /usr/lib/systemd/system/cups.service /etc/systemd/system/multi-user.target.wants/cups.service
+
+# Enable graphical login for XFCE via LightDM
+RUN mkdir -p /etc/systemd/system/graphical.target.wants && \
+    ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target && \
+    ln -sf /usr/lib/systemd/system/lightdm.service /etc/systemd/system/graphical.target.wants/lightdm.service && \
+    ln -sf /usr/lib/systemd/system/lightdm.service /etc/systemd/system/display-manager.service
+
+# Pre-configure Flathub system-wide remote
+RUN mkdir -p /etc/flatpak/remotes.d && \
+    curl -fsSL --retry 3 -o /etc/flatpak/remotes.d/flathub.flatpakrepo https://flathub.org/repo/flathub.flatpakrepo
+
+# Tag files with their pacman package for chunkah per-package layering (see the
+# base target above). Gated on CHUNK_TAG=1 so local builds are unaffected.
+ARG CHUNK_TAG=0
+RUN if [ "${CHUNK_TAG}" = "1" ]; then \
+      pacman -Qq | while IFS= read -r pkg; do \
+        pacman -Qlq "$pkg" | sed '/\/$/d' | tr '\n' '\0' | \
+          xargs -0 -r setfattr -n user.component -v "pkg:$pkg" 2>/dev/null || true ; \
+      done ; \
+    fi
+
+RUN bootc container lint

@@ -23,18 +23,25 @@ Use this repo as your own bootc image source, build locally, boot it in a VM, cr
 
 ## Current Customizations In This Repo
 
-This repo already includes the following opinionated changes:
+This repo already includes the following opinionated changes. Two full
+desktop flavors are built — `kde` (KDE Plasma) and `xfce` (Xfce) — sharing
+everything below except where a flavor is called out.
 
 **Desktop & graphics**
-- KDE Plasma desktop + Plasma Login Manager enabled (graphical login by default)
-- Full KDE applications suite via `kde-applications-meta`
+- Graphical login by default: Plasma Login Manager (`kde`) or LightDM (`xfce`)
+- Full desktop application suite: `kde-applications-meta`/`plasma-meta`
+  (`kde`), or the `xfce4`/`xfce4-goodies` groups plus the GTK companions a
+  full desktop needs — NetworkManager applet, Blueman, a PolicyKit agent, and
+  a PipeWire/PulseAudio panel plugin (`xfce`)
 - Vulkan and Mesa drivers (`vulkan-radeon`, `vulkan-intel`, `vulkan-mesa-layers`, `libva-intel-driver`, `libva-mesa-driver`)
 - Essential fonts (`noto-fonts`, `noto-fonts-emoji`, `noto-fonts-cjk`)
-- KDE PIM/Akonadi dependencies included (`mariadb`, `packagekit-qt6`) and `systemd-networkd-wait-online.service` disabled to avoid Plasma startup delays
+- `gvfs`, `gvfs-mtp`, and `udisks2` for Thunar automount/trash/phone support, plus `system-config-printer` (`xfce`)
+- KDE PIM/Akonadi dependencies included (`mariadb`, `packagekit-qt6`) (`kde`)
+- `systemd-networkd-wait-online.service` disabled to avoid startup delays (both flavors use NetworkManager)
 
 **Media & applications**
 - GStreamer media codecs (`gst-plugins-*`, `gst-libav`)
-- `distrobox`, `flatpak`, `konsole`, and `firefox` installed
+- `distrobox`, `flatpak`, and `firefox` installed; `konsole` (`kde`) or `xfce4-terminal` (`xfce`) as the terminal
 - Flathub remote pre-configured system-wide
 - Homebrew integration via `ublue-os/brew` (pre-configured to extract on first boot for UID 1000)
 
@@ -43,7 +50,7 @@ This repo already includes the following opinionated changes:
 - Bluetooth support installed and enabled (`bluez`, `bluez-utils`)
 - Hardware utilities (`fwupd` for firmware, `smartmontools` for drive health)
 - Printing stack installed and enabled (`cups`, `cups-pdf`)
-- `power-profiles-daemon` installed and enabled (for KDE power management)
+- `power-profiles-daemon` installed and enabled
 - Expanded filesystem support (`ntfs-3g`)
 
 **Networking**
@@ -100,7 +107,8 @@ sudo podman run --rm -it --privileged --pid=host --pull=newer \
     --filesystem ext4 --wipe --bootloader systemd
 ```
 *(Note: Replace `danathar/arch-bootc-kde` with `<your-user>/arch-bootc-kde` if
-you are using your own fork's image).*
+you are using your own fork's image, or with `arch-bootc-xfce` for the Xfce
+flavor).*
 
 ### 2. Convert to QCOW2
 ```bash
@@ -136,12 +144,19 @@ git remote add upstream https://github.com/Danathar/arch-bootc.git
 ```
 
 ### 3. Build Locally
-By default, this repository builds two images: a `base` image (CLI only) and a `kde` image (Desktop).
-The published GHCR images follow the same naming: `arch-bootc-base` and `arch-bootc-kde`.
+By default, this repository builds three images: a `base` image (CLI only),
+a `kde` image (KDE Plasma desktop), and an `xfce` image (Xfce desktop).
+The published GHCR images follow the same naming: `arch-bootc-base`,
+`arch-bootc-kde`, and `arch-bootc-xfce`.
 
-**Build Desktop Image (Default):**
+**Build KDE Desktop Image (Default):**
 ```bash
 just build-containerfile
+```
+
+**Build Xfce Desktop Image:**
+```bash
+just build-xfce
 ```
 
 **Build Base Image (CLI only):**
@@ -165,6 +180,17 @@ mkdir -p output
 qemu-img convert -f raw -O qcow2 -S 4k bootable.img output/arch-bootc-100g.qcow2
 ```
 
+`generate-bootable-image` targets the KDE image (`arch-bootc:latest`) by
+default, matching `just build-containerfile`. If you built `base` or `xfce`
+instead, say so with `BUILD_FLAVOR` (it's just their `-base`/`-xfce` tag
+suffix — this is required, not optional, since otherwise it'll either fail
+to find an image or silently install a stale one from a different flavor
+you built earlier):
+
+```bash
+BUILD_FLAVOR=xfce just generate-bootable-image   # or BUILD_FLAVOR=base
+```
+
 Verify:
 ```bash
 qemu-img info output/arch-bootc-100g.qcow2
@@ -183,8 +209,8 @@ sudo lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL
    > disk and is **not mounted** before continuing.
 
 2. Install directly to the disk (example target `/dev/nvme0n1`; point at the
-   published GHCR image, or a local `localhost/arch-bootc:latest` after `just
-   build-containerfile`):
+   published GHCR image — swap `-kde` for `-xfce` for the Xfce flavor — or a
+   local `localhost/arch-bootc:latest` after `just build-containerfile`):
 ```bash
 sudo podman run --rm -it --privileged --pid=host --pull=newer \
   --security-opt label=type:unconfined_t \

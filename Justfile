@@ -3,9 +3,15 @@ image_tag := env("BUILD_IMAGE_TAG", "latest")
 base_dir := env("BUILD_BASE_DIR", ".")
 filesystem := env("BUILD_FILESYSTEM", "ext4")
 selinux := env("BUILD_SELINUX", "true")
+# Which locally-built image `bootc`/`generate-bootable-image` should target.
+# `kde` matches build-containerfile's default (unsuffixed) tag, kept as the
+# default so existing workflows are unaffected. `base`/`xfce` match
+# build-base/build-xfce's `-base`/`-xfce` suffixed tags.
+flavor := env("BUILD_FLAVOR", "kde")
 
 options := if selinux == "true" { "-v /var/lib/containers:/var/lib/containers:Z -v /etc/containers:/etc/containers:Z -v /sys/fs/selinux:/sys/fs/selinux --security-opt label=type:unconfined_t" } else { "-v /var/lib/containers:/var/lib/containers -v /etc/containers:/etc/containers" }
 container_runtime := env("CONTAINER_RUNTIME", `command -v podman >/dev/null 2>&1 && echo podman || echo docker`)
+image_ref := if flavor == "kde" { image_name + ":" + image_tag } else { image_name + "-" + flavor + ":" + image_tag }
 
 build-containerfile $image_name=image_name:
     sudo {{container_runtime}} build --security-opt label=disable --target kde -f Containerfile -t "${image_name}:{{image_tag}}" .
@@ -13,7 +19,18 @@ build-containerfile $image_name=image_name:
 build-base $image_name=image_name:
     sudo {{container_runtime}} build --security-opt label=disable --target base -f Containerfile -t "${image_name}-base:{{image_tag}}" .
 
+build-xfce $image_name=image_name:
+    sudo {{container_runtime}} build --security-opt label=disable --target xfce -f Containerfile -t "${image_name}-xfce:{{image_tag}}" .
+
 bootc *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! sudo {{container_runtime}} image exists "{{image_ref}}"; then
+        echo "error: image '{{image_ref}}' not found locally." >&2
+        echo "Build it first (just build-containerfile / build-base / build-xfce)," >&2
+        echo "or set BUILD_FLAVOR (kde/base/xfce) to match what you already built." >&2
+        exit 1
+    fi
     sudo {{container_runtime}} run \
         --rm --privileged --pid=host \
         -it \
@@ -21,7 +38,7 @@ bootc *ARGS:
         -v /dev:/dev \
         -e RUST_LOG=debug \
         -v "{{base_dir}}:/data" \
-        "{{image_name}}:{{image_tag}}" bootc {{ARGS}}
+        "{{image_ref}}" bootc {{ARGS}}
 
 generate-bootable-image $base_dir=base_dir $filesystem=filesystem:
     #!/usr/bin/env bash
