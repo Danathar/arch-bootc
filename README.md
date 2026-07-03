@@ -200,10 +200,12 @@ sudo podman run --rm -it --privileged --pid=host --pull=newer \
 3. Reboot and boot from that disk.
    - The image defaults to UTC, so first boot goes straight to the graphical
      login (change the timezone afterward with `timedatectl set-timezone`).
-   - The root account is locked and there's currently no automated way to
-     inject a user for a bare-metal install, so you'll need one-time console
-     access (physical, remote KVM/IPMI, or live media) to create your admin
-     account — see [Post-Installation / First Boot](#post-installation--first-boot).
+   - The root account's *password* is locked, so a normal console login
+     prompt (physical, remote KVM/IPMI, serial) won't let you in either —
+     there's currently no automated way to inject a user for a bare-metal
+     install. See [Bootstrapping the first admin user without a hypervisor
+     (bare metal)](#bootstrapping-the-first-admin-user-without-a-hypervisor-bare-metal)
+     in Post-Installation / First Boot.
 
 ### 6. Create VM (User Session Track)
 This is the track used here: `qemu:///session`, 8GB RAM, 10 vCPU, UEFI, Secure Boot disabled.
@@ -301,18 +303,19 @@ git push origin main
 
 ## Post-Installation / First Boot
 
-> **Important:** The root account is locked by default (no password login).
-> Get in via the [QEMU guest
+> **Important:** The root account is locked by default — its *password* is
+> disabled, so a normal login prompt (console, serial, KVM/IPMI) will reject
+> you too, not just SSH. Get in via the [QEMU guest
 > agent](#running-commands-in-the-vm-from-the-host-qemu-guest-agent) for a
-> local VM, or via console access (physical, remote KVM/IPMI, or live media)
+> local VM, or [bootstrap offline from a live medium](#bootstrapping-the-first-admin-user-without-a-hypervisor-bare-metal)
 > for a bare-metal install.
 
 The image ships `/etc/sudoers.d/10-wheel`, so any user in the `wheel` group
 gets password-prompted `sudo` — this is opt-in per user (only whoever you add
 to `wheel` gains anything), not a blanket grant.
 
-Once you're in as `root`, create your own admin account. Replace `<username>`
-and `<password>`:
+If you're already in as `root` (e.g. via the guest agent's `guest-exec`),
+create your own admin account. Replace `<username>` and `<password>`:
 
 ```bash
 # Ensure the user has UID 1000 to use the pre-configured Homebrew
@@ -321,6 +324,59 @@ echo '<username>:<password>' | chpasswd
 ```
 
 Log in as `<username>` from here on — `sudo` already works via `wheel`.
+
+### Bootstrapping the first admin user without a hypervisor (bare metal)
+
+There's no QEMU guest agent on physical hardware — that channel only exists
+between a QEMU/KVM host and its guest — and, as above, a console login prompt
+won't work either since root's password is locked. Create the user directly
+against the installed (but not booted) disk from a live Linux environment
+instead, using the image itself as the recovery toolkit (it already has
+`mount.composefs`, `useradd`, and `chpasswd` built in — the live environment
+just needs `podman`):
+
+1. Boot the target machine from a live USB/ISO, then identify and mount its
+   installed root partition (the third partition from the install steps
+   above; adjust the device/partition names for your disk):
+```bash
+sudo mkdir -p /mnt/target
+sudo mount /dev/nvme0n1p3 /mnt/target
+```
+
+2. Run the recovery commands inside a container from the same image, bind-mounting
+   the mounted partition in. This locates the (single, since it's a fresh
+   install) deployment, mounts its composefs image with the real file
+   content resolved, overlays the deployment's writable `etc`/`var` on top,
+   then creates the user in a chroot. Replace `<username>` and `<password>`:
+```bash
+sudo podman run --rm --privileged --pid=host \
+  -v /mnt/target:/target \
+  ghcr.io/danathar/arch-bootc-kde:latest \
+  sh -c '
+    set -eu
+    deploy=$(find /target/state/deploy -mindepth 1 -maxdepth 1 -type d)
+    hash=$(basename "$deploy")
+    mkdir -p /usr-image
+    mount.composefs -o basedir=/target/composefs/objects,ro \
+      "/target/composefs/images/$hash" /usr-image
+    mount --bind "$deploy/etc" /usr-image/etc
+    mount --bind "$deploy/var" /usr-image/var
+    chroot /usr-image useradd -m -u 1000 -G wheel -s /bin/bash <username>
+    echo "<username>:<password>" | chroot /usr-image chpasswd
+    umount /usr-image/etc /usr-image/var
+    umount /usr-image
+  '
+```
+
+3. Unmount and reboot into the installed system:
+```bash
+sudo umount /mnt/target
+sudo reboot
+```
+
+Log in as `<username>` at the graphical login — `sudo` already works via
+`wheel`. Verified end-to-end: a user created this way logs into a fully
+working KDE Plasma session.
 
 Homebrew is extracted by `brew-setup.service` on first boot to:
 
