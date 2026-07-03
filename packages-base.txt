@@ -31,3 +31,4 @@ firewalld
 networkmanager
 sudo
 vim
+attr

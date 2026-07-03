@@ -16,7 +16,7 @@ Use this repo as your own bootc image source, build locally, boot it in a VM, cr
 
 *Unlike a traditional Linux distribution where you install packages on a live system, you manage this system by editing the `Containerfile`, building a new container image, and instructing your host to boot from that image.*
 
-> ⚠️ **First boot:** The root account is locked by default. Whichever path you take, inject a user **before** install (via `config.toml` in Path A, or your builder) — otherwise you'll boot to a graphical login you can't sign into. On a bare-metal first boot the system also prompts for timezone, then drops to graphical login; switch to a virtual console (`Ctrl`+`Alt`+`F3`) to finish setup. See [Post-Installation / First Boot](#post-installation--first-boot).
+> ⚠️ **First boot:** The root account is locked by default. Whichever path you take, inject a user **before** install (via `config.toml` in Path A, or your builder) — otherwise you'll boot to a graphical login you can't sign into. See [Post-Installation / First Boot](#post-installation--first-boot).
 
 ## Current Customizations In This Repo
 
@@ -49,8 +49,8 @@ This repo already includes the following opinionated changes:
 - `firewalld` installed and enabled (for NetworkManager zone integration)
 
 **System, security & CLI**
-- Hardcoded root password is locked for security (configure via cloud-init or SSH keys)
-- `sudo` installed (`visudo` included)
+- Root account is locked (no password login); configure user accounts via cloud-init, `config.toml`, or SSH keys
+- `sudo` installed, with `wheel` group members granted password-prompted sudo via `/etc/sudoers.d/10-wheel`
 - CLI utilities (`wget`, `curl`, `rsync`, `xdg-user-dirs`, `openssh`)
 - Archiving tools (`unzip`, `unrar`, `p7zip`)
 - `vim` installed
@@ -91,6 +91,12 @@ key = "ssh-rsa AAAAB3Nza..." # Optional: add your SSH public key
 ```
 *(Note: To generate a hashed password, you can run `openssl passwd -6`)*
 
+> **Don't drop `groups = ["wheel"]`.** The image grants `sudo` only to
+> members of the `wheel` group (see [Post-Installation / First
+> Boot](#post-installation--first-boot)); it isn't automatic for every user
+> `config.toml` creates. Since root is locked, a user created here without
+> `wheel` has no way to gain admin privileges at all.
+
 ### 2. Build the disk image
 Build a `qcow2` image directly from GHCR, passing your configuration:
 
@@ -106,7 +112,7 @@ sudo podman run --rm -it --privileged --pull=newer \
   --rootfs ext4 \
   --chown "$(id -u):$(id -g)" \
   --config /config.toml \
-  ghcr.io/Danathar/arch-bootc-kde:latest
+  ghcr.io/danathar/arch-bootc-kde:latest
 ```
 *(Note: Replace `Danathar/arch-bootc-kde` with `<your-user>/arch-bootc-kde` if you are using your own fork's image).*
 
@@ -186,7 +192,7 @@ you at a graphical login you cannot sign into.
    in [Path A step 1](#1-create-a-user-config).
 
 2. Build a **raw** disk image. Point the builder at the published GHCR image (or
-   at a local `localhost/arch-bootc-kde:latest` after `just build-containerfile`):
+   at a local `localhost/arch-bootc:latest` after `just build-containerfile`):
 ```bash
 mkdir -p output
 sudo podman run --rm -it --privileged --pull=newer \
@@ -199,7 +205,7 @@ sudo podman run --rm -it --privileged --pull=newer \
   --rootfs ext4 \
   --chown "$(id -u):$(id -g)" \
   --config /config.toml \
-  ghcr.io/Danathar/arch-bootc-kde:latest
+  ghcr.io/danathar/arch-bootc-kde:latest
 ```
    The image is written to `output/image/disk.raw`.
 
@@ -220,7 +226,8 @@ sync
    your disk is larger.)*
 
 5. Reboot and boot from that disk.
-   - On first boot the system prompts for timezone, then reaches the graphical login.
+   - The image defaults to UTC, so first boot goes straight to the graphical
+     login (change the timezone afterward with `timedatectl set-timezone`).
    - Log in as the user you defined in `config.toml` — no locked-root or
      virtual-console bootstrapping needed.
 
@@ -308,15 +315,18 @@ git push origin main
 
 > **Important:** The root account is locked by default. You should configure user accounts via cloud-init, standard users in your builder tool, or inject an SSH key during image generation.
 
-If you somehow gained root access (e.g. via virtual console or live media), create your own admin account. Replace `<username>` and `<password>`:
+The image ships `/etc/sudoers.d/10-wheel`, so any user in the `wheel` group
+gets password-prompted `sudo` — this is opt-in per user (only whoever you add
+to `wheel` gains anything), not a blanket grant. This is the admin path for a
+user provisioned via `config.toml`'s `groups = ["wheel"]` (Path A/B step 1).
+
+If you somehow gained root access (e.g. via virtual console or live media),
+create your own admin account. Replace `<username>` and `<password>`:
 
 ```bash
 # Ensure the user has UID 1000 to use the pre-configured Homebrew
 useradd -m -u 1000 -G wheel -s /bin/bash <username>
 echo '<username>:<password>' | chpasswd
-mkdir -p /etc/sudoers.d
-echo '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/10-wheel
-chmod 0440 /etc/sudoers.d/10-wheel
 ```
 
 Homebrew is extracted by `brew-setup.service` on first boot to:
@@ -330,7 +340,8 @@ terminal sessions automatically get `brew` on `PATH`:
 
 - `/etc/profile.d/homebrew.sh` for POSIX shells and Bash
 - `/etc/fish/conf.d/homebrew.fish` for Fish
-- `/etc/zsh/zprofile.d/homebrew.zsh` for Zsh login shells
+- Zsh login shells are covered automatically: `/etc/zsh/zprofile` sources
+  `/etc/profile`, which runs `/etc/profile.d/homebrew.sh`
 
 If you need to use Homebrew in an already-open shell before logging out/in or
 opening a new terminal, run:
@@ -425,11 +436,8 @@ deployment. The command self-elevates with `sudo` when needed.
 ostree-pkg-diff
 ```
 
-To preview what it would compare without making changes, run:
-
-```bash
-ostree-pkg-diff --dry-run
-```
+The tool is read-only: it mounts both deployments read-only and never
+modifies anything on disk.
 
 ---
 
