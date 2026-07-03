@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        flavor: [base, kde]
+        flavor: [base, kde, xfce]
 
     permissions:
       contents: read

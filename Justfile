@@ -13,6 +13,9 @@ build-containerfile $image_name=image_name:
 build-base $image_name=image_name:
     sudo {{container_runtime}} build --security-opt label=disable --target base -f Containerfile -t "${image_name}-base:{{image_tag}}" .
 
+build-xfce $image_name=image_name:
+    sudo {{container_runtime}} build --security-opt label=disable --target xfce -f Containerfile -t "${image_name}-xfce:{{image_tag}}" .
+
 bootc *ARGS:
     sudo {{container_runtime}} run \
         --rm --privileged --pid=host \
