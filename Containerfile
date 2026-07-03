@@ -48,6 +48,15 @@ COPY system_files/ /
 # Lock the root account
 RUN passwd -l root
 
+# Grant sudo to whoever config.toml (or the builder tool) places in the wheel
+# group — this is opt-in per user, not a blanket grant, since only the user(s)
+# explicitly added to wheel gain anything. Root is locked (see above), so this
+# is the only path to admin privileges for a freshly provisioned system.
+RUN mkdir -p /etc/sudoers.d && \
+    echo '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/10-wheel && \
+    chmod 0440 /etc/sudoers.d/10-wheel && \
+    visudo -cf /etc/sudoers.d/10-wheel
+
 # Network and basic services configuration
 RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
     ln -sf /usr/lib/systemd/system/NetworkManager.service /etc/systemd/system/multi-user.target.wants/NetworkManager.service && \

@@ -49,8 +49,8 @@ This repo already includes the following opinionated changes:
 - `firewalld` installed and enabled (for NetworkManager zone integration)
 
 **System, security & CLI**
-- Hardcoded root password is locked for security (configure via cloud-init or SSH keys)
-- `sudo` installed (`visudo` included)
+- Root account is locked (no password login); configure user accounts via cloud-init, `config.toml`, or SSH keys
+- `sudo` installed, with `wheel` group members granted password-prompted sudo via `/etc/sudoers.d/10-wheel`
 - CLI utilities (`wget`, `curl`, `rsync`, `xdg-user-dirs`, `openssh`)
 - Archiving tools (`unzip`, `unrar`, `p7zip`)
 - `vim` installed
@@ -90,6 +90,12 @@ groups = ["wheel"]
 key = "ssh-rsa AAAAB3Nza..." # Optional: add your SSH public key
 ```
 *(Note: To generate a hashed password, you can run `openssl passwd -6`)*
+
+> **Don't drop `groups = ["wheel"]`.** The image grants `sudo` only to
+> members of the `wheel` group (see [Post-Installation / First
+> Boot](#post-installation--first-boot)); it isn't automatic for every user
+> `config.toml` creates. Since root is locked, a user created here without
+> `wheel` has no way to gain admin privileges at all.
 
 ### 2. Build the disk image
 Build a `qcow2` image directly from GHCR, passing your configuration:
@@ -308,15 +314,18 @@ git push origin main
 
 > **Important:** The root account is locked by default. You should configure user accounts via cloud-init, standard users in your builder tool, or inject an SSH key during image generation.
 
-If you somehow gained root access (e.g. via virtual console or live media), create your own admin account. Replace `<username>` and `<password>`:
+The image ships `/etc/sudoers.d/10-wheel`, so any user in the `wheel` group
+gets password-prompted `sudo` — this is opt-in per user (only whoever you add
+to `wheel` gains anything), not a blanket grant. This is the admin path for a
+user provisioned via `config.toml`'s `groups = ["wheel"]` (Path A/B step 1).
+
+If you somehow gained root access (e.g. via virtual console or live media),
+create your own admin account. Replace `<username>` and `<password>`:
 
 ```bash
 # Ensure the user has UID 1000 to use the pre-configured Homebrew
 useradd -m -u 1000 -G wheel -s /bin/bash <username>
 echo '<username>:<password>' | chpasswd
-mkdir -p /etc/sudoers.d
-echo '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/10-wheel
-chmod 0440 /etc/sudoers.d/10-wheel
 ```
 
 Homebrew is extracted by `brew-setup.service` on first boot to:
