@@ -1,4 +1,4 @@
-FROM docker.io/archlinux/archlinux:latest AS base-core
+FROM docker.io/archlinux/archlinux:latest@sha256:182b2bddc6fd595d4c03065db48112539586071d4e8f46398fa4ea459014c2fe AS base-core
 
 # Move everything from `/var` to `/usr/lib/sysimage` so behavior around pacman remains the same on `bootc usroverlay`'d systems
 RUN grep "= */var" /etc/pacman.conf | sed "/= *\/var/s/.*=// ; s/ //" | xargs -n1 sh -c 'mkdir -p "/usr/lib/sysimage/$(dirname $(echo $1 | sed "s@/var/@@"))" && mv -v "$1" "/usr/lib/sysimage/$(echo "$1" | sed "s@/var/@@")"' '' && \
@@ -114,7 +114,7 @@ LABEL containers.bootc 1
 RUN bootc container lint
 
 # Copy ublue-os/brew and enable its systemd services
-COPY --from=ghcr.io/ublue-os/brew:latest /system_files /
+COPY --from=ghcr.io/ublue-os/brew:latest@sha256:9449d3ce4bec06b815dcf33bc5547cc76204317a59df01c511c63063679ec90a /system_files /
 RUN systemctl preset brew-setup.service brew-update.timer brew-upgrade.timer
 
 
