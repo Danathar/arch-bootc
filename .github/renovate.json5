@@ -5,6 +5,12 @@
     "customManagers:dockerfileVersions",
   ],
 
+  // This repo is a GitHub fork (of bootcrew/arch-bootc). Renovate's hosted
+  // service defaults forkProcessing to disabled for forks as a safety
+  // default, and otherwise refuses to process the repo at all — this is the
+  // documented self-opt-in override.
+  "forkProcessing": true,
+
   "rebaseWhen": "never",
 
   "customManagers": [
