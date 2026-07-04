@@ -2,14 +2,10 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:best-practices",
-    "customManagers:dockerfileVersions",
+    "customManagers:dockerfileVersions"
   ],
 
-  // This repo is a GitHub fork (of bootcrew/arch-bootc). Renovate's hosted
-  // service defaults forkProcessing to disabled for forks as a safety
-  // default, and otherwise refuses to process the repo at all — this is the
-  // documented self-opt-in override.
-  "forkProcessing": true,
+  "forkProcessing": "enabled",
 
   "rebaseWhen": "never",
 
@@ -19,12 +15,12 @@
       "description": "Track stable Chunkah container releases",
       "fileMatch": ["^\\.github/workflows/.*\\.ya?ml$"],
       "matchStrings": [
-        "CHUNKAH_IMAGE:\\s+\"?quay\\.io/coreos/chunkah:(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"?",
+        "CHUNKAH_IMAGE:\\s+\"?quay\\.io/coreos/chunkah:(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"?"
       ],
       "depNameTemplate": "quay.io/coreos/chunkah",
       "datasourceTemplate": "docker",
-      "versioningTemplate": "semver-coerced",
-    },
+      "versioningTemplate": "semver-coerced"
+    }
   ],
 
   "packageRules": [
@@ -36,7 +32,7 @@
       "enabled": false,
       "matchUpdateTypes": ["digest", "pinDigest", "pin"],
       "matchDepTypes": ["container"],
-      "matchFileNames": [".github/workflows/**.yaml", ".github/workflows/**.yml"],
-    },
+      "matchFileNames": [".github/workflows/**.yaml", ".github/workflows/**.yml"]
+    }
   ]
 }
