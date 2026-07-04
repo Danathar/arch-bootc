@@ -59,8 +59,9 @@ everything below except where a flavor is called out.
 - `firewalld` installed and enabled (for NetworkManager zone integration)
 
 **System, security & CLI**
-- Root account is locked (no password login); bootstrap your first admin user via the QEMU guest agent or console access, then `wheel` gives it sudo
+- Root account is locked (no password login); bootstrap your first admin user via the QEMU guest agent (VM) or `cloud-init` (bare metal), then `wheel` gives it sudo
 - `sudo` installed, with `wheel` group members granted password-prompted sudo via `/etc/sudoers.d/10-wheel`
+- `cloud-init` installed and enabled, pinned to the NoCloud datasource, for seeding an admin user on bare-metal installs without a chroot
 - CLI utilities (`wget`, `curl`, `rsync`, `xdg-user-dirs`, `openssh`)
 - Archiving tools (`unzip`, `unrar`, `p7zip`)
 - `vim` installed
@@ -228,8 +229,9 @@ sudo podman run --rm -it --privileged --pid=host --pull=newer \
      login (change the timezone afterward with `timedatectl set-timezone`).
    - The root account's *password* is locked, so a normal console login
      prompt (physical, remote KVM/IPMI, serial) won't let you in either —
-     there's currently no automated way to inject a user for a bare-metal
-     install. See [Bootstrapping the first admin user without a hypervisor
+     you'll need to seed a `cloud-init` config (or fall back to editing the
+     disk directly) before rebooting. See [Bootstrapping the first admin user
+     without a hypervisor
      (bare metal)](#bootstrapping-the-first-admin-user-without-a-hypervisor-bare-metal)
      in Post-Installation / First Boot.
 
@@ -355,25 +357,63 @@ Log in as `<username>` from here on — `sudo` already works via `wheel`.
 
 There's no QEMU guest agent on physical hardware — that channel only exists
 between a QEMU/KVM host and its guest — and, as above, a console login prompt
-won't work either since root's password is locked. Create the user directly
-against the installed (but not booted) disk from a live Linux environment
-instead, using the image itself as the recovery toolkit (it already has
-`mount.composefs`, `useradd`, and `chpasswd` built in — the live environment
-just needs `podman`):
+won't work either since root's password is locked.
+
+#### The easy way: seed a cloud-init config
+
+The image ships `cloud-init` pinned to the NoCloud datasource specifically for
+this. `/var` is a normal writable directory on the disk (not part of the
+immutable image), so seeding it is a plain file write — no chroot, no
+composefs tooling:
 
 1. Boot the target machine from a live USB/ISO, then identify and mount its
    installed root partition (the third partition from the install steps
-   above; adjust the device/partition names for your disk):
+   above; adjust the device/partition names for your disk), and locate the
+   (single, since it's a fresh install) deployment:
 ```bash
 sudo mkdir -p /mnt/target
 sudo mount /dev/nvme0n1p3 /mnt/target
+DEPLOY=$(sudo find /mnt/target/state/deploy -mindepth 1 -maxdepth 1 -type d)
 ```
 
-2. Run the recovery commands inside a container from the same image, bind-mounting
-   the mounted partition in. This locates the (single, since it's a fresh
-   install) deployment, mounts its composefs image with the real file
-   content resolved, overlays the deployment's writable `etc`/`var` on top,
-   then creates the user in a chroot. Replace `<username>` and `<password>`:
+2. Write the seed files. Replace `<username>` and the password hash (generate
+   one with `openssl passwd -6`):
+```bash
+sudo mkdir -p "$DEPLOY/var/lib/cloud/seed/nocloud"
+sudo tee "$DEPLOY/var/lib/cloud/seed/nocloud/meta-data" > /dev/null <<'EOF'
+instance-id: iid-local01
+EOF
+sudo tee "$DEPLOY/var/lib/cloud/seed/nocloud/user-data" > /dev/null <<'EOF'
+#cloud-config
+users:
+  - name: <username>
+    uid: 1000
+    groups: [wheel]
+    shell: /bin/bash
+    lock_passwd: false
+    passwd: '<hashed-password>'
+EOF
+```
+
+3. Unmount and reboot:
+```bash
+sudo umount /mnt/target
+sudo reboot
+```
+
+`cloud-init` creates the user automatically during first boot. Log in as
+`<username>` at the graphical login — `sudo` already works via `wheel`.
+Verified end-to-end, including that the created user logs into a fully
+working KDE Plasma session.
+
+#### Manual fallback: editing the offline disk directly
+
+If you'd rather not use `cloud-init` (or need to troubleshoot it), create the
+user directly against the installed (but not booted) disk instead, using the
+image itself as the recovery toolkit (it already has `mount.composefs`,
+`useradd`, and `chpasswd` built in — the live environment just needs
+`podman`). Mount the disk as in step 1 above, then:
+
 ```bash
 sudo podman run --rm --privileged --pid=host \
   -v /mnt/target:/target \
@@ -394,15 +434,9 @@ sudo podman run --rm --privileged --pid=host \
   '
 ```
 
-3. Unmount and reboot into the installed system:
-```bash
-sudo umount /mnt/target
-sudo reboot
-```
-
-Log in as `<username>` at the graphical login — `sudo` already works via
-`wheel`. Verified end-to-end: a user created this way logs into a fully
-working KDE Plasma session.
+Unmount and reboot as in the cloud-init flow above. Log in as `<username>` at
+the graphical login — `sudo` already works via `wheel`. Verified end-to-end: a
+user created this way logs into a fully working KDE Plasma session.
 
 Homebrew is extracted by `brew-setup.service` on first boot to:
 
