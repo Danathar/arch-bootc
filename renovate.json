@@ -22,6 +22,19 @@
       "depNameTemplate": "quay.io/coreos/chunkah",
       "datasourceTemplate": "docker",
       "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the cosign CLI version pinned for signing, independent of the cosign-installer action version",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.*\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "cosign-release:\\s*\"?(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"?"
+      ],
+      "depNameTemplate": "sigstore/cosign",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver-coerced"
     }
   ],
 
