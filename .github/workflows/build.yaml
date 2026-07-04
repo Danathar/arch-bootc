@@ -157,7 +157,7 @@ jobs:
             --mount=type=bind,src="${CHUNKAH_WORK_DIR}",dst=/out \
             -e CHUNKAH_CONFIG_STR \
             "${CHUNKAH_IMAGE}" \
-            build --max-layers 96 --compressed \
+            build -v --max-layers 96 --compressed \
               --output oci:/out/oci \
               -t "${IMAGE_NAME}:chunked"
           echo "::endgroup::"
