@@ -64,13 +64,22 @@ RUN mkdir -p /etc/sudoers.d && \
     chmod 0440 /etc/sudoers.d/10-wheel && \
     visudo -cf /etc/sudoers.d/10-wheel
 
-# Network and basic services configuration
+# Network and basic services configuration. Mask (not just disable)
+# systemd-networkd-wait-online.service: this image uses NetworkManager, not
+# systemd-networkd, so that unit can never succeed. It has no enablement
+# symlink of its own — network-online.target pulls it in via a static
+# dependency — so a plain `systemctl disable` is a no-op; masking is what
+# actually stops it from being started at all. Left unmasked, it burns its
+# full 2-minute timeout blocking network-online.target on every boot,
+# delaying anything ordered after it (graphical login, cloud-init's network
+# stage, etc.).
 RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
     ln -sf /usr/lib/systemd/system/NetworkManager.service /etc/systemd/system/multi-user.target.wants/NetworkManager.service && \
     ln -sf /usr/lib/systemd/system/firewalld.service /etc/systemd/system/multi-user.target.wants/firewalld.service && \
     ln -sf /usr/lib/systemd/system/sshd.service /etc/systemd/system/multi-user.target.wants/sshd.service && \
     mkdir -p /etc/systemd/system/timers.target.wants && \
-    ln -sf /usr/lib/systemd/system/arch-bootc-prune-esp.timer /etc/systemd/system/timers.target.wants/arch-bootc-prune-esp.timer
+    ln -sf /usr/lib/systemd/system/arch-bootc-prune-esp.timer /etc/systemd/system/timers.target.wants/arch-bootc-prune-esp.timer && \
+    systemctl mask systemd-networkd-wait-online.service
 
 # qemu-guest-agent is installed via packages-base.txt. It is intentionally NOT
 # symlinked into multi-user.target.wants: the package ships a udev rule
@@ -78,6 +87,26 @@ RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
 # org.qemu.guest_agent.0 virtio channel is present. The unit has an empty
 # [Install] section and Restart=always, so force-enabling it would restart-loop
 # on bare-metal hosts that have no agent channel.
+
+# cloud-init: an easier way to bootstrap the first admin user than manually
+# editing an offline disk (see README). Pin the datasource to NoCloud so it
+# looks only at a local seed directory instead of spending boot time probing
+# for a cloud provider's metadata service that doesn't exist here.
+# cloud-init.target itself ships no [Install] section, so it must be linked
+# into multi-user.target.wants directly; the five services below declare
+# `WantedBy=cloud-init.target` in their own [Install] sections. This Arch
+# build runs cloud-init as a single `cloud-init-main.service` daemon
+# (`cloud-init --all-stages`); the four stage services are thin clients that
+# trigger it over local Unix sockets, so the daemon must be enabled too or
+# each stage silently no-ops (socket connection refused).
+RUN printf 'datasource_list: [ NoCloud ]\ngrowpart:\n  mode: "off"\nresize_rootfs: false\n' > /etc/cloud/cloud.cfg.d/99-nocloud.cfg && \
+    mkdir -p /etc/systemd/system/cloud-init.target.wants && \
+    ln -sf /usr/lib/systemd/system/cloud-init-main.service /etc/systemd/system/cloud-init.target.wants/cloud-init-main.service && \
+    ln -sf /usr/lib/systemd/system/cloud-init-local.service /etc/systemd/system/cloud-init.target.wants/cloud-init-local.service && \
+    ln -sf /usr/lib/systemd/system/cloud-init-network.service /etc/systemd/system/cloud-init.target.wants/cloud-init-network.service && \
+    ln -sf /usr/lib/systemd/system/cloud-config.service /etc/systemd/system/cloud-init.target.wants/cloud-config.service && \
+    ln -sf /usr/lib/systemd/system/cloud-final.service /etc/systemd/system/cloud-init.target.wants/cloud-final.service && \
+    ln -sf /usr/lib/systemd/system/cloud-init.target /etc/systemd/system/multi-user.target.wants/cloud-init.target
 
 # https://bootc-dev.github.io/bootc/bootc-images.html#standard-metadata-for-bootc-compatible-images
 LABEL containers.bootc 1
@@ -117,10 +146,8 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
     rm /tmp/packages-kde.txt
 
 # mariadb (KDE PIM/Akonadi) and packagekit-qt6 are installed via
-# packages-kde.txt. Avoid blocking Plasma startup on the networkd
-# wait-online unit; this image uses NetworkManager for networking
-# (already enabled in base-core).
-RUN systemctl disable systemd-networkd-wait-online.service
+# packages-kde.txt. (systemd-networkd-wait-online.service is already
+# disabled in base-core.)
 
 # Additional desktop services
 RUN sed -i 's/^hosts: .*/hosts: mymachines mdns_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] files myhostname dns/' /etc/nsswitch.conf && \
@@ -185,9 +212,7 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
     pacman -S --clean --noconfirm && \
     rm /tmp/packages-xfce.txt
 
-# Avoid blocking graphical startup on the networkd wait-online unit; this
-# image uses NetworkManager for networking.
-RUN systemctl disable systemd-networkd-wait-online.service
+# (systemd-networkd-wait-online.service is already disabled in base-core.)
 
 # Additional desktop services
 RUN sed -i 's/^hosts: .*/hosts: mymachines mdns_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] files myhostname dns/' /etc/nsswitch.conf && \
