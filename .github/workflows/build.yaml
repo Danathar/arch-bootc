@@ -228,10 +228,9 @@ jobs:
         with:
           # Pinned (and tracked separately by Renovate below) so the
           # installer action's own version can be updated independently of
-          # the cosign CLI version. cosign v3 defaults to a new signature
-          # bundle format (OCI 1.1 referrers) that older cosign clients
-          # can't find/verify, so bumping this to a v3+ release needs a
-          # deliberate look at compatibility, not just a routine merge.
+          # the cosign CLI version. On v3+, the sign step below passes
+          # --new-bundle-format=false --use-signing-config=false to keep
+          # producing signatures older cosign clients can still verify.
           cosign-release: v3.1.1
 
       - name: Sign container image
@@ -239,6 +238,13 @@ jobs:
         run: |
           set -euo pipefail
           IMAGE_FULL="${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}"
-          cosign sign -y --key env://COSIGN_PRIVATE_KEY "${IMAGE_FULL}@${{ steps.push.outputs.digest }}"
+          # --new-bundle-format=false --use-signing-config=false keep the
+          # signature in cosign v2's storage/format so older cosign clients
+          # can still find and verify it (cosign v3 defaults to a new
+          # bundle format stored as an OCI 1.1 referrer, which pre-v3
+          # clients can't see).
+          cosign sign -y --key env://COSIGN_PRIVATE_KEY \
+            --new-bundle-format=false --use-signing-config=false \
+            "${IMAGE_FULL}@${{ steps.push.outputs.digest }}"
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
