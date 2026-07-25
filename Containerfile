@@ -21,7 +21,7 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
 
 # https://github.com/bootc-dev/bootc/issues/1801
 # renovate: datasource=github-releases depName=bootc-dev/bootc
-ARG BOOTC_VERSION=v1.16.4
+ARG BOOTC_VERSION=v1.16.5
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     pacman -S --noconfirm rust go-md2man && \
     git clone --branch "${BOOTC_VERSION}" --depth 1 "https://github.com/bootc-dev/bootc.git" /tmp/bootc && \
