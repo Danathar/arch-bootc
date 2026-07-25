@@ -39,8 +39,11 @@ directly above it:
 
 ```dockerfile
 # renovate: datasource=github-releases depName=bootc-dev/bootc
-ARG BOOTC_VERSION=v1.16.4
+ARG BOOTC_VERSION=vX.Y.Z
 ```
+
+(Renovate rewrites the version in place, so the real file always shows whatever is current —
+check `Containerfile` rather than this doc for the pinned value.)
 
 If that comment is ever removed or reworded, bootc silently freezes at whatever version it is
 on. Nothing will fail; updates just stop arriving.
@@ -97,6 +100,14 @@ not:
 - ✅ The image **compiles** for all three flavors.
 - ❌ It is **not boot-tested**. A change that builds cleanly but breaks first boot or
   `bootc upgrade` will merge.
+- ❌ **Three tracked dependencies are never exercised by it at all.** The rechunk, push and
+  sign steps are gated to non-PR events, so `quay.io/coreos/chunkah`,
+  `sigstore/cosign-installer` and the `cosign-release` CLI version are not run on a PR. An
+  update to any of those gets a green build that never touched it, automerges, and is first
+  exercised on `main` — where a failure means no image is published or signed that run.
+
+That last point is the weakest link in the automerge gate. If a publish step starts failing on
+`main` shortly after an automerged update, check those three first.
 
 That trade is accepted deliberately: this is an experimental image, not production. A bad
 update surfaces either as a red build on `main` (GitHub notifies) or on the next
