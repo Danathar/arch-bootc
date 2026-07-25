@@ -231,7 +231,7 @@ jobs:
           # the cosign CLI version. On v3+, the sign step below passes
           # --new-bundle-format=false --use-signing-config=false to keep
           # producing signatures older cosign clients can still verify.
-          cosign-release: v3.1.1
+          cosign-release: v3.1.2
 
       - name: Sign container image
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
