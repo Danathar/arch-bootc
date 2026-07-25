@@ -118,6 +118,27 @@ RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
     ln -sf /usr/lib/systemd/system/arch-bootc-prune-esp.timer /etc/systemd/system/timers.target.wants/arch-bootc-prune-esp.timer && \
     systemctl mask systemd-networkd-wait-online.service
 
+# Arch's `filesystem` package ships /etc/resolv.conf as an empty, 0700
+# root-only placeholder. NetworkManager's own default is rc-manager=symlink
+# (replace it with a symlink to its own correctly-permissioned stub), but
+# that only kicks in for a missing or already-symlinked path -- finding a
+# real pre-existing file there instead, it writes its DNS config directly
+# into it, inheriting the 0700 bits rather than fixing them. systemd-resolved
+# runs as the unprivileged systemd-resolve user and can never open a file
+# with no group/other read bit, so it logs "Permission denied" continuously,
+# every boot, for as long as the system runs.
+#
+# This cannot be fixed at build time. /etc/resolv.conf is a genuine bind
+# mount for the duration of every RUN step (buildah's build-time DNS
+# handling) -- `chmod` on it silently doesn't survive into the committed
+# layer (verified: the file was stripped from the image entirely), and `mv`
+# onto it fails outright with "Device or resource busy", confirming it's an
+# active mountpoint, not just a managed regular file. Fix it at boot instead
+# with a tmpfiles.d rule: `z` enforces mode/owner on an existing path without
+# recursing, runs via systemd-tmpfiles-setup well before NetworkManager
+# starts, and self-heals on every boot regardless of what created the file.
+RUN printf 'z /etc/resolv.conf 0644 root root -\n' > /usr/lib/tmpfiles.d/bootc-resolv-conf-perms.conf
+
 # qemu-guest-agent is installed via packages-base.txt. It is intentionally NOT
 # symlinked into multi-user.target.wants: the package ships a udev rule
 # (99-qemu-guest-agent.rules) that starts the service only when the
