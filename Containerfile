@@ -60,12 +60,23 @@ COPY system_files/ /
 # QEMU guest agent (VMs only) or hand-editing a cloud-init seed onto the offline
 # disk. Neither is something you can do at a keyboard in front of the machine.
 #
-# `changeme` is safe here specifically because every remote and graphical path
-# to root is already closed, leaving only physical console access — the same
-# bar as editing the disk directly:
+# `changeme` is safe here specifically because every remote, graphical, and
+# local-escalation path to root is closed, leaving only physical console
+# access — the same bar as editing the disk directly:
 #   - SSH:      PermitRootLogin prohibit-password, pinned below so this does
 #               not silently depend on an upstream OpenSSH default.
 #   - Graphical: plasmalogin (KDE) and lightdm (XFCE) both refuse root.
+#   - su:       Arch ships /etc/pam.d/su with its pam_wheel.so line commented
+#               out, so by default ANY local account — wheel or not — can
+#               `su` to root with a bare password check, no console or group
+#               membership required. That silently defeated the console-only
+#               argument above: a non-wheel local account or a compromised
+#               service could become root without ever touching a console.
+#               Uncommenting Arch's own `pam_wheel.so use_uid` line restricts
+#               `su` to wheel members. This doesn't weaken the intended path —
+#               a wheel user already has full root via sudo, so gaining
+#               nothing extra from `su` is fine — it only removes the path
+#               for accounts that were never supposed to reach root at all.
 #   - Console:   works — and this is the point.
 #
 # `passwd --expire` forces a change on that first login, so the well-known
@@ -77,7 +88,8 @@ COPY system_files/ /
 RUN echo 'root:changeme' | chpasswd && \
     passwd --expire root && \
     mkdir -p /etc/ssh/sshd_config.d && \
-    printf 'PermitRootLogin prohibit-password\n' > /etc/ssh/sshd_config.d/10-no-root-password.conf
+    printf 'PermitRootLogin prohibit-password\n' > /etc/ssh/sshd_config.d/10-no-root-password.conf && \
+    sed -i 's/^#auth\s\+required\s\+pam_wheel\.so use_uid/auth            required        pam_wheel.so use_uid/' /etc/pam.d/su
 
 # Grant sudo to whoever is placed in the wheel group — whether by the console
 # bootstrap above, cloud-init, or the QEMU guest agent. This is opt-in per user,
