@@ -143,8 +143,10 @@ Useful sections:
 
 - **Open** — PRs already raised. Ticking one forces a rebase/retry.
 - **Other Branches** — update branches that exist but have no PR yet. Ticking one forces the
-  PR to be created. With `"prHourlyLimit": 0` set, updates should flow straight to PRs and
-  this section should normally be empty.
+  PR to be created. This section should normally be empty: `"prHourlyLimit": 0` stops branches
+  being created faster than their PRs. If entries start accumulating here again, suspect
+  `rebaseWhen` (see Gotchas) before anything else — a branch stranded without a PR is that
+  bug's first symptom.
 - **Detected Dependencies** — the full inventory Renovate sees, with available updates. The
   quickest way to confirm a new pin is actually being tracked.
 - **Bottom checkbox** — requests a fresh Renovate run. This is the manual trigger.
@@ -193,8 +195,18 @@ gh repo set-default Danathar/arch-bootc
 PR numbers in commit messages inherited from upstream refer to *upstream's* numbering, not
 this fork's.
 
-**`rebaseWhen: "never"`.** Renovate will not auto-rebase stale PRs. If one falls behind `main`
-and conflicts, tick its checkbox on the dashboard to force a rebase.
+**`rebaseWhen` must not be `"never"`.** It is set to `"conflicted"`, which rebases a PR only
+when it actually conflicts — keeping rebuild churn low, since each rebase costs a ~20 minute
+three-flavor build.
+
+Do not change it back to `"never"`. That value makes Renovate's branch worker return early
+with `result: "no-work"` for *any* branch that already exists, before it reaches the automerge
+step — so automerge silently stops working, and update branches that exist without a PR never
+get one. The only thing that reaches past it is a Dependency Dashboard checkbox, which is an
+explicit bypass in that code path. This repo hit exactly that on 2026-07-25: three green,
+mergeable PRs sat unmerged across two Renovate runs with no error anywhere, and the logs showed
+`rebaseWhen=never so skipping branch update check` followed by `"result": "no-work"` while the
+same summary reported `"automerge": true`.
 
 **Branches are not deleted on merge** (`delete_branch_on_merge` is off), so merged
 `renovate/*` branches accumulate. Harmless, but they build up.

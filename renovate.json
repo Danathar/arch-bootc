@@ -7,7 +7,7 @@
 
   "forkProcessing": "enabled",
 
-  "rebaseWhen": "never",
+  "rebaseWhen": "conflicted",
 
   "prHourlyLimit": 0,
 
