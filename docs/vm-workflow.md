@@ -27,6 +27,15 @@ virt-install \
 ```
 *(Notes: `secure-boot=off` avoids UEFI boot issues with unsigned custom images. For system libvirt (`qemu:///system`), use `--network network=default,model=virtio` instead.)*
 
+> **Known limitation (KDE):** plain `--video virtio` gives the guest no GPU
+> acceleration, so `kwin_wayland` logs DRM/Vulkan initialization failures and
+> falls back to software rendering. It still starts and reaches a working
+> login (verified), just without hardware-accelerated graphics. Adding
+> `model.acceleration.accel3d=yes` to `--video` enables virgl (OpenGL) and
+> silences the DRM-node failure, but Vulkan specifically still fails --
+> that needs `venus`-capable passthrough (e.g. the `virtio-gpu-rutabaga`
+> device), which is untested here and meaningfully more involved to set up.
+
 To recreate VM (Delete + Recreate):
 ```bash
 virsh -c qemu:///session destroy arch-bootc-local || true
