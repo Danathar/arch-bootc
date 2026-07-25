@@ -11,6 +11,8 @@
 
   "prHourlyLimit": 0,
 
+  "platformAutomerge": false,
+
   "customManagers": [
     {
       "customType": "regex",
