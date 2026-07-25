@@ -16,9 +16,11 @@ Use this repo as your own bootc image source, build locally, boot it in a VM, cr
 
 *Unlike a traditional Linux distribution where you install packages on a live system, you manage this system by editing the `Containerfile`, building a new container image, and instructing your host to boot from that image.*
 
-> ⚠️ **First boot:** The root account is locked by default and boots straight
-> to a graphical login you can't sign into. Bootstrap your first admin user
-> via the QEMU guest agent (local VM) or console access (bare metal) — see
+> ⚠️ **First boot:** The desktop flavors boot straight to a graphical login,
+> which root cannot use. Switch to a text console (e.g. Ctrl+Alt+F2) and log
+> in as `root` / `changeme` — you'll be forced to set a new password
+> immediately. From there, create your own admin user and give it `sudo` via
+> the `wheel` group — see
 > [Post-Installation / First Boot](#post-installation--first-boot).
 
 ## Current Customizations In This Repo
@@ -59,9 +61,12 @@ everything below except where a flavor is called out.
 - `firewalld` installed and enabled (for NetworkManager zone integration)
 
 **System, security & CLI**
-- Root account is locked (no password login); bootstrap your first admin user via the QEMU guest agent (VM) or `cloud-init` (bare metal), then `wheel` gives it sudo
+- Root has a default password (`changeme`), expired so it must be changed on
+  first use, and reachable **only from a physical console** — SSH
+  (`PermitRootLogin prohibit-password`) and both display managers refuse it.
+  See [Post-Installation / First Boot](#post-installation--first-boot).
 - `sudo` installed, with `wheel` group members granted password-prompted sudo via `/etc/sudoers.d/10-wheel`
-- `cloud-init` installed and enabled, pinned to the NoCloud datasource, for seeding an admin user on bare-metal installs without a chroot
+- `cloud-init` installed and enabled, pinned to the NoCloud datasource, for seeding an admin user automatically on bare-metal installs without console access
 - CLI utilities (`wget`, `curl`, `rsync`, `xdg-user-dirs`, `openssh`)
 - Archiving tools (`unzip`, `unrar`, `p7zip`)
 - `vim` installed
@@ -90,11 +95,12 @@ sudo podman login ghcr.io
 ```
 
 ### 1. Create the disk image
-Because the root account is locked by default, first boot needs the [QEMU
-guest agent](#running-commands-in-the-vm-from-the-host-qemu-guest-agent) to
-bootstrap your first admin user — no `config.toml`, no external image builder.
-Install the published image directly to a raw disk file with `bootc install
-to-disk`:
+No `config.toml`, no external image builder needed — install the published
+image directly to a raw disk file with `bootc install to-disk`. First boot
+puts you at a graphical login; bootstrap your first admin user via the
+console (`root` / `changeme`, see [Post-Installation / First
+Boot](#post-installation--first-boot)) or the [QEMU guest
+agent](#running-commands-in-the-vm-from-the-host-qemu-guest-agent):
 
 ```bash
 mkdir -p output
@@ -227,13 +233,14 @@ sudo podman run --rm -it --privileged --pid=host --pull=newer \
 3. Reboot and boot from that disk.
    - The image defaults to UTC, so first boot goes straight to the graphical
      login (change the timezone afterward with `timedatectl set-timezone`).
-   - The root account's *password* is locked, so a normal console login
-     prompt (physical, remote KVM/IPMI, serial) won't let you in either —
-     you'll need to seed a `cloud-init` config (or fall back to editing the
-     disk directly) before rebooting. See [Bootstrapping the first admin user
+   - Root cannot use the graphical login, but a normal console login prompt
+     (physical, remote KVM/IPMI, serial) works: log in as `root` / `changeme`,
+     set a new password when prompted, then create your own admin user. See
+     [Post-Installation / First Boot](#post-installation--first-boot). If you'd
+     rather have an admin user seeded automatically with no console step at
+     all, see [Bootstrapping the first admin user
      without a hypervisor
-     (bare metal)](#bootstrapping-the-first-admin-user-without-a-hypervisor-bare-metal)
-     in Post-Installation / First Boot.
+     (bare metal)](#bootstrapping-the-first-admin-user-without-a-hypervisor-bare-metal).
 
 ### 6. Create VM (User Session Track)
 This is the track used here: `qemu:///session`, 8GB RAM, 10 vCPU, UEFI, Secure Boot disabled.
@@ -337,19 +344,23 @@ passes. See [docs/renovate.md](docs/renovate.md) for how that works and how to c
 
 ## Post-Installation / First Boot
 
-> **Important:** The root account is locked by default — its *password* is
-> disabled, so a normal login prompt (console, serial, KVM/IPMI) will reject
-> you too, not just SSH. Get in via the [QEMU guest
-> agent](#running-commands-in-the-vm-from-the-host-qemu-guest-agent) for a
-> local VM, or [bootstrap offline from a live medium](#bootstrapping-the-first-admin-user-without-a-hypervisor-bare-metal)
-> for a bare-metal install.
+> **Important:** Root's default password (`changeme`) only works from a
+> **physical console** (local display, serial, KVM/IPMI) — SSH and both
+> display managers refuse root regardless of password. It is also expired, so
+> logging in forces an immediate password change before anything else works.
+> For VMs, the [QEMU guest
+> agent](#running-commands-in-the-vm-from-the-host-qemu-guest-agent) gets you
+> in as root without a console at all; for bare metal with no console access,
+> [seed a cloud-init config](#bootstrapping-the-first-admin-user-without-a-hypervisor-bare-metal)
+> instead.
 
 The image ships `/etc/sudoers.d/10-wheel`, so any user in the `wheel` group
 gets password-prompted `sudo` — this is opt-in per user (only whoever you add
 to `wheel` gains anything), not a blanket grant.
 
-If you're already in as `root` (e.g. via the guest agent's `guest-exec`),
-create your own admin account. Replace `<username>` and `<password>`:
+Once you're in as `root` — via the console, or the guest agent's
+`guest-exec` — create your own admin account and switch to it. Replace
+`<username>` and `<password>`:
 
 ```bash
 # Ensure the user has UID 1000 to use the pre-configured Homebrew
@@ -362,8 +373,13 @@ Log in as `<username>` from here on — `sudo` already works via `wheel`.
 ### Bootstrapping the first admin user without a hypervisor (bare metal)
 
 There's no QEMU guest agent on physical hardware — that channel only exists
-between a QEMU/KVM host and its guest — and, as above, a console login prompt
-won't work either since root's password is locked.
+between a QEMU/KVM host and its guest. If you have a console (physical,
+serial, or KVM/IPMI), just log in as `root` / `changeme` as described above
+and create your user directly — that's the simplest path and needs nothing
+below.
+
+If you have **no console access at all**, seed a cloud-init config instead so
+the user is created automatically during boot:
 
 #### The easy way: seed a cloud-init config
 
