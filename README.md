@@ -327,6 +327,12 @@ git commit -m "chore: update cosign public key"
 git push origin main
 ```
 
+### Keeping pinned versions up to date
+
+`bootc`, the base images, the GitHub Actions and the cosign/chunkah versions are all pinned,
+and Renovate keeps them current — opening a PR per update and merging it once the build
+passes. See [docs/renovate.md](docs/renovate.md) for how that works and how to control it.
+
 ---
 
 ## Post-Installation / First Boot

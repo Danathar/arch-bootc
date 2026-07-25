@@ -9,6 +9,10 @@
 
   "rebaseWhen": "never",
 
+  "prHourlyLimit": 0,
+
+  "platformAutomerge": false,
+
   "customManagers": [
     {
       "customType": "regex",
@@ -40,14 +44,10 @@
 
   "packageRules": [
     {
+      "description": "Automerge every Renovate update once the PR build is green. The PR build compiles all three flavors (base/kde/xfce) from the Containerfile, so a broken bump fails here rather than reaching main. Note it does not boot-test the image, and it skips the rechunk/push/sign steps (those are gated to non-PR events) -- a change that builds but breaks first boot or `bootc upgrade` would still merge. Failures surface as a red build on main via GitHub notifications.",
       "automerge": true,
-      "matchUpdateTypes": ["pin", "pinDigest"]
-    },
-    {
-      "enabled": false,
-      "matchUpdateTypes": ["digest", "pinDigest", "pin"],
-      "matchDepTypes": ["container"],
-      "matchFileNames": [".github/workflows/**.yaml", ".github/workflows/**.yml"]
+      "automergeStrategy": "squash",
+      "matchUpdateTypes": ["digest", "pin", "pinDigest", "patch", "minor", "major"]
     },
     {
       "enabled": false,
