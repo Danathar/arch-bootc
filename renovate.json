@@ -42,9 +42,10 @@
 
   "packageRules": [
     {
-      "description": "Automerge no-op-ish updates once CI passes. `digest` covers the recurring archlinux/brew base-image rebuilds, which otherwise queue up awaiting manual review forever. Deliberately excludes patch/minor: bootc is compiled from source here, so a bad version bump breaks the image build rather than just a test suite.",
+      "description": "Automerge every Renovate update once the PR build is green. The PR build compiles all three flavors (base/kde/xfce) from the Containerfile, so a broken bump fails here rather than reaching main. Note it does not boot-test the image, and it skips the rechunk/push/sign steps (those are gated to non-PR events) -- a change that builds but breaks first boot or `bootc upgrade` would still merge. Failures surface as a red build on main via GitHub notifications.",
       "automerge": true,
-      "matchUpdateTypes": ["digest", "pin", "pinDigest"]
+      "automergeStrategy": "squash",
+      "matchUpdateTypes": ["digest", "pin", "pinDigest", "patch", "minor", "major"]
     },
     {
       "enabled": false,
