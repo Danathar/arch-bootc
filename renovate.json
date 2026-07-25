@@ -9,6 +9,8 @@
 
   "rebaseWhen": "never",
 
+  "prHourlyLimit": 0,
+
   "customManagers": [
     {
       "customType": "regex",
@@ -40,14 +42,9 @@
 
   "packageRules": [
     {
+      "description": "Automerge no-op-ish updates once CI passes. `digest` covers the recurring archlinux/brew base-image rebuilds, which otherwise queue up awaiting manual review forever. Deliberately excludes patch/minor: bootc is compiled from source here, so a bad version bump breaks the image build rather than just a test suite.",
       "automerge": true,
-      "matchUpdateTypes": ["pin", "pinDigest"]
-    },
-    {
-      "enabled": false,
-      "matchUpdateTypes": ["digest", "pinDigest", "pin"],
-      "matchDepTypes": ["container"],
-      "matchFileNames": [".github/workflows/**.yaml", ".github/workflows/**.yml"]
+      "matchUpdateTypes": ["digest", "pin", "pinDigest"]
     },
     {
       "enabled": false,
