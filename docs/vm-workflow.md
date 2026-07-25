@@ -2,7 +2,7 @@
 
 Prerequisite: a qcow2 disk image, from either
 [Path A](installation.md#path-a-quick-start-pre-built-image) or
-[Path B](installation.md#path-b-customizing-building-locally) of
+[Path B](installation.md#path-b-customizing--building-locally) of
 [Installation](installation.md).
 
 ## Create VM (User Session Track)
