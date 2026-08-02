@@ -172,7 +172,7 @@ LABEL containers.bootc 1
 RUN bootc container lint
 
 # Copy ublue-os/brew and enable its systemd services
-COPY --from=ghcr.io/ublue-os/brew:latest@sha256:07799dfe9ed44812a63d1b23c74e3e30b758a976f647032d916c34daf30f60a4 /system_files /
+COPY --from=ghcr.io/ublue-os/brew:latest@sha256:8855464e5c150974c5edf4343ffef50ca37b1c4d96a648dce28927033010a372 /system_files /
 RUN systemctl preset brew-setup.service brew-update.timer brew-upgrade.timer
 
 
