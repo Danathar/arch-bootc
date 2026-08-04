@@ -25,12 +25,29 @@ env:
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"
   DEFAULT_TAG: "latest"
   CHUNKAH_IMAGE: "quay.io/coreos/chunkah:v0.6.0"
+  SHELLCHECK_IMAGE: "docker.io/koalaman/shellcheck:v0.11.0"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  lint:
+    name: Lint shell scripts
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: ShellCheck
+        run: |
+          set -euo pipefail
+          sudo docker run --rm -v "${PWD}:/mnt:ro" \
+            "${SHELLCHECK_IMAGE}" \
+            /mnt/system_files/usr/libexec/arch-bootc-prune-esp \
+            /mnt/system_files/usr/bin/ostree-pkg-diff
+
   build_push:
     name: Build and push image
     runs-on: ubuntu-24.04
@@ -42,7 +59,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
 
     steps:
       - name: Prepare environment
@@ -50,6 +66,12 @@ jobs:
           # Lowercase the image uri
           echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> "${GITHUB_ENV}"
           echo "IMAGE_NAME=${IMAGE_NAME,,}-${{ matrix.flavor }}" >> "${GITHUB_ENV}"
+          # Shared buildah layer-cache repo. All 3 flavors share the same
+          # base-core stage and buildah's --cache-from/--cache-to key cache
+          # entries by content digest (not by this repo path), so one shared
+          # repo lets any flavor's cache push benefit the other two instead
+          # of each flavor keeping its own separate, less-populated cache.
+          echo "CACHE_IMAGE=${IMAGE_REGISTRY,,}/buildcache" >> "${GITHUB_ENV}"
 
       # These stage versions are pinned by https://github.com/renovatebot/renovate
       - name: Checkout
@@ -107,6 +129,35 @@ jobs:
           sudo docker image prune --all --force || true
           df -h
 
+      - name: Log in to GHCR for the build cache and image signing
+        # buildah resolves registry credentials in this order: REGISTRY_AUTH_FILE,
+        # $XDG_RUNTIME_DIR/containers/auth.json, ~/.config/containers/auth.json,
+        # then ~/.docker/config.json (containers-auth.json(5)) -- so writing this
+        # file makes credentials available to the --cache-from/--cache-to flags
+        # used by the Build Image step below, and later to cosign when signing.
+        # `docker login` itself times out talking to ghcr.io on this runner, so
+        # the file is written directly instead of shelling out to it.
+        #
+        # Skipped only for fork PRs: a fork's GITHUB_TOKEN is downgraded to
+        # read-only by GitHub regardless of the `packages: write` permission
+        # requested above, and these packages are private, so a fork PR would
+        # get a credential that can't authenticate anyway. That's fine --
+        # --cache-from below is passed unconditionally and degrades gracefully
+        # to a cache miss without credentials.
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          registry_host="${IMAGE_REGISTRY%%/*}"
+          auth="$(printf '%s:%s' "${REGISTRY_USER}" "${REGISTRY_PASSWORD}" | base64 -w0)"
+          mkdir -p "${HOME}/.docker"
+          touch "${HOME}/.docker/config.json"
+          chmod 600 "${HOME}/.docker/config.json"
+          printf '{"auths":{"%s":{"auth":"%s"}}}\n' "${registry_host}" "${auth}" \
+            > "${HOME}/.docker/config.json"
+
       - name: Build Image
         id: build_image
         uses: redhat-actions/buildah-build@3a51aade9afa17e5c78256bcbe2e1ee08c7b995b # v3
@@ -114,7 +165,18 @@ jobs:
           containerfiles: |
             ./Containerfile
           image: ${{ env.IMAGE_NAME }}
-          extra-args: "--target ${{ matrix.flavor }}"
+          # layers=true is required for --cache-from/--cache-to to do anything
+          # at all (buildah only consults the cache when building in layered
+          # mode). This is a real behavior change from the previous
+          # layers-less default: without --layers, buildah keeps zero
+          # intermediate images; with --layers, every RUN step is committed as
+          # its own image and kept in local storage until pruned. See the
+          # "Prune buildah build cache" step below, which cleans these up
+          # right after this step and the cache-to push use them.
+          layers: "true"
+          extra-args: |
+            --target ${{ matrix.flavor }}
+            --cache-from ${{ env.CACHE_IMAGE }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           # Tag files with their pacman package (CHUNK_TAG=1) only when we will
@@ -122,6 +184,58 @@ jobs:
           build-args: |
             CHUNK_TAG=${{ (github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && '1' || '0' }}
           oci: true
+
+      - name: Populate build cache
+        # Refreshes the remote layer cache so the next run (next push to
+        # main, tomorrow's schedule) can skip re-running the shared
+        # base-core work (notably compiling bootc from source and re-running
+        # dracut). This re-invocation hits the *local* layer cache the Build
+        # Image step above just populated (same runner, same
+        # containers-storage), so it does no rebuilding of its own; its only
+        # real work is pushing any new or changed layer blobs to the cache
+        # repo.
+        #
+        # continue-on-error is deliberate, not sloppy: buildah's --cache-to
+        # makes the *entire* `buildah bud` process exit non-zero if the
+        # cache push fails for any reason (auth, registry hiccup, ...), even
+        # though the image had already committed successfully. Without
+        # continue-on-error, a transient registry issue here would fail the
+        # whole job even though the image built fine and was already tagged
+        # by the step above. Restricted to non-PR pushes to the default
+        # branch (same gate used for rechunk/push/sign below) so PR runs --
+        # including same-repo, non-fork PRs -- never spend extra time
+        # pushing cache blobs; they still benefit from --cache-from above.
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        continue-on-error: true
+        uses: redhat-actions/buildah-build@3a51aade9afa17e5c78256bcbe2e1ee08c7b995b # v3
+        with:
+          containerfiles: |
+            ./Containerfile
+          image: ${{ env.IMAGE_NAME }}
+          layers: "true"
+          extra-args: |
+            --target ${{ matrix.flavor }}
+            --cache-from ${{ env.CACHE_IMAGE }}
+            --cache-to ${{ env.CACHE_IMAGE }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            CHUNK_TAG=${{ (github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && '1' || '0' }}
+          oci: true
+
+      - name: Prune buildah build cache
+        # --layers keeps every per-instruction intermediate image in local
+        # storage. Combined with this action's squash=true default, that
+        # means the full set of per-step layers AND the final squashed copy
+        # of the same content briefly coexist on disk. The remote cache was
+        # already populated (if applicable) by the step above, so these
+        # local intermediates are pure overhead by this point -- drop them
+        # before the disk-hungry rechunk step runs. Unconditional (not just
+        # on publish runs) since --layers is now always on and the local
+        # intermediates appear on every run, including PR builds.
+        run: |
+          buildah rm --all || true
+          buildah prune -f || true
 
       - name: Rechunk image with chunkah
         id: rechunk
@@ -175,29 +289,6 @@ jobs:
           echo "CHUNKAH_OCI_DIR=${CHUNKAH_OCI_DIR}" >> "${GITHUB_ENV}"
           echo "Rechunked layer count: $(skopeo inspect --raw "oci:${CHUNKAH_OCI_DIR}:${IMAGE_NAME}:chunked" | jq '.layers | length')"
 
-      - name: Log in to GHCR for signing
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        env:
-          REGISTRY_USER: ${{ github.actor }}
-          REGISTRY_PASSWORD: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # cosign uploads the signature blob to the registry and reads its
-          # credentials from ~/.docker/config.json, so authenticate there
-          # before signing. The push step below uses skopeo --dest-creds and
-          # does not rely on this login. Write the config file directly rather
-          # than running `docker login`: the Docker daemon's request to ghcr.io
-          # times out on the runner, while skopeo/cosign reach the registry
-          # fine. Strip the owner path from IMAGE_REGISTRY (ghcr.io/owner ->
-          # ghcr.io) so the entry matches the host cosign's keychain looks up.
-          registry_host="${IMAGE_REGISTRY%%/*}"
-          auth="$(printf '%s:%s' "${REGISTRY_USER}" "${REGISTRY_PASSWORD}" | base64 -w0)"
-          mkdir -p "${HOME}/.docker"
-          touch "${HOME}/.docker/config.json"
-          chmod 600 "${HOME}/.docker/config.json"
-          printf '{"auths":{"%s":{"auth":"%s"}}}\n' "${registry_host}" "${auth}" \
-            > "${HOME}/.docker/config.json"
-
       - name: Push To GHCR
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         id: push
@@ -248,3 +339,50 @@ jobs:
             "${IMAGE_FULL}@${{ steps.push.outputs.digest }}"
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+
+  cleanup_packages:
+    name: Clean up old package versions
+    needs: build_push
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [base, kde, xfce]
+
+    permissions:
+      packages: write
+
+    steps:
+      - name: Prepare environment
+        run: |
+          # Lowercase to match the GHCR package names the build job creates
+          # (GHCR package names are always lowercase; this repo's name
+          # happens to already be lowercase, but keep this in sync with the
+          # build job's own IMAGE_NAME handling above rather than assume it
+          # always will be).
+          NAME="${{ github.event.repository.name }}"
+          echo "IMAGE_NAME=${NAME,,}" >> "${GITHUB_ENV}"
+
+      # This workflow pushes `latest`, `latest.YYYYMMDD` and `YYYYMMDD` for
+      # every one of the 3 flavors on every publish (daily via the schedule
+      # trigger, plus every push to main), forever, with nothing removing
+      # old versions. min-versions-to-keep keeps the N most-recently-created
+      # versions of the package and deletes the rest; since a package's
+      # `latest` tag is repointed to the newest version on every publish, the
+      # version currently tagged `latest` is always among the most recent and
+      # so is always kept -- no separate `ignore-versions` carve-out needed.
+      #
+      # NOTE: the default GITHUB_TOKEN's `packages: write` permission is
+      # enough to *push* container images, but this action additionally
+      # requires the package's own "Manage Actions access" setting (Package
+      # settings on ghcr.io, not this repo's Settings) to grant this
+      # repository the Admin role before GITHUB_TOKEN can *delete* versions.
+      # Set that once per package (arch-bootc-base/-kde/-xfce) before this
+      # job can succeed.
+      - name: Delete old ${{ matrix.flavor }} package versions
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          package-name: ${{ env.IMAGE_NAME }}-${{ matrix.flavor }}
+          package-type: container
+          min-versions-to-keep: 30

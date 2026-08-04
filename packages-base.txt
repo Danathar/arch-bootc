@@ -1,5 +1,4 @@
 base
-base-devel
 git
 cpio
 dbus
@@ -33,3 +32,6 @@ sudo
 vim
 attr
 cloud-init
+man-db
+man-pages
+zram-generator

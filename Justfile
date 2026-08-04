@@ -13,21 +13,35 @@ options := if selinux == "true" { "-v /var/lib/containers:/var/lib/containers:Z 
 container_runtime := env("CONTAINER_RUNTIME", `command -v podman >/dev/null 2>&1 && echo podman || echo docker`)
 image_ref := if flavor == "kde" { image_name + ":" + image_tag } else { image_name + "-" + flavor + ":" + image_tag }
 
-build-containerfile $image_name=image_name:
-    sudo {{container_runtime}} build --security-opt label=disable --target kde -f Containerfile -t "${image_name}:{{image_tag}}" .
+# This is the one place that knows how a flavor maps to its image tag suffix
+# (kde is unsuffixed for backwards compatibility; base and xfce get a
+# `-base`/`-xfce` suffix). build-containerfile/build-base/build-xfce below
+# are kept only as stable entry points for docs and muscle memory, and just
+# forward into this recipe.
+#
+# Build a single flavor locally. FLAVOR must match a Containerfile target: kde, base, or xfce.
+build-flavor flavor $image_name=image_name:
+    sudo {{container_runtime}} build --security-opt label=disable --target "{{flavor}}" -f Containerfile -t "${image_name}{{ if flavor == "kde" { "" } else { "-" + flavor } }}:{{image_tag}}" .
 
-build-base $image_name=image_name:
-    sudo {{container_runtime}} build --security-opt label=disable --target base -f Containerfile -t "${image_name}-base:{{image_tag}}" .
+# Referenced by name in docs/installation.md, docs/customizations.md, and
+# this Justfile's own `bootc` recipe below -- kept working even though
+# build-flavor is now the single source of truth for how a flavor is built.
+#
+# Backwards-compatible alias for build-flavor kde.
+build-containerfile image_name=image_name: (build-flavor "kde" image_name)
 
-build-xfce $image_name=image_name:
-    sudo {{container_runtime}} build --security-opt label=disable --target xfce -f Containerfile -t "${image_name}-xfce:{{image_tag}}" .
+# Backwards-compatible alias for build-flavor base.
+build-base image_name=image_name: (build-flavor "base" image_name)
+
+# Backwards-compatible alias for build-flavor xfce.
+build-xfce image_name=image_name: (build-flavor "xfce" image_name)
 
 bootc *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
     if ! sudo {{container_runtime}} image exists "{{image_ref}}"; then
         echo "error: image '{{image_ref}}' not found locally." >&2
-        echo "Build it first (just build-containerfile / build-base / build-xfce)," >&2
+        echo "Build it first (just build-containerfile / just build-base / just build-xfce)," >&2
         echo "or set BUILD_FLAVOR (kde/base/xfce) to match what you already built." >&2
         exit 1
     fi
@@ -42,7 +56,37 @@ bootc *ARGS:
 
 generate-bootable-image $base_dir=base_dir $filesystem=filesystem:
     #!/usr/bin/env bash
+    set -euo pipefail
     if [ ! -e "${base_dir}/bootable.img" ] ; then
         fallocate -l 20G "${base_dir}/bootable.img"
     fi
     just bootc install to-disk --composefs-backend --via-loopback /data/bootable.img --filesystem "${filesystem}" --wipe --bootloader systemd
+
+# The unit files reference paths (ExecStart=/usr/libexec/arch-bootc-prune-esp,
+# plus standard systemd targets like multi-user.target/timers.target) that
+# don't exist as such on an arbitrary dev host, so verify runs inside a
+# disposable container built from the same Arch base image with
+# system_files/ overlaid on top -- matching how they're actually laid out at
+# runtime -- rather than against the host's own systemd install.
+#
+# Static checks: shellcheck on system_files scripts, systemd-analyze verify on the unit files.
+lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "==> shellcheck"
+    if ! command -v shellcheck >/dev/null 2>&1; then
+        echo "error: shellcheck not found on PATH." >&2
+        echo "Install it (e.g. 'sudo pacman -S shellcheck', 'apt install shellcheck'," >&2
+        echo "or 'brew install shellcheck') and re-run 'just lint'." >&2
+        exit 1
+    fi
+    shellcheck system_files/usr/bin/ostree-pkg-diff system_files/usr/libexec/arch-bootc-prune-esp
+    # homebrew.sh is sourced by /etc/profile.d, not executed directly, so it
+    # has no shebang of its own -- tell shellcheck what to assume.
+    shellcheck --shell=bash system_files/etc/profile.d/homebrew.sh
+
+    echo "==> systemd-analyze verify"
+    lint_tag="arch-bootc-lint-systemd-$$"
+    printf 'FROM docker.io/archlinux/archlinux:latest\nCOPY system_files/ /\nRUN systemd-analyze verify /usr/lib/systemd/system/arch-bootc-prune-esp.service /usr/lib/systemd/system/arch-bootc-prune-esp.timer\n' \
+        | sudo {{container_runtime}} build -q -t "${lint_tag}" -f - .
+    sudo {{container_runtime}} rmi "${lint_tag}" >/dev/null

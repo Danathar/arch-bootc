@@ -113,7 +113,7 @@ Because `bootc` is an immutable system, you must ensure that any AUR packages yo
 - Make no assumptions about classic mutable `/var` paths
 - Have no interactive install or runtime requirements
 
-The template provided in the `Containerfile` uses a temporary, unprivileged build user to safely compile and install AUR packages during the container build process.
+The template provided in the `Containerfile` uses a temporary, unprivileged build user to safely compile and install AUR packages during the container build process. `base-devel` is not part of the base image (see [customizations.md](customizations.md)), so the template installs it itself for the duration of the build and removes it again afterward — you don't need to add it to `packages-base.txt`.
 
 ### 4. Create A 100G Sparse Disk + QCOW2
 Create sparse raw file, install image into it, then convert to sparse qcow2:

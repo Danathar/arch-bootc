@@ -6,6 +6,7 @@ lightdm-gtk-greeter
 network-manager-applet
 blueman
 polkit-gnome
+xdg-desktop-portal-gtk
 pipewire
 pipewire-pulse
 pipewire-alsa

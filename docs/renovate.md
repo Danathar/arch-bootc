@@ -29,6 +29,7 @@ skips forks by default; without that line nothing would run at all.
 | `sigstore/cosign-installer` | commit SHA | `build.yaml` | `github-actions` manager |
 | cosign CLI | `cosign-release: vX.Y.Z` | `build.yaml` | custom regex manager |
 | chunkah image | `quay.io/coreos/chunkah:vX.Y.Z` | `build.yaml` env | custom regex manager |
+| shellcheck image | `docker.io/koalaman/shellcheck:vX.Y.Z` | `build.yaml` `SHELLCHECK_IMAGE` env | custom regex manager |
 | runner image | `ubuntu-24.04` | `build.yaml` `runs-on` | `github-actions` manager |
 
 Two of these need explanation.
@@ -68,8 +69,10 @@ The scheduled daily build (`cron: "05 10 * * *"`) rebuilds, rechunks, pushes and
 image every morning with no commits involved. The digest pins above fix the starting layer,
 but `pacman -Syu` immediately upgrades past it.
 
-The Flathub `.flatpakrepo` file is also fetched live with `curl` at build time and is not
-versioned.
+The Flathub `.flatpakrepo` file is vendored at `system_files/etc/flatpak/remotes.d/` (no
+longer fetched live with `curl` at build time) and has no Renovate datasource — Flathub's
+URL/key have been stable since ~2018, but there's no automation watching it. Re-check it
+manually if Flathub ever changes it.
 
 ## The flow, step by step
 
@@ -91,8 +94,15 @@ Step 5 is the important one: **Renovate does the merging, not GitHub.** See
 
 ## What merges automatically
 
-All of it — `digest`, `pin`, `pinDigest`, `patch`, `minor` and `major` — squash-merged once
-the build is green.
+Almost all of it — `digest`, `pin`, `pinDigest`, `patch`, `minor` and `major` — squash-merged
+once the build is green.
+
+The one exception: a **major** version bump of `bootc-dev/bootc` never automerges, regardless
+of build status. The PR build only proves the Containerfile still compiles bootc and passes
+`bootc container lint` — it does not boot-test the image, so a breaking change to bootc's
+on-disk format, CLI, or upgrade behavior would otherwise merge automatically like everything
+else. Every other update type for that package (digest, pin, patch, minor) still automerges
+normally.
 
 The gate is the PR build, and it is worth knowing precisely what that proves and what it does
 not:

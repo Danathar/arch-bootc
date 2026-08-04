@@ -39,6 +39,19 @@
       "depNameTemplate": "sigstore/cosign",
       "datasourceTemplate": "github-releases",
       "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "Track stable ShellCheck container releases",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.*\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "SHELLCHECK_IMAGE:\\s+\"?docker\\.io/koalaman/shellcheck:(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"?"
+      ],
+      "depNameTemplate": "koalaman/shellcheck",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "semver-coerced"
     }
   ],
 
@@ -53,6 +66,12 @@
       "enabled": false,
       "matchUpdateTypes": ["digest", "pinDigest", "pin"],
       "matchPackageNames": ["quay.io/coreos/chunkah"]
+    },
+    {
+      "description": "Never automerge a major bootc-dev/bootc bump. The PR build only proves the Containerfile still compiles bootc and passes `bootc container lint` -- it does not boot-test the image, so a breaking change to bootc's on-disk format, CLI, or upgrade behavior would still merge automatically under the general rule above. Every other update type for this package (digest, pin, patch, minor), and every other update type for every other package, keeps automerging.",
+      "matchPackageNames": ["bootc-dev/bootc"],
+      "matchUpdateTypes": ["major"],
+      "automerge": false
     }
   ]
 }
