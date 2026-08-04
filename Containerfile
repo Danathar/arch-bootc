@@ -38,7 +38,7 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
 
 # https://github.com/bootc-dev/bootc/issues/1801
 # renovate: datasource=github-releases depName=bootc-dev/bootc
-ARG BOOTC_VERSION=v1.16.6
+ARG BOOTC_VERSION=v1.16.7
 # base-devel is deliberately NOT installed here (or in packages-base.txt).
 # The `rust` package already hard-depends on gcc/lld/llvm-libs/compiler-rt,
 # which is all the C toolchain `cargo build` needs for linking. The only
