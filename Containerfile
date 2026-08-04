@@ -8,6 +8,19 @@ RUN grep "= */var" /etc/pacman.conf | sed "/= *\/var/s/.*=// ; s/ //" | xargs -n
 # See https://gitlab.archlinux.org/archlinux/archlinux-docker/-/blob/master/pacman-conf.d-noextract.conf?ref_type=heads
 RUN sed -i 's/^[[:space:]]*NoExtract/#&/' /etc/pacman.conf
 
+# CI's remote buildah layer cache (see build.yaml) keys a RUN step purely on
+# its instruction text + parent layer digest -- it has no way to know Arch's
+# live repositories changed underneath it. Left alone, a cache hit here would
+# silently *skip* pacman -Syu entirely and ship whatever was cached, possibly
+# missing days of security updates and contradicting this project's "every
+# build gets today's Arch" design (see docs/renovate.md). CI passes today's
+# date so this step (and everything after it in this stage, including the
+# bootc-from-source compile below) misses cache once per calendar day --
+# same-day reruns still benefit. That cascade is accepted deliberately: a
+# stale package set is a real security concern, a once-daily bootc recompile
+# is just CI minutes.
+ARG PACMAN_CACHE_BUST=0
+
 # Install core base packages from external file. glibc is explicitly listed
 # alongside them (even though it is already part of the base image) because
 # pacman always reinstalls an explicitly-named target even when it is already
@@ -18,6 +31,7 @@ RUN sed -i 's/^[[:space:]]*NoExtract/#&/' /etc/pacman.conf
 # equivalent.
 RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
     --mount=type=bind,source=packages-base.txt,target=/tmp/packages-base.txt \
+    : "cache-bust ${PACMAN_CACHE_BUST}" && \
     pacman -Syu --noconfirm glibc $(grep -vE '^[[:space:]]*#|^[[:space:]]*$' /tmp/packages-base.txt) && \
     (pacman -Qq nano >/dev/null 2>&1 && pacman -Rns --noconfirm nano || true) && \
     pacman -S --clean --noconfirm

@@ -50,6 +50,7 @@ jobs:
 
   build_push:
     name: Build and push image
+    needs: lint
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -85,6 +86,11 @@ jobs:
           # https://artifacthub.io/docs/topics/repositories/container-images/
           # https://linux.die.net/man/1/date
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
+          # Passed to the Containerfile as PACMAN_CACHE_BUST (see there for why):
+          # forces the remote buildah layer cache to miss once per calendar day
+          # for the package-install step onward, instead of silently reusing a
+          # cached `pacman -Syu` result against Arch's live, ever-changing repos.
+          echo "ymd=$(date -u +%Y%m%d)" >> "${GITHUB_OUTPUT}"
 
       - name: Image Metadata
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
@@ -183,6 +189,7 @@ jobs:
           # publish, so PR builds skip the cost. Consumed by the rechunk step.
           build-args: |
             CHUNK_TAG=${{ (github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && '1' || '0' }}
+            PACMAN_CACHE_BUST=${{ steps.date.outputs.ymd }}
           oci: true
 
       - name: Populate build cache
@@ -221,6 +228,7 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           build-args: |
             CHUNK_TAG=${{ (github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && '1' || '0' }}
+            PACMAN_CACHE_BUST=${{ steps.date.outputs.ymd }}
           oci: true
 
       - name: Prune buildah build cache
