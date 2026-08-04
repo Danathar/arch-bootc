@@ -1,0 +1,17 @@
+{
+    "default": [{"type": "insecureAcceptAnything"}],
+    "transports": {
+        "docker-daemon": {
+            "": [{"type": "insecureAcceptAnything"}]
+        },
+        "docker": {
+            "ghcr.io/danathar": [
+                {
+                    "type": "sigstoreSigned",
+                    "keyPath": "/etc/pki/containers/arch-bootc.pub",
+                    "signedIdentity": {"type": "matchRepository"}
+                }
+            ]
+        }
+    }
+}

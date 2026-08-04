@@ -30,6 +30,58 @@ log() {
   printf '%s\n' "$*"
 }
 
+# GPT partition type GUID for an EFI System Partition. This is the same
+# constant bootc itself uses to find the ESP (see `ESP` in
+# crates/blockdev/src/blockdev.rs and
+# crates/lib/src/discoverable_partition_specification.rs upstream at
+# https://github.com/bootc-dev/bootc), so anything discovered here is held
+# to the same bar bootc itself uses.
+ESP_PARTTYPE_GUID="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+
+# Return success only if $1 is the mountpoint of a real, non-removable EFI
+# System Partition: an actual vfat filesystem, backed by a real block device
+# (not a bind mount, loop device, or overlay), whose GPT partition type is
+# the ESP GUID, and whose device is not flagged removable/hotplug.
+#
+# This exists because falling back to "any mounted vfat filesystem that has
+# EFI/Linux and loader/entries" can match a plugged-in bootable USB stick
+# (systemd-boot rescue media, Ventoy, etc.) just as easily as the real ESP.
+# Every candidate mountpoint, including the well-known static ones, is
+# required to pass this check before prune_esp() is allowed to touch it.
+#
+# Fails closed: any missing tool, unexpected shape, or lookup error is
+# treated as "not a genuine ESP" rather than as "assume it is fine".
+is_genuine_esp() {
+  local mnt="$1" mnt_info source fstype dev_info parttype removable hotplug
+  [[ -n "$mnt" ]] || return 1
+
+  command -v findmnt >/dev/null 2>&1 || return 1
+  command -v lsblk >/dev/null 2>&1 || return 1
+
+  mnt_info=$(findmnt -Pno SOURCE,FSTYPE "--mountpoint=$mnt" 2>/dev/null) || return 1
+  [[ "$mnt_info" =~ SOURCE=\"([^\"]*)\" ]] || return 1
+  source="${BASH_REMATCH[1]}"
+  [[ "$mnt_info" =~ FSTYPE=\"([^\"]*)\" ]] || return 1
+  fstype="${BASH_REMATCH[1]}"
+
+  [[ "$fstype" == "vfat" ]] || return 1
+  # Must be a real block device node, not a loop/bind/overlay source like
+  # "tmpfs[/...]" or a path with no backing device at all.
+  [[ -n "$source" && -b "$source" ]] || return 1
+
+  dev_info=$(lsblk -dPno PARTTYPE,RM,HOTPLUG -- "$source" 2>/dev/null) || return 1
+  [[ "$dev_info" =~ PARTTYPE=\"([^\"]*)\" ]] || return 1
+  parttype="${BASH_REMATCH[1],,}"
+  [[ "$dev_info" =~ RM=\"([^\"]*)\" ]] || return 1
+  removable="${BASH_REMATCH[1]}"
+  [[ "$dev_info" =~ HOTPLUG=\"([^\"]*)\" ]] || return 1
+  hotplug="${BASH_REMATCH[1]}"
+
+  [[ "$parttype" == "$ESP_PARTTYPE_GUID" ]] || return 1
+  [[ "$removable" == "0" ]] || return 1
+  [[ "$hotplug" == "0" ]] || return 1
+}
+
 add_candidate() {
   local esp="$1"
   [[ -n "$esp" ]] || return 0
@@ -39,21 +91,27 @@ add_candidate() {
 
 find_esps() {
   if [[ -n "${BOOTC_PRUNE_ESP_PATH:-}" ]]; then
+    # Explicit escape hatch: always honored, no ESP-genuineness check.
     add_candidate "$BOOTC_PRUNE_ESP_PATH"
     return 0
   fi
 
-  # Common bootc/systemd-boot mount points first.
-  add_candidate /boot/efi
-  add_candidate /boot
-  add_candidate /efi
-
-  # Then any mounted vfat filesystem that looks like an ESP.
-  if command -v findmnt >/dev/null 2>&1; then
-    findmnt -rn -t vfat -o TARGET 2>/dev/null | while IFS= read -r target; do
-      add_candidate "$target"
-    done
-  fi
+  local target
+  while IFS= read -r target; do
+    is_genuine_esp "$target" && add_candidate "$target"
+  done < <(
+    {
+      # Common bootc/systemd-boot mount points first.
+      printf '%s\n' /boot/efi /boot /efi
+      # Then any other mounted vfat filesystem that looks like an ESP.
+      # `|| true` keeps a legitimate "no vfat filesystems found" result
+      # (findmnt exit 1) from tripping `set -e -o pipefail` and aborting
+      # the rest of this function.
+      if command -v findmnt >/dev/null 2>&1; then
+        findmnt -rn -t vfat -o TARGET 2>/dev/null || true
+      fi
+    } | sort -u
+  )
 }
 
 prune_esp() {
@@ -89,14 +147,14 @@ prune_esp() {
   for candidate in "$esp"/EFI/Linux/*; do
     [[ -d "$candidate" ]] || continue
     if [[ -n "${keep[$candidate]+x}" ]]; then
-      log "arch-bootc-prune-esp: keeping ${candidate#$esp/}"
+      log "arch-bootc-prune-esp: keeping ${candidate#"$esp"/}"
       continue
     fi
 
     if (( dry_run )); then
-      log "arch-bootc-prune-esp: would prune ${candidate#$esp/}"
+      log "arch-bootc-prune-esp: would prune ${candidate#"$esp"/}"
     else
-      log "arch-bootc-prune-esp: pruning ${candidate#$esp/}"
+      log "arch-bootc-prune-esp: pruning ${candidate#"$esp"/}"
       rm -rf --one-file-system -- "$candidate"
     fi
   done

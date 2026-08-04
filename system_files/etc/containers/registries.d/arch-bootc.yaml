@@ -1,0 +1,3 @@
+docker:
+  ghcr.io/danathar:
+    use-sigstore-attachments: true
