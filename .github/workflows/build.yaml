@@ -309,13 +309,33 @@ jobs:
           IMAGE_FULL="${IMAGE_REGISTRY}/${IMAGE_NAME}"
           SRC="oci:${CHUNKAH_OCI_DIR}:${IMAGE_NAME}:chunked"
 
+          # GHCR's secondary rate limit ("wait a few minutes") outlasts
+          # skopeo's own --retry-times backoff, so retry failed pushes with
+          # longer sleeps in between.
+          push_with_backoff() {
+            local tag="$1"
+            local delays=(60 120 240)
+            local i
+
+            for ((i = 0; i <= ${#delays[@]}; i++)); do
+              if skopeo copy --retry-times 3 \
+                --dest-creds "${REGISTRY_USER}:${REGISTRY_PASSWORD}" \
+                --digestfile "${RUNNER_TEMP}/push-digest" \
+                "${SRC}" \
+                "docker://${IMAGE_FULL}:${tag}"; then
+                return 0
+              fi
+              if ((i < ${#delays[@]})); then
+                echo "Push failed, retrying in ${delays[i]}s..."
+                sleep "${delays[i]}"
+              fi
+            done
+            return 1
+          }
+
           for tag in ${{ steps.metadata.outputs.tags }}; do
             echo "::group::Pushing ${IMAGE_FULL}:${tag}"
-            skopeo copy --retry-times 3 \
-              --dest-creds "${REGISTRY_USER}:${REGISTRY_PASSWORD}" \
-              --digestfile "${RUNNER_TEMP}/push-digest" \
-              "${SRC}" \
-              "docker://${IMAGE_FULL}:${tag}"
+            push_with_backoff "${tag}"
             echo "::endgroup::"
           done
 
