@@ -21,6 +21,24 @@ mine along the way — read the gotchas section, they're not hypothetical.
   naming conventions, or generic "-verify"/"-test" suffixes) — these are real, from
   genuine prior work. Never touch them. Use an unmistakably-scoped name for your own VM
   (e.g. `claude-<purpose>-verify-<timestamp>`).
+
+  **In particular, never touch `arch-bootc-local`.** That is the user's own VM, created
+  by following [docs/vm-workflow.md](docs/vm-workflow.md) — it is this repo's documented
+  manual-testing VM, not a leftover, and its name is the single most likely collision for
+  a test working in this repository. Do not destroy, undefine, redefine, or reinstall it,
+  and do not "recreate" it even though `docs/vm-workflow.md` contains a delete-and-recreate
+  snippet: that snippet is an instruction to the user, not authorization for an agent.
+
+  A snapshot taken 2026-08-08 illustrates how populated this host already is — session
+  VMs `arch-bootc-local`, `cinnamon-ublue-test`, `dakota`, `debian-bootc-local`,
+  `debian-zfs`, `fedora`, `mx-bootc-test`, `xfce-ublue-test`; session pools including
+  `cloudinit-verify`, `offline-recovery-verify`, `wheel-verify-test`, `xfce-verify`,
+  `just-disk`, `output`, `qcow2`, `tmp`, `Downloads`, `VMs`. Note that several of those
+  pool names are directory names, i.e. exactly the auto-created pools described in the
+  gotchas below — they are still the user's, and are still not yours to remove. This
+  list is a dated illustration, **not** an authoritative allowlist and not a set of
+  things safe to delete: it will drift, so the live enumeration above remains the check
+  you actually run.
 - **Never write VM disk images to the scratchpad directory.** It's tmpfs (check with
   `df -T`) — a multi-GB qcow2 there consumes real host RAM, which is exactly the kind
   of host impact to avoid. Use a real disk-backed directory instead, e.g.
