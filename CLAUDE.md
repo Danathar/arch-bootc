@@ -29,16 +29,11 @@ mine along the way — read the gotchas section, they're not hypothetical.
   and do not "recreate" it even though `docs/vm-workflow.md` contains a delete-and-recreate
   snippet: that snippet is an instruction to the user, not authorization for an agent.
 
-  A snapshot taken 2026-08-08 illustrates how populated this host already is — session
-  VMs `arch-bootc-local`, `cinnamon-ublue-test`, `dakota`, `debian-bootc-local`,
-  `debian-zfs`, `fedora`, `mx-bootc-test`, `xfce-ublue-test`; session pools including
-  `cloudinit-verify`, `offline-recovery-verify`, `wheel-verify-test`, `xfce-verify`,
-  `just-disk`, `output`, `qcow2`, `tmp`, `Downloads`, `VMs`. Note that several of those
-  pool names are directory names, i.e. exactly the auto-created pools described in the
-  gotchas below — they are still the user's, and are still not yours to remove. This
-  list is a dated illustration, **not** an authoritative allowlist and not a set of
-  things safe to delete: it will drift, so the live enumeration above remains the check
-  you actually run.
+  The host may contain pre-existing VMs and pools whose names resemble repository
+  conventions or generic test names. Some pool names may also be directory names,
+  including the auto-created pools described in the gotchas below. They remain the
+  user's resources and are not safe to remove; the live enumeration above is the
+  only authoritative check.
 - **Never write VM disk images to the scratchpad directory.** It's tmpfs (check with
   `df -T`) — a multi-GB qcow2 there consumes real host RAM, which is exactly the kind
   of host impact to avoid. Use a real disk-backed directory instead, e.g.
