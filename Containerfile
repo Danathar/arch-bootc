@@ -191,7 +191,14 @@ RUN mkdir -p /etc/sudoers.d && \
 # would be silently restored to the real unit file the next time the systemd
 # package is reinstalled or upgraded (verified). /etc is never touched by
 # pacman, so it is the only location where the mask reliably survives.
+# Arch's systemd package declares autovt@.service only as an Alias of
+# getty@.service; it does not ship the alias file itself. `systemctl enable`
+# or `preset` would materialize it, but this image deliberately avoids
+# preset-all because Arch's preset would also enable the systemd-networkd
+# units masked below. Vendor the alias directly so logind can start
+# autovt@tty2..tty6 on demand when a user switches VTs.
 RUN mkdir -p /usr/lib/systemd/system/multi-user.target.wants && \
+    ln -sf /usr/lib/systemd/system/getty@.service /usr/lib/systemd/system/autovt@.service && \
     ln -sf /usr/lib/systemd/system/NetworkManager.service /usr/lib/systemd/system/multi-user.target.wants/NetworkManager.service && \
     ln -sf /usr/lib/systemd/system/firewalld.service /usr/lib/systemd/system/multi-user.target.wants/firewalld.service && \
     ln -sf /usr/lib/systemd/system/sshd.service /usr/lib/systemd/system/multi-user.target.wants/sshd.service && \

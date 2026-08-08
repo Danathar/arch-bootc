@@ -21,6 +21,19 @@ mine along the way — read the gotchas section, they're not hypothetical.
   naming conventions, or generic "-verify"/"-test" suffixes) — these are real, from
   genuine prior work. Never touch them. Use an unmistakably-scoped name for your own VM
   (e.g. `claude-<purpose>-verify-<timestamp>`).
+
+  **In particular, never touch `arch-bootc-local`.** That is the user's own VM, created
+  by following [docs/vm-workflow.md](docs/vm-workflow.md) — it is this repo's documented
+  manual-testing VM, not a leftover, and its name is the single most likely collision for
+  a test working in this repository. Do not destroy, undefine, redefine, or reinstall it,
+  and do not "recreate" it even though `docs/vm-workflow.md` contains a delete-and-recreate
+  snippet: that snippet is an instruction to the user, not authorization for an agent.
+
+  The host may contain pre-existing VMs and pools whose names resemble repository
+  conventions or generic test names. Some pool names may also be directory names,
+  including the auto-created pools described in the gotchas below. They remain the
+  user's resources and are not safe to remove; the live enumeration above is the
+  only authoritative check.
 - **Never write VM disk images to the scratchpad directory.** It's tmpfs (check with
   `df -T`) — a multi-GB qcow2 there consumes real host RAM, which is exactly the kind
   of host impact to avoid. Use a real disk-backed directory instead, e.g.
@@ -48,15 +61,17 @@ mine along the way — read the gotchas section, they're not hypothetical.
    boot — not a stale/cached response — by running something like `uptime` and
    checking it reports "up 0 min".
 7. Verify. See the gotchas below before trusting output.
-8. Tear down and verify cleanup (see below). Do this even if a step failed midway —
-   don't leave a half-finished VM/pool/directory behind.
+8. Report every task-created VM, pool, loop device, image, and work directory,
+   including its identifier or path and its relation to the baseline. Request
+   separate authorization before teardown, even if a step failed midway. Once
+   authorized, tear down and verify cleanup using the checklist below.
 
 ## Gotchas learned the hard way
 
 - **`virt-install --disk path=<absolute path>` can silently auto-create a libvirt
   storage pool** named after the parent directory, active and autostart=yes. It is
-  *not* covered by deleting the VM or the underlying file. Check
-  `virsh -c qemu:///session pool-list --all` after teardown, not just the VM list —
+  *not* covered by deleting the VM or the underlying file. During authorized
+  cleanup, check `virsh -c qemu:///session pool-list --all`, not just the VM list —
   finding an extra pool there means cleanup isn't done yet.
   `virsh -c qemu:///session pool-destroy <name> && pool-undefine <name>`.
 
@@ -89,7 +104,11 @@ mine along the way — read the gotchas section, they're not hypothetical.
   did get a false alarm, say so plainly rather than quietly fixing the script and only
   reporting the final clean result.
 
-## Cleanup checklist
+## Authorized cleanup checklist
+
+Run this checklist only after the user has explicitly authorized removal of the
+named test resources. Until then, preserve them for inspection and report their
+identifiers, paths, and storage impact.
 
 - `virsh -c qemu:///session destroy <name>` then `undefine <name> --nvram`
 - `virsh -c qemu:///session pool-list --all` — destroy/undefine anything you didn't
