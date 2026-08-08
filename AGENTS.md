@@ -187,11 +187,15 @@ takes precedence over convenience. In summary, and without replacing it:
   not a file you just created for this purpose.
 - `virt-install --disk path=<absolute path>` can silently auto-create an active,
   autostart libvirt storage pool named after the parent directory. It is not
-  removed by deleting the VM or the file. Check `virsh pool-list --all` during
-  teardown.
-- Tear down even when a step failed midway, and diff the domain and pool lists
-  against the baseline snapshot to prove cleanup rather than assuming it.
-  Confirm `losetup -a` is empty and remove any test-only images pulled or built.
+  removed by deleting the VM or the file. If cleanup is authorized, check
+  `virsh pool-list --all` during teardown.
+- Cleanup is a separate consent gate, including after a test fails midway. Do
+  not tear down task-created VMs, pools, loop devices, work directories, or
+  test-only images until the user explicitly authorizes their exact removal.
+  Until then, report their names and paths, their relation to the baseline, and
+  any associated storage cost. After authorization, diff the domain and pool
+  lists against the baseline, confirm `losetup -a` is empty, and remove only
+  the approved test-only images.
 
 Read the gotchas section of `CLAUDE.md` before trusting in-guest test output.
 It documents specific ways a test harness in this environment has produced
@@ -421,10 +425,12 @@ At the end of a task, report:
 
 Do not perform cleanup merely because the task appears complete. After a merge,
 update local `main`, delete branches, remove test images, or delete test
-resources only when the user authorizes each exact action. The exception is
-test-only infrastructure that this task created and was already authorized to
-create — virtual machines, storage pools, loop devices, and scratch directories
-from a VM test — which must be torn down and verified against the baseline
-snapshot, per `CLAUDE.md`, even if a step failed midway.
+resources only when the user authorizes each exact action. This includes
+test-only infrastructure created by the task — virtual machines, storage pools,
+loop devices, and scratch directories from a VM test — even if a step failed
+midway. Before requesting that approval, report the exact resources, their
+paths or identifiers, their relationship to the baseline snapshot, and any
+meaningful storage cost. After cleanup is authorized, verify the approved
+resources were removed against the baseline snapshot.
 
 Preserve anything whose ownership or recoverability is uncertain.
