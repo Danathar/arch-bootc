@@ -49,9 +49,14 @@ check `Containerfile` rather than this doc for the pinned value.)
 If that comment is ever removed or reworded, bootc silently freezes at whatever version it is
 on. Nothing will fail; updates just stop arriving.
 
-**chunkah** is pinned by tag only. A `packageRule` explicitly disables `digest`/`pin`/
-`pinDigest` updates for it, so Renovate offers new tagged releases but never rewrites the
-reference into a digest.
+**chunkah and shellcheck** are pinned by tag only. A `packageRule` explicitly disables
+`digest`/`pin`/`pinDigest` updates for both, so Renovate offers new tagged releases but never
+rewrites either reference into a digest. Both are tracked via custom regex managers whose
+`matchStrings` capture only a semver tag — no digest capture group — so letting Renovate's
+default digest-pinning apply to them fails to find anywhere to write the digest and errors the
+branch (this happened for real: chunkah in #18, shellcheck in #68). Any future custom regex
+manager on the `docker` datasource needs the same exclusion unless its `matchStrings` also
+captures a digest.
 
 ## What is *not* tracked
 
@@ -123,7 +128,8 @@ That trade is accepted deliberately: this is an experimental image, not producti
 update surfaces either as a red build on `main` (GitHub notifies) or on the next
 `bootc upgrade`, and is then investigated.
 
-The one exception is chunkah digest updates, which are disabled entirely.
+The two exceptions are chunkah and shellcheck digest updates, which are disabled entirely (see
+above).
 
 ## Why merging is Renovate's job
 

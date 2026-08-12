@@ -65,7 +65,7 @@
     {
       "enabled": false,
       "matchUpdateTypes": ["digest", "pinDigest", "pin"],
-      "matchPackageNames": ["quay.io/coreos/chunkah"]
+      "matchPackageNames": ["quay.io/coreos/chunkah", "koalaman/shellcheck"]
     },
     {
       "description": "Never automerge a major bootc-dev/bootc bump. The PR build only proves the Containerfile still compiles bootc and passes `bootc container lint` -- it does not boot-test the image, so a breaking change to bootc's on-disk format, CLI, or upgrade behavior would still merge automatically under the general rule above. Every other update type for this package (digest, pin, patch, minor), and every other update type for every other package, keeps automerging.",
