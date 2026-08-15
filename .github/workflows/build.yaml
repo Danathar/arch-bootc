@@ -40,6 +40,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: ShellCheck
         run: |
           set -euo pipefail
@@ -77,6 +79,8 @@ jobs:
       # These stage versions are pinned by https://github.com/renovatebot/renovate
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Get current date
         id: date
@@ -248,9 +252,16 @@ jobs:
       - name: Rechunk image with chunkah
         id: rechunk
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        # Expansions are passed through `env:` rather than interpolated
+        # directly into the script: a `${{ }}` inside a `run:` block is pasted
+        # in as raw text before the shell ever sees it, so any quote or
+        # metacharacter in the value would execute as code. Via `env:` the
+        # value arrives as ordinary shell data instead.
+        env:
+          METADATA_TAGS: ${{ steps.metadata.outputs.tags }}
         run: |
           set -euo pipefail
-          FIRST_TAG="$(echo '${{ steps.metadata.outputs.tags }}' | awk '{print $1}')"
+          FIRST_TAG="$(echo "${METADATA_TAGS}" | awk '{print $1}')"
           SRC="${IMAGE_NAME}:${FIRST_TAG}"
           CHUNKAH_WORK_DIR="${RUNNER_TEMP}/chunkah-${{ matrix.flavor }}"
           CHUNKAH_OCI_DIR="${CHUNKAH_WORK_DIR}/oci"
@@ -287,7 +298,9 @@ jobs:
           # The push step reads from the OCI layout directly with skopeo. Remove
           # the original buildah/podman images now so pushing has maximum free
           # space available.
-          for tag in ${{ steps.metadata.outputs.tags }}; do
+          # Unquoted on purpose: sep-tags above makes this a space-separated
+          # list and we want word splitting here.
+          for tag in ${METADATA_TAGS}; do
             podman rmi "${IMAGE_NAME}:${tag}" || true
           done
           podman rmi "${CHUNKAH_IMAGE}" || true
@@ -303,6 +316,7 @@ jobs:
         env:
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ github.token }}
+          METADATA_TAGS: ${{ steps.metadata.outputs.tags }}
         run: |
           set -euo pipefail
           command -v skopeo
@@ -333,7 +347,8 @@ jobs:
             return 1
           }
 
-          for tag in ${{ steps.metadata.outputs.tags }}; do
+          # Unquoted on purpose, as in the rechunk step above.
+          for tag in ${METADATA_TAGS}; do
             echo "::group::Pushing ${IMAGE_FULL}:${tag}"
             push_with_backoff "${tag}"
             echo "::endgroup::"
@@ -356,7 +371,7 @@ jobs:
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         run: |
           set -euo pipefail
-          IMAGE_FULL="${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}"
+          IMAGE_FULL="${IMAGE_REGISTRY}/${IMAGE_NAME}"
           # --new-bundle-format=false --use-signing-config=false keep the
           # signature in cosign v2's storage/format so older cosign clients
           # can still find and verify it (cosign v3 defaults to a new
@@ -364,9 +379,10 @@ jobs:
           # clients can't see).
           cosign sign -y --key env://COSIGN_PRIVATE_KEY \
             --new-bundle-format=false --use-signing-config=false \
-            "${IMAGE_FULL}@${{ steps.push.outputs.digest }}"
+            "${IMAGE_FULL}@${PUSH_DIGEST}"
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          PUSH_DIGEST: ${{ steps.push.outputs.digest }}
 
   cleanup_packages:
     name: Clean up old package versions
@@ -383,14 +399,15 @@ jobs:
 
     steps:
       - name: Prepare environment
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
           # Lowercase to match the GHCR package names the build job creates
           # (GHCR package names are always lowercase; this repo's name
           # happens to already be lowercase, but keep this in sync with the
           # build job's own IMAGE_NAME handling above rather than assume it
           # always will be).
-          NAME="${{ github.event.repository.name }}"
-          echo "IMAGE_NAME=${NAME,,}" >> "${GITHUB_ENV}"
+          echo "IMAGE_NAME=${REPO_NAME,,}" >> "${GITHUB_ENV}"
 
       # This workflow pushes `latest`, `latest.YYYYMMDD` and `YYYYMMDD` for
       # every one of the 3 flavors on every publish (daily via the schedule

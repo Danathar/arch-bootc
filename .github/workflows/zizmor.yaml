@@ -1,0 +1,51 @@
+---
+name: Lint workflows
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+env:
+  # Pinned rather than tracking `latest` so a new zizmor release can't turn a
+  # green `main` red on its own: new versions add new audits, which would
+  # otherwise start failing builds on a schedule nobody here chose. Renovate
+  # tracks this via a custom manager in renovate.json, so bumps arrive as a
+  # PR whose own run proves the new version still passes before it merges.
+  ZIZMOR_VERSION: "1.29.0"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  zizmor:
+    name: Scan workflows with zizmor
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Run zizmor
+        # GH_TOKEN enables zizmor's online audits (the ones that need to ask
+        # GitHub about an action's refs); without it zizmor silently runs in
+        # offline mode and quietly checks less than it appears to.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          uvx "zizmor@${ZIZMOR_VERSION}" --no-progress .

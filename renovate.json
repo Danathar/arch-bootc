@@ -52,6 +52,19 @@
       "depNameTemplate": "koalaman/shellcheck",
       "datasourceTemplate": "docker",
       "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "Track zizmor releases on PyPI (installed with uvx, so pypi is the datasource -- not a container image, so the digest-pin exclusion above does not apply)",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.*\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "ZIZMOR_VERSION:\\s+\"?(?<currentValue>\\d+\\.\\d+\\.\\d+)\"?"
+      ],
+      "depNameTemplate": "zizmor",
+      "datasourceTemplate": "pypi",
+      "versioningTemplate": "semver-coerced"
     }
   ],
 

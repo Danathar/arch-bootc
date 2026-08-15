@@ -30,6 +30,7 @@ skips forks by default; without that line nothing would run at all.
 | cosign CLI | `cosign-release: vX.Y.Z` | `build.yaml` | custom regex manager |
 | chunkah image | `quay.io/coreos/chunkah:vX.Y.Z` | `build.yaml` env | custom regex manager |
 | shellcheck image | `docker.io/koalaman/shellcheck:vX.Y.Z` | `build.yaml` `SHELLCHECK_IMAGE` env | custom regex manager |
+| zizmor | `ZIZMOR_VERSION: X.Y.Z` | `zizmor.yaml` env | custom regex manager (`pypi`) |
 | runner image | `ubuntu-24.04` | `build.yaml` `runs-on` | `github-actions` manager |
 
 Two of these need explanation.
