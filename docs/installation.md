@@ -48,6 +48,19 @@ qemu-img convert -f raw -O qcow2 -S 4k output/bootable.img output/arch-bootc-100
 rm output/bootable.img
 ```
 
+<a id="why-raw-first"></a>
+> **Why install to raw and convert, rather than creating a qcow2 directly?**
+> `bootc install to-disk` writes to a *block device*, and `--via-loopback` gets
+> one by running `losetup` over the file. The kernel's loop driver maps a
+> file's bytes straight through as sectors — it does no format interpretation,
+> so it only understands raw. qcow2 keeps its data behind cluster-mapping
+> metadata that the loop driver can't read, so it can't be an install target.
+> bootc has no qcow2 writer of its own either.
+>
+> This costs less than it looks: `truncate` makes a sparse file and
+> `qemu-img convert -S 4k` writes a sparse qcow2, so peak host usage is about
+> the installed size twice during the conversion, not 200G.
+
 Continue at [Create VM](vm-workflow.md#create-vm-user-session-track) using
 this qcow2, then [First Boot](first-boot.md) to bootstrap your admin user via
 the guest agent.
@@ -116,14 +129,29 @@ Because `bootc` is an immutable system, you must ensure that any AUR packages yo
 The template provided in the `Containerfile` uses a temporary, unprivileged build user to safely compile and install AUR packages during the container build process. `base-devel` is not part of the base image (see [customizations.md](customizations.md)), so the template installs it itself for the duration of the build and removes it again afterward — you don't need to add it to `packages-base.txt`.
 
 ### 4. Create A 100G Sparse Disk + QCOW2
-Create sparse raw file, install image into it, then convert to sparse qcow2:
+`generate-bootable-image` creates the sparse raw file itself (100G by default)
+and installs the image into it; then convert to sparse qcow2:
 
 ```bash
-truncate -s 100G bootable.img
 just generate-bootable-image
 mkdir -p output
 qemu-img convert -f raw -O qcow2 -S 4k bootable.img output/arch-bootc-100g.qcow2
 ```
+
+Both files are sparse, so "100G" is only the size the disk *reports*; neither
+consumes more host space than the install actually writes. Size it differently
+with `BUILD_DISK_SIZE` (the root filesystem bootc creates fills the disk, so
+this is what sets the guest's root size):
+
+```bash
+BUILD_DISK_SIZE=40G just generate-bootable-image
+```
+
+The recipe won't overwrite an existing `bootable.img` — remove it first if you
+want to rebuild at a different size.
+
+The raw-then-convert step is not avoidable — see
+[why](#why-raw-first) under Path A.
 
 `generate-bootable-image` targets the KDE image (`arch-bootc:latest`) by
 default, matching `just build-containerfile`. If you built `base` or `xfce`

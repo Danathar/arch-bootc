@@ -3,6 +3,12 @@ image_tag := env("BUILD_IMAGE_TAG", "latest")
 base_dir := env("BUILD_BASE_DIR", ".")
 filesystem := env("BUILD_FILESYSTEM", "ext4")
 selinux := env("BUILD_SELINUX", "true")
+# Apparent size of the raw disk `generate-bootable-image` installs into. The
+# file is sparse, so this reserves nothing up front -- it only sets how large
+# the disk (and therefore the root filesystem bootc creates on it) appears to
+# the guest. 100G matches docs/installation.md and the `arch-bootc-100g.qcow2`
+# name used from there on.
+disk_size := env("BUILD_DISK_SIZE", "100G")
 # Which locally-built image `bootc`/`generate-bootable-image` should target.
 # `kde` matches build-containerfile's default (unsuffixed) tag, kept as the
 # default so existing workflows are unaffected. `base`/`xfce` match
@@ -54,11 +60,16 @@ bootc *ARGS:
         -v "{{base_dir}}:/data" \
         "{{image_ref}}" bootc {{ARGS}}
 
-generate-bootable-image $base_dir=base_dir $filesystem=filesystem:
+generate-bootable-image $base_dir=base_dir $filesystem=filesystem $disk_size=disk_size:
     #!/usr/bin/env bash
     set -euo pipefail
+    # truncate, not fallocate: this must stay sparse. fallocate reserves every
+    # byte on the host up front, so the file costs its full size the moment it
+    # is created; truncate leaves a hole and only consumes what the install
+    # actually writes. docs/installation.md creates the file this way too, so
+    # running that flow or this recipe standalone behaves identically.
     if [ ! -e "${base_dir}/bootable.img" ] ; then
-        fallocate -l 20G "${base_dir}/bootable.img"
+        truncate -s "${disk_size}" "${base_dir}/bootable.img"
     fi
     just bootc install to-disk --composefs-backend --via-loopback /data/bootable.img --filesystem "${filesystem}" --wipe --bootloader systemd
 
