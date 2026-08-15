@@ -16,11 +16,29 @@ Use this repo as your own bootc image source, build locally, boot it in a VM, cr
 
 *Unlike a traditional Linux distribution where you install packages on a live system, you manage this system by editing the `Containerfile`, building a new container image, and instructing your host to boot from that image.*
 
-> ⚠️ **First boot:** The desktop flavors boot straight to a graphical login,
-> which root cannot use. Switch to a text console (e.g. Ctrl+Alt+F2) and log
-> in as `root` / `changeme` — you'll be forced to set a new password
-> immediately. From there, create your own admin user and give it `sudo` via
-> the `wheel` group — see [First Boot](docs/first-boot.md).
+## Quickstart (recommended)
+
+The guided quickstart is the easiest way to install to a VM or bare metal. It
+uses either the published image or one you built locally and creates your admin
+user through cloud-init, so the system is ready for you to log in on first boot.
+
+```bash
+git clone https://github.com/Danathar/arch-bootc.git
+cd arch-bootc
+just quickstart --dry-run
+just quickstart
+```
+
+The dry run asks the same questions and performs the same read-only safety
+checks, but only prints the commands that would change storage or libvirt. See
+[Installation](docs/installation.md) for the enforced guardrails, required
+tools, and manual alternatives.
+
+> ⚠️ **Manual installations only:** If you skip the guided quickstart, the
+> desktop flavors boot straight to a graphical login that root cannot use.
+> Switch to a text console (e.g. Ctrl+Alt+F2), log in as `root` / `changeme`,
+> and create your admin user as described in [First Boot](docs/first-boot.md).
+> Quickstart seeds that admin user with cloud-init and skips this console step.
 
 ## Prerequisites
 
@@ -39,9 +57,3 @@ Use this repo as your own bootc image source, build locally, boot it in a VM, cr
 |                          [CI/CD](docs/ci-cd.md) |                                                                           Enabling GitHub Actions and image signing on your fork |
 |                    [Renovate](docs/renovate.md) |                                                                                    How dependency updates are tracked and merged |
 | [Updating & Day-2 Operations](docs/updating.md) |                               `bootc switch`, a known composefs GC issue and its fix, and comparing packages between deployments |
-
-Start with [Installation](docs/installation.md) — or jump straight in with
-`just quickstart`, which walks you through a VM or bare-metal install and
-creates your admin user via cloud-init so there's no first-boot console step.
-Add `--dry-run` to print mutating commands without executing them; read-only
-host validation still runs so collision and disk-safety checks remain real.
