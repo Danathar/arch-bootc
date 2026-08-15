@@ -1,5 +1,55 @@
 # Installation
 
+## Path Q: Quickstart (guided, recommended for a first run)
+
+If you just want a working VM (or a bare-metal install) without reading three
+documents, run:
+
+```bash
+just quickstart
+```
+
+It asks what you want — VM or bare metal, which flavor, published or locally
+built image, disk size, and the admin username/password — then does the whole
+sequence: creates the sparse disk, runs `bootc install to-disk`, converts to
+qcow2, builds a cloud-init seed, and creates the VM.
+
+**It seeds cloud-init, so your admin user exists at first boot.** No console
+login as `root`/`changeme`, no QEMU guest-agent bootstrap, no base64 —
+[First Boot](first-boot.md)'s manual dance is skipped entirely. If an SSH
+public key is found in `~/.ssh`, it offers to install that too.
+
+See exactly what it would run, without running any of it:
+
+```bash
+just quickstart --dry-run
+```
+
+`--dry-run` prompts as normal but executes nothing and writes nothing — useful
+both for reviewing the commands and for learning what the manual paths below
+actually do.
+
+### What it refuses to do
+
+The guardrails are enforced in code rather than left to you to remember:
+
+- Uses `qemu:///session` only — the shared system connection is never touched.
+- Refuses a VM name that already exists on **either** libvirt connection.
+  It never destroys, undefines or "recreates" an existing VM.
+- Refuses to put a multi-GB disk image on `tmpfs` (that would be host RAM).
+- Installs image files only through `--via-loopback`, never at a raw device.
+- For bare metal, refuses the target if it is **not a whole disk**, if it
+  **backs the running system**, if anything on it is **mounted**, or if it
+  carries **ZFS / LVM / RAID / LUKS signatures** — that last one matters
+  because pool and array members are typically *not* mounted, so "nothing is
+  mounted" alone would happily wipe a live ZFS pool. Beyond that it makes you
+  retype the device path and then type `ERASE`.
+
+The manual paths below still work and are still the reference for what is
+actually happening — the quickstart just runs them for you.
+
+---
+
 ## Prerequisites
 
 - Linux host with `podman`, `qemu-img`, `virt-install`, `virsh`, `git`, `just`, `gh`

@@ -48,7 +48,8 @@ jobs:
           sudo docker run --rm -v "${PWD}:/mnt:ro" \
             "${SHELLCHECK_IMAGE}" \
             /mnt/system_files/usr/libexec/arch-bootc-prune-esp \
-            /mnt/system_files/usr/bin/ostree-pkg-diff
+            /mnt/system_files/usr/bin/ostree-pkg-diff \
+            /mnt/scripts/quickstart.sh
 
   build_push:
     name: Build and push image
