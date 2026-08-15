@@ -67,7 +67,7 @@ bootc *ARGS:
 # user already exists when the VM comes up.
 #
 # just --list shows only the LAST comment line, so keep the summary here:
-# Guided install to a VM or bare metal. Add --dry-run to preview without running anything.
+# Guided install to a VM or bare metal. Add --dry-run to print mutations after read-only validation.
 quickstart *ARGS:
     ./scripts/quickstart.sh {{ARGS}}
 

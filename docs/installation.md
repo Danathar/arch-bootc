@@ -19,31 +19,44 @@ login as `root`/`changeme`, no QEMU guest-agent bootstrap, no base64 —
 [First Boot](first-boot.md)'s manual dance is skipped entirely. If an SSH
 public key is found in `~/.ssh`, it offers to install that too.
 
-See exactly what it would run, without running any of it:
+See shell-escaped versions of the mutating commands without running them:
 
 ```bash
 just quickstart --dry-run
 ```
 
-`--dry-run` prompts as normal but executes nothing and writes nothing — useful
-both for reviewing the commands and for learning what the manual paths below
-actually do.
+`--dry-run` prompts as normal and performs the same read-only host validation
+(including libvirt inventory and block-device checks), but it does not create,
+modify, or delete resources. This is useful both for reviewing the commands and
+for learning what the manual paths below actually do.
 
 ### What it refuses to do
 
 The guardrails are enforced in code rather than left to you to remember:
 
-- Uses `qemu:///session` only — the shared system connection is never touched.
+- Creates and manages VMs on `qemu:///session` only. It performs a read-only
+  name-collision check against `qemu:///system`, but never modifies that shared
+  connection.
 - Refuses a VM name that already exists on **either** libvirt connection.
-  It never destroys, undefines or "recreates" an existing VM.
+  An unreadable inventory fails closed; it never destroys, undefines or
+  "recreates" an existing VM.
 - Refuses to put a multi-GB disk image on `tmpfs` (that would be host RAM).
 - Installs image files only through `--via-loopback`, never at a raw device.
+- Snapshots `qemu:///session` storage pools before `virt-install`, then reports
+  any pool it created (including on failure) with separate cleanup commands;
+  it never removes a pool automatically.
 - For bare metal, refuses the target if it is **not a whole disk**, if it
   **backs the running system**, if anything on it is **mounted**, or if it
   carries **ZFS / LVM / RAID / LUKS signatures** — that last one matters
   because pool and array members are typically *not* mounted, so "nothing is
   mounted" alone would happily wipe a live ZFS pool. Beyond that it makes you
-  retype the device path and then type `ERASE`.
+  retype the canonical device path and then type `ERASE`. It captures the
+  device identity and repeats every safety check after pulling the image,
+  immediately before `--wipe`.
+
+For VM installs, one of `xorriso`, `genisoimage`, or `mkisofs` is also required
+to create the NoCloud seed ISO. The quickstart checks all required tools before
+changing storage.
 
 The manual paths below still work and are still the reference for what is
 actually happening — the quickstart just runs them for you.
