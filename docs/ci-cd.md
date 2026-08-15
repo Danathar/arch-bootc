@@ -60,8 +60,42 @@ those machines (via a normal `bootc upgrade`) before CI fully switches to
 signing with the rotated key, or they can end up unable to verify — and
 therefore unable to pull — anything from `ghcr.io/danathar` in the meantime.
 
+## Workflow linting (zizmor)
+
+`.github/workflows/zizmor.yaml` runs [zizmor](https://docs.zizmor.sh/) against this repo's
+own workflow files on any PR or push that touches `.github/workflows/**`. zizmor is a static
+analyzer for GitHub Actions: it catches things like credential persistence and template
+injection, which are easy to introduce and invisible in review.
+
+Two classes of finding it already fixed here, both worth understanding because they are easy
+to reintroduce:
+
+- **`artipacked`** — `actions/checkout` leaves the job's `GITHUB_TOKEN` in `.git/config` by
+  default, where any later step (or an uploaded artifact that happens to include `.git/`) can
+  read it. Every checkout in this repo now sets `persist-credentials: false`. Add that to any
+  new checkout step unless you actually need the credential to push.
+- **`template-injection`** — a `${{ ... }}` inside a `run:` block is pasted in as raw text
+  *before* the shell parses the script, so a value containing a quote or `$(...)` executes as
+  code. The fix is to pass the expansion through the step's `env:` and reference it as an
+  ordinary shell variable. Several steps in `build.yaml` do this now (`METADATA_TAGS`,
+  `PUSH_DIGEST`, `REPO_NAME`) — follow that pattern rather than interpolating directly.
+
+The job runs with `GH_TOKEN` set so zizmor's online audits are active; without it zizmor
+silently drops to offline mode and checks less than it looks like it does.
+
+To reproduce locally before pushing:
+
+```bash
+uvx zizmor@1.29.0 --no-progress .          # offline
+GH_TOKEN="$(gh auth token)" uvx zizmor@1.29.0 --no-progress .   # matches CI
+```
+
+The version is pinned in the workflow's `ZIZMOR_VERSION` env var rather than tracking
+`latest`, so a new zizmor release adding new audits can't turn `main` red on its own —
+Renovate bumps it as a PR whose own run proves it still passes.
+
 ## Keeping pinned versions up to date
 
-`bootc`, the base images, the GitHub Actions and the cosign/chunkah versions are all pinned,
-and Renovate keeps them current — opening a PR per update and merging it once the build
-passes. See [Renovate](renovate.md) for how that works and how to control it.
+`bootc`, the base images, the GitHub Actions and the cosign/chunkah/zizmor versions are all
+pinned, and Renovate keeps them current — opening a PR per update and merging it once the
+build passes. See [Renovate](renovate.md) for how that works and how to control it.
