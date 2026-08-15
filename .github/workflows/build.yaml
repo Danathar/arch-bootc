@@ -48,7 +48,8 @@ jobs:
           sudo docker run --rm -v "${PWD}:/mnt:ro" \
             "${SHELLCHECK_IMAGE}" \
             /mnt/system_files/usr/libexec/arch-bootc-prune-esp \
-            /mnt/system_files/usr/bin/ostree-pkg-diff
+            /mnt/system_files/usr/bin/ostree-pkg-diff \
+            /mnt/scripts/quickstart.sh
 
   build_push:
     name: Build and push image
@@ -67,8 +68,10 @@ jobs:
       - name: Prepare environment
         run: |
           # Lowercase the image uri
-          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> "${GITHUB_ENV}"
-          echo "IMAGE_NAME=${IMAGE_NAME,,}-${{ matrix.flavor }}" >> "${GITHUB_ENV}"
+          {
+            echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}"
+            echo "IMAGE_NAME=${IMAGE_NAME,,}-${{ matrix.flavor }}"
+          } >> "${GITHUB_ENV}"
           # Shared buildah layer-cache repo. All 3 flavors share the same
           # base-core stage and buildah's --cache-from/--cache-to key cache
           # entries by content digest (not by this repo path), so one shared

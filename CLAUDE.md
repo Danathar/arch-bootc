@@ -7,9 +7,11 @@ mine along the way — read the gotchas section, they're not hypothetical.
 
 ## Non-negotiable safety rules
 
-- **`qemu:///session` only. Never `qemu:///system`.** The system connection is shared,
-  host-wide, and typically has other VMs already running on it — touching it at all is
-  out of scope unless explicitly asked.
+- **Create and manage VMs on `qemu:///session` only. Never mutate
+  `qemu:///system`.** The system connection is shared, host-wide, and typically
+  has other VMs already running on it. A read-only name inventory is permitted
+  solely to prevent a cross-connection collision; creating, changing, stopping,
+  or deleting anything there remains out of scope unless explicitly asked.
 - **Enumerate existing VMs and storage pools *before* creating anything**, and pick a
   name you've verified has zero collision against both connections:
   ```bash

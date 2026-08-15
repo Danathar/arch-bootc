@@ -30,14 +30,18 @@ Use this repo as your own bootc image source, build locally, boot it in a VM, cr
 
 ## Documentation
 
-| Doc | Covers |
-| --- | --- |
-| [Customizations](docs/customizations.md) | What's preinstalled in this image, and why it works on Arch (upstream bootc/ostree compatibility notes) |
-| [Installation](docs/installation.md) | Quick start from the published image, building locally, and bare-metal install |
-| [VM Workflow](docs/vm-workflow.md) | Creating a local VM and driving it from the host via the QEMU guest agent |
-| [First Boot](docs/first-boot.md) | Bootstrapping your first admin user — console, guest agent, or cloud-init — plus Homebrew setup |
-| [CI/CD](docs/ci-cd.md) | Enabling GitHub Actions and image signing on your fork |
-| [Renovate](docs/renovate.md) | How dependency updates are tracked and merged |
-| [Updating & Day-2 Operations](docs/updating.md) | `bootc switch`, a known composefs GC issue and its fix, and comparing packages between deployments |
+|                                             Doc |                                                                                                                           Covers |
+|------------------------------------------------:|---------------------------------------------------------------------------------------------------------------------------------:|
+|        [Customizations](docs/customizations.md) |                          What's preinstalled in this image, and why it works on Arch (upstream bootc/ostree compatibility notes) |
+|            [Installation](docs/installation.md) | `just quickstart` (guided VM/bare-metal install), quick start from the published image, building locally, and bare-metal install |
+|              [VM Workflow](docs/vm-workflow.md) |                                                        Creating a local VM and driving it from the host via the QEMU guest agent |
+|                [First Boot](docs/first-boot.md) |                                  Bootstrapping your first admin user — console, guest agent, or cloud-init — plus Homebrew setup |
+|                          [CI/CD](docs/ci-cd.md) |                                                                           Enabling GitHub Actions and image signing on your fork |
+|                    [Renovate](docs/renovate.md) |                                                                                    How dependency updates are tracked and merged |
+| [Updating & Day-2 Operations](docs/updating.md) |                               `bootc switch`, a known composefs GC issue and its fix, and comparing packages between deployments |
 
-Start with [Installation](docs/installation.md).
+Start with [Installation](docs/installation.md) — or jump straight in with
+`just quickstart`, which walks you through a VM or bare-metal install and
+creates your admin user via cloud-init so there's no first-boot console step.
+Add `--dry-run` to print mutating commands without executing them; read-only
+host validation still runs so collision and disk-safety checks remain real.

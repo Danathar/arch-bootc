@@ -60,6 +60,17 @@ bootc *ARGS:
         -v "{{base_dir}}:/data" \
         "{{image_ref}}" bootc {{ARGS}}
 
+# Runs the whole sequence (sparse disk, bootc install, qcow2 convert,
+# cloud-init seed, virt-install) that docs/installation.md +
+# docs/vm-workflow.md + docs/first-boot.md otherwise walk through by hand.
+# The cloud-init seed is what removes the first-boot console step: the admin
+# user already exists when the VM comes up.
+#
+# just --list shows only the LAST comment line, so keep the summary here:
+# Guided install to a VM or bare metal. Add --dry-run to print mutations after read-only validation.
+quickstart *ARGS:
+    ./scripts/quickstart.sh {{ARGS}}
+
 generate-bootable-image $base_dir=base_dir $filesystem=filesystem $disk_size=disk_size:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -91,7 +102,7 @@ lint:
         echo "or 'brew install shellcheck') and re-run 'just lint'." >&2
         exit 1
     fi
-    shellcheck system_files/usr/bin/ostree-pkg-diff system_files/usr/libexec/arch-bootc-prune-esp
+    shellcheck system_files/usr/bin/ostree-pkg-diff system_files/usr/libexec/arch-bootc-prune-esp scripts/quickstart.sh
     # homebrew.sh is sourced by /etc/profile.d, not executed directly, so it
     # has no shebang of its own -- tell shellcheck what to assume.
     shellcheck --shell=bash system_files/etc/profile.d/homebrew.sh
