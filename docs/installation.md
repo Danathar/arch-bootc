@@ -1,6 +1,6 @@
 # Installation
 
-## Path Q: Quickstart (guided, recommended for a first run)
+## Recommended: Guided Quickstart
 
 If you just want a working VM (or a bare-metal install) without reading three
 documents, run:
