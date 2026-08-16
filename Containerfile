@@ -1,4 +1,4 @@
-FROM docker.io/archlinux/archlinux:latest@sha256:998e64ed1a552a9119ef5d840d05ff84b0586edef00bcdc55c89750aeee17d4e AS base-core
+FROM docker.io/archlinux/archlinux:latest@sha256:7edfa445d1fe8a87260e2925093ac85980b775866057f165ea8a4f4a878d4e61 AS base-core
 
 # Move everything from `/var` to `/usr/lib/sysimage` so behavior around pacman remains the same on `bootc usroverlay`'d systems
 RUN grep "= */var" /etc/pacman.conf | sed "/= *\/var/s/.*=// ; s/ //" | xargs -n1 sh -c 'mkdir -p "/usr/lib/sysimage/$(dirname $(echo $1 | sed "s@/var/@@"))" && mv -v "$1" "/usr/lib/sysimage/$(echo "$1" | sed "s@/var/@@")"' '' && \
