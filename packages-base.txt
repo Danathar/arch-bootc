@@ -13,6 +13,7 @@ intel-ucode
 amd-ucode
 ostree
 podman
+crun
 shadow
 skopeo
 xfsprogs
@@ -35,3 +36,5 @@ cloud-init
 man-db
 man-pages
 zram-generator
+nodejs
+npm
