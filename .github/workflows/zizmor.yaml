@@ -19,7 +19,7 @@ env:
   # otherwise start failing builds on a schedule nobody here chose. Renovate
   # tracks this via a custom manager in renovate.json, so bumps arrive as a
   # PR whose own run proves the new version still passes before it merges.
-  ZIZMOR_VERSION: "1.29.0"
+  ZIZMOR_VERSION: "1.30.0"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
