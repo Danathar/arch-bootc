@@ -84,11 +84,12 @@ fi
 # Keep the manifest complete as the image grows. Sourced snippets without a
 # shebang are linted elsewhere; every executable Bash entry point shipped from
 # these directories must have its own floor here.
-for production_path in \
-  "${REPO_ROOT}"/scripts/* \
-  "${REPO_ROOT}"/system_files/usr/bin/* \
-  "${REPO_ROOT}"/system_files/usr/libexec/*; do
-  [[ -f "${production_path}" ]] || continue
+production_roots=(
+  "${REPO_ROOT}/scripts"
+  "${REPO_ROOT}/system_files/usr/bin"
+  "${REPO_ROOT}/system_files/usr/libexec"
+)
+while IFS= read -r -d '' production_path; do
   IFS= read -r first_line <"${production_path}" || true
   [[ "${first_line}" == '#!'*bash* ]] || continue
   relative_path="${production_path#"${REPO_ROOT}/"}"
@@ -96,7 +97,7 @@ for production_path in \
     printf 'coverage: FAIL %-55s no threshold is configured\n' "${relative_path}" >&2
     failures=$((failures + 1))
   fi
-done
+done < <(find "${production_roots[@]}" -type f -print0 | sort -z)
 
 if ((failures > 0)); then
   printf 'coverage: %d threshold(s) failed\n' "${failures}" >&2
