@@ -84,6 +84,14 @@ generate-bootable-image $base_dir=base_dir $filesystem=filesystem $disk_size=dis
     fi
     just bootc install to-disk --composefs-backend --via-loopback /data/bootable.img --filesystem "${filesystem}" --wipe --bootloader systemd
 
+# Plain bash tests under tests/. They need no root, no container runtime and no
+# network, so they run anywhere `just lint` does -- unlike the VM procedure in
+# CLAUDE.md, which is the only other way these scripts get exercised.
+#
+# Run the shell unit tests.
+test:
+    ./tests/run-tests.sh
+
 # The unit files reference paths (ExecStart=/usr/libexec/arch-bootc-prune-esp,
 # plus standard systemd targets like multi-user.target/timers.target) that
 # don't exist as such on an arbitrary dev host, so verify runs inside a
@@ -102,7 +110,7 @@ lint:
         echo "or 'brew install shellcheck') and re-run 'just lint'." >&2
         exit 1
     fi
-    shellcheck system_files/usr/bin/ostree-pkg-diff system_files/usr/libexec/arch-bootc-prune-esp scripts/quickstart.sh
+    shellcheck system_files/usr/bin/ostree-pkg-diff system_files/usr/libexec/arch-bootc-prune-esp scripts/quickstart.sh tests/run-tests.sh tests/test-prune-esp.sh
     # homebrew.sh is sourced by /etc/profile.d, not executed directly, so it
     # has no shebang of its own -- tell shellcheck what to assume.
     shellcheck --shell=bash system_files/etc/profile.d/homebrew.sh

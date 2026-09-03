@@ -60,6 +60,35 @@ those machines (via a normal `bootc upgrade`) before CI fully switches to
 signing with the rotated key, or they can end up unable to verify — and
 therefore unable to pull — anything from `ghcr.io/danathar` in the meantime.
 
+## Shell unit tests
+
+The tests live in `tests/` and are plain bash — no framework, no root, no
+container runtime, no network — so the same command CI runs works locally:
+
+```bash
+just test        # or: ./tests/run-tests.sh
+```
+
+`tests/run-tests.sh` executes every `tests/test-*.sh` and fails if any of them
+does. `tests/test-prune-esp.sh` covers `arch-bootc-prune-esp`: argument
+handling, candidate discovery, the keep-set parsed out of BLS entries (including
+CRLF line endings and a final line with no newline), the refuse-to-prune guard
+when no entry references `/EFI/Linux/<id>/`, and `--dry-run`.
+
+Those tests always point the script at a throwaway fixture directory via
+`BOOTC_PRUNE_ESP_PATH`. That is not optional: with the variable unset the script
+discovers ESPs from the real mount table, and the tests would delete real boot
+artifacts on whatever machine ran them. Keep new tests on the same escape hatch.
+
+`just lint` shellchecks the test scripts too, so they are held to the same bar as
+the scripts they cover.
+
+`build.yaml` does not run them yet. To gate builds on the tests, add a `test` job
+that checks out the repo and runs `./tests/run-tests.sh`, then change
+`build_push`'s `needs: lint` to `needs: [lint, test]`. Adding
+`/mnt/tests/run-tests.sh` and `/mnt/tests/test-prune-esp.sh` to the `ShellCheck`
+step's argument list keeps CI's shellcheck coverage in step with `just lint`.
+
 ## Workflow linting (zizmor)
 
 `.github/workflows/zizmor.yaml` runs [zizmor](https://docs.zizmor.sh/) against this repo's
