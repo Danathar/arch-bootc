@@ -52,8 +52,8 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
 # check below compares. Resolve it with:
 #   git ls-remote --tags https://github.com/bootc-dev/bootc.git 'vX.Y.Z*'
 # and take the ^{} row, not the bare tag row.
-ARG BOOTC_VERSION=v1.16.10
-ARG BOOTC_COMMIT=3e76c16556c55e6d15d31bd47602b231e2131cb2
+ARG BOOTC_VERSION=v1.16.11
+ARG BOOTC_COMMIT=add7a909584c832c563bdc3a45c61e42f736ecf2
 # base-devel is deliberately NOT installed here (or in packages-base.txt).
 # The `rust` package already hard-depends on gcc/lld/llvm-libs/compiler-rt,
 # which is all the C toolchain `cargo build` needs for linking. The only
