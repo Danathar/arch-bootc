@@ -11,7 +11,7 @@ produced:
 
 | Signal | Where to see it | Runs on |
 | --- | --- | --- |
-| Shell tests + coverage floors | `test` job, build workflow | Every PR and push to `main`, daily schedule |
+| Shell tests + coverage floors | `test` job, build workflow | PRs and pushes to `main` that touch code, plus a daily schedule |
 | ShellCheck | `lint` job, build workflow | Same |
 | Three-flavor image build | `build_push` job, build workflow | Same |
 | `bootc container lint`, `systemd-analyze verify`, dangling-symlink check | Inside the build, per flavor | Same |
@@ -23,6 +23,14 @@ produced:
 gh run list --branch main --limit 10
 gh run view <run-id>
 ```
+
+**"that touch code" is load-bearing.** The build workflow sets
+`paths-ignore: ["**/*.md", "docs/**"]`, so a change touching only Markdown or
+`docs/` runs *none* of the first four signals — no tests, no ShellCheck, no
+build. That is intentional (there is nothing for them to check), but it means an
+absent workflow is not a passed one. A PR showing no checks has not been
+validated; it has been skipped. Only the daily schedule and the next code change
+will exercise those paths again.
 
 The README badge tracks the build workflow on `main`.
 
@@ -45,15 +53,21 @@ code traces 44 lines of `ostree-pkg-diff` under bash 5.2.21 and 43 under 5.3.9,
 so a floor calibrated to one environment fails in the other for no real reason.
 Floors are therefore set to the lowest count across supported bash versions, not
 the highest one CI happens to produce. If a floor fails locally by a line or two
-and you did not touch the script, check `bash --version` and compare assertion
-counts against CI before assuming a regression -- the assertion totals are the
-signal that actually distinguishes a lost test from a trace difference.
+and you did not touch the script, check the Bash version the report names
+before assuming a regression. Assertion totals are the first thing to compare --
+a lower total is unambiguously a lost test -- but identical totals do not by
+themselves prove the shortfall is a trace difference, since a change can stop
+exercising a branch without changing how many assertions run. Running the same
+revision under both Bash versions is what actually settles it; see
+[ci-cd.md](ci-cd.md).
 
 **ShellCheck.** Catches quoting, word-splitting, and unset-variable classes in
 the shipped scripts and the test scripts alike — the tests are held to the same
 bar as the code they cover. Both the `Justfile` `lint` recipe and the CI step
-list files explicitly, so a new test file escapes linting until you add it to
-both.
+list files explicitly, and **the two lists are maintained by hand**, so a new
+test file escapes linting until you add it to both. That is not hypothetical:
+`tests/test-ostree-pkg-diff-db.sh` reached `main` in the `Justfile` list but not
+the CI one, and went ungated in CI until it was noticed in review.
 
 **The three-flavor build.** `base`, `kde`, and `xfce` each build from the
 `Containerfile`, and each re-runs `bootc container lint`, `systemd-analyze
@@ -95,23 +109,35 @@ relying on an agent having read the policy carefully:
 
 - **Denied** — reading `cosign.key` or other private-key and secret shapes;
   broad container cleanup (`podman system prune`, `rm -a`, `rmi -a`, `buildah rm
-  --all`); any mutation on the shared `qemu:///system` libvirt connection; and
-  the git commands `AGENTS.md` rules out as improvised recovery (`reset --hard`,
-  `clean`, force-push, `checkout --`, `restore`, `stash`).
+  --all`); the *irreversible* verbs on the shared `qemu:///system` connection
+  (`destroy`, `undefine`, the `pool-`/`vol-`/`net-` deletions, `snapshot-delete`);
+  and the git commands that are never a legitimate recovery (`reset --hard`,
+  `clean`, force-push, `stash`).
 - **Prompted** — anything under `sudo`, local image builds, `just lint`,
-  `virt-install` and `virsh`, `losetup`, and every git or `gh` write: branch,
-  commit, push, PR create/edit/merge, workflow dispatch, secret set. These map to
-  the consent gates in `AGENTS.md`.
-- **Allowed** — the non-privileged test suite, `shellcheck`, `bash -n`, and
-  read-only git and host inspection.
+  `virt-install` and `virsh`, everything else on `qemu:///system`, and every git
+  or `gh` write: branch, commit, push, PR create/edit/merge, workflow dispatch,
+  secret set. These map to the consent gates in `AGENTS.md`.
+- **Allowed** — the non-privileged test suite, `shellcheck`, `bash -n`,
+  read-only git and host inspection, and the read-only VM/pool name inventories
+  on **both** libvirt connections.
 
-Two entries are stricter in practice than the lists above suggest. `git stash`
-is denied outright, where `AGENTS.md` only requires approval — denial is the
-blunter reading, and the recovery is to ask rather than to stash. And the
-read-only `virsh -c qemu:///session list`/`pool-list` and `losetup -a` entries in
-the allow list are also matched by the broader `virsh *` and `losetup*` ask
-rules, so in practice they prompt. Both resolve toward prompting, which is the
-safe direction; tighten them if the prompts get tedious.
+Two of those splits are deliberate and easy to get wrong in the opposite
+direction:
+
+- **`qemu:///system` is denied by verb, not wholesale.** `CLAUDE.md` requires
+  inventorying *both* connections before choosing a test VM name, precisely so a
+  new VM cannot collide with something real. A blanket deny on the system
+  connection would block that preflight and push an agent toward bypassing
+  permissions in order to do the safe thing — so the irreversible verbs are
+  denied, the read-only `list --all --name` / `pool-list --all --name` are
+  allowed, and everything else there prompts.
+- **`git restore` and `git checkout --` prompt rather than deny.** `AGENTS.md`
+  forbids them as improvised recovery but names one exception: restoring files
+  that a failed buildah bind-mount deleted from the host is *the* documented
+  correction. Denying them outright would block the only sanctioned repair.
+  `git reset --hard`, `clean` and force-push have no such exception and stay
+  denied. `git stash` is denied too, which is stricter than `AGENTS.md`'s
+  "not without approval" — the recovery there is to ask, not to stash.
 
 Be clear about the limits. These are prefix matches on command strings, so a
 differently-spelled or composed command reaches the same effect without matching

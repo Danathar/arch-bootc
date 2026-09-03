@@ -60,6 +60,7 @@ jobs:
             /mnt/tests/check-coverage.sh \
             /mnt/tests/test-prune-esp.sh \
             /mnt/tests/test-ostree-pkg-diff.sh \
+            /mnt/tests/test-ostree-pkg-diff-db.sh \
             /mnt/tests/e2e/test-quickstart-dry-run.sh
 
   test:

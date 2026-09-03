@@ -28,15 +28,21 @@ if [[ -n "${ARCH_BOOTC_COVERAGE_TRACE:-}" ]]; then
 fi
 EOF
 
+# "${BASH}", not a bare `bash`: the point of reporting a version is to make a
+# cross-version comparison trustworthy, so the interpreter that runs the suite
+# has to be the one this report names. A bare `bash` would take whatever is on
+# PATH, so `/opt/bash-5.2 tests/check-coverage.sh` would trace under 5.2's
+# checker but produce the trace under PATH's Bash and label it 5.2.
+# run-tests.sh passes "${BASH}" down to each test file for the same reason.
 ARCH_BOOTC_COVERAGE_TRACE="${TRACE_FILE}" \
 BASH_ENV="${TRACE_ENV}" \
-  bash "${SCRIPT_DIR}/run-tests.sh"
+  "${BASH}" "${SCRIPT_DIR}/run-tests.sh"
 
 # Traced-line counts vary slightly by Bash version for identical code (see the
 # threshold note in docs/ci-cd.md), so record which Bash produced this report.
 # Without it, a one-line miss looks like a coverage regression rather than the
 # environment difference it usually is.
-printf 'coverage: traced with bash %s on %s\n' "${BASH_VERSION}" "$(uname -s)"
+printf 'coverage: traced with bash %s (%s) on %s\n' "${BASH_VERSION}" "${BASH}" "$(uname -s)"
 
 declare -A covered_lines=()
 while IFS=: read -r source_path line_number _; do
