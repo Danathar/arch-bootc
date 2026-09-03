@@ -45,6 +45,13 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
 # used for every `uses:` reference in .github/workflows/*.yaml. Both values
 # are tracked together by the "Track bootc-dev/bootc release + pinned commit"
 # customManager in renovate.json.
+#
+# BOOTC_COMMIT is the *peeled* commit. These are annotated tags, so
+# refs/tags/vX.Y.Z is the tag object and refs/tags/vX.Y.Z^{} is the commit --
+# the latter is what a `--branch <tag>` clone leaves at HEAD, and so what the
+# check below compares. Resolve it with:
+#   git ls-remote --tags https://github.com/bootc-dev/bootc.git 'vX.Y.Z*'
+# and take the ^{} row, not the bare tag row.
 ARG BOOTC_VERSION=v1.16.10
 ARG BOOTC_COMMIT=3e76c16556c55e6d15d31bd47602b231e2131cb2
 # base-devel is deliberately NOT installed here (or in packages-base.txt).
@@ -67,7 +74,12 @@ ARG BOOTC_COMMIT=3e76c16556c55e6d15d31bd47602b231e2131cb2
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     pacman -S --needed --asdeps --noconfirm rust make go-md2man elfutils && \
     git clone --branch "${BOOTC_VERSION}" --depth 1 "https://github.com/bootc-dev/bootc.git" /tmp/bootc && \
-    [ "$(git -C /tmp/bootc rev-parse HEAD)" = "${BOOTC_COMMIT}" ] || { echo "bootc tag ${BOOTC_VERSION} resolved to unexpected commit; expected ${BOOTC_COMMIT}" >&2; exit 1; } && \
+    bootc_head="$(git -C /tmp/bootc rev-parse HEAD)" && \
+    if [ "${bootc_head}" != "${BOOTC_COMMIT}" ]; then \
+        printf 'bootc tag %s resolved to %s, expected %s -- refusing to build a re-pointed tag\n' \
+            "${BOOTC_VERSION}" "${bootc_head}" "${BOOTC_COMMIT}" >&2; \
+        exit 1; \
+    fi && \
     make -C /tmp/bootc bin install-all && \
     printf "systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n" | tee /usr/lib/dracut/dracut.conf.d/30-bootcrew-fix-bootc-module.conf && \
     printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" ostree bootc "' | tee "/usr/lib/dracut/dracut.conf.d/30-bootcrew-bootc-container-build.conf" && \
