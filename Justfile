@@ -110,7 +110,7 @@ lint:
         echo "or 'brew install shellcheck') and re-run 'just lint'." >&2
         exit 1
     fi
-    shellcheck system_files/usr/bin/ostree-pkg-diff system_files/usr/libexec/arch-bootc-prune-esp scripts/quickstart.sh tests/run-tests.sh tests/check-coverage.sh tests/test-prune-esp.sh tests/test-ostree-pkg-diff.sh tests/test-ostree-pkg-diff-db.sh tests/e2e/test-quickstart-dry-run.sh
+    shellcheck system_files/usr/bin/ostree-pkg-diff system_files/usr/libexec/arch-bootc-prune-esp scripts/quickstart.sh scripts/pr-review-state.sh tests/run-tests.sh tests/check-coverage.sh tests/test-prune-esp.sh tests/test-ostree-pkg-diff.sh tests/test-ostree-pkg-diff-db.sh tests/test-pr-review-state.sh tests/e2e/test-quickstart-dry-run.sh
     # homebrew.sh is sourced by /etc/profile.d, not executed directly, so it
     # has no shebang of its own -- tell shellcheck what to assume.
     shellcheck --shell=bash system_files/etc/profile.d/homebrew.sh

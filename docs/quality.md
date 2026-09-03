@@ -18,6 +18,7 @@ produced:
 | Workflow static analysis (zizmor) | `Lint workflows` workflow | Any change under `.github/workflows/**` |
 | Image signature (cosign) | `Sign container image` step | Pushes to `main` only |
 | Dependency freshness | Renovate PRs | Continuously |
+| Thread-aware review state | `./scripts/pr-review-state.sh` | On demand; embedded in the `ai-fix-requested` work order |
 
 ```bash
 gh run list --branch main --limit 10

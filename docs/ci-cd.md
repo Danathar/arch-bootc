@@ -189,6 +189,66 @@ The version is pinned in the workflow's `ZIZMOR_VERSION` env var rather than tra
 `latest`, so a new zizmor release adding new audits can't turn `main` red on its own —
 Renovate bumps it as a PR whose own run proves it still passes.
 
+## Review state and the `ai-fix-requested` work order
+
+Two pieces, one purpose: make the *thread-aware* review state of a pull request
+available, because neither the pull request UI's flat comment list nor
+`gh pr view --comments` will tell you whether the thread a comment belongs to is
+still unresolved, or has been marked outdated by a later push. Acting on a flat
+list means re-fixing settled feedback and missing live feedback.
+[AGENTS.md](../AGENTS.md) and [review-rubric.md](review-rubric.md) both require
+the distinction; nothing provided it.
+
+### `scripts/pr-review-state.sh`
+
+Read-only. One GraphQL query, so the threads and the checks are read at the
+*same* head SHA rather than from two calls that could straddle a push.
+
+```bash
+./scripts/pr-review-state.sh 161            # the current repo
+./scripts/pr-review-state.sh --repo owner/name 161
+./scripts/pr-review-state.sh --json 161     # for scripting
+```
+
+It prints the head SHA, every review thread with resolved/outdated state and an
+excerpt, and the checks at that SHA. Exit status is the useful part when it is
+used as a gate:
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | No unresolved threads and no failing checks |
+| `1` | Something is outstanding |
+| `2` | Usage or API error |
+
+Two things it deliberately does not claim. A **resolved thread is not evidence
+the underlying issue was fixed** — only that someone marked it resolved. And an
+empty check list is a *skip*, not a pass; the report says so in place, because
+that is the state a documentation-only pull request is always in.
+
+### `.github/workflows/ai-fix.yml`
+
+Fires when the `ai-fix-requested` label lands on an issue or a pull request, or
+on `workflow_dispatch` with a number. It posts one comment: the context an agent
+needs before touching anything, plus the boundaries it works inside — the
+untrusted-input rule, that policy is read from `main` rather than from the
+branch under review, the consent gates, the tier question, and the evidence a
+response owes. For a pull request it embeds the review-state report above.
+
+**It writes no code and applies no review suggestions**, and the comment says
+so. No model credentials exist in this repository's CI, and giving a workflow
+the ability to push changes in response to a label would defeat every consent
+gate in `AGENTS.md` — the point of those gates is that a person decides. What is
+automated is the part that was manual and easy to get wrong: assembling the
+thread-aware state, and putting the rules in front of the work instead of
+leaving them to be looked up afterwards.
+
+Every value originating outside the repository reaches the script through
+`env:` and none is interpolated into it; the target number is rejected unless it
+is digits. The only untrusted text that reaches the comment is review excerpts,
+written to a file and fenced rather than passed through a shell. Fork pull
+requests are skipped — a fork's `GITHUB_TOKEN` is read-only regardless of the
+permissions the job requests.
+
 ## Keeping pinned versions up to date
 
 `bootc`, the base images, the GitHub Actions and the cosign/chunkah/zizmor versions are all

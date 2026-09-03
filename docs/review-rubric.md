@@ -92,6 +92,9 @@ This is where reviews most often need to push back.
 - [ ] Check status was read at the **current** head SHA, not an earlier push.
 - [ ] Inline review threads were inspected with thread-aware state. Flat comments
       do not reveal whether a thread is unresolved or outdated.
+      `./scripts/pr-review-state.sh <number>` reports both, together with the
+      checks at the same head SHA; see [ci-cd.md](ci-cd.md). A resolved thread
+      is not evidence the issue was fixed, only that someone resolved it.
 - [ ] A suspicious finding was reproduced before code changed on account of it.
       Shell or systemd syntax that merely looks unusual is not invalid until the
       relevant tool rejects it.
