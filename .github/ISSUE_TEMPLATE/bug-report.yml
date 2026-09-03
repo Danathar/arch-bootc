@@ -1,0 +1,56 @@
+name: Bug report
+description: Report a reproducible problem with the image, installer, or automation
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include passwords, tokens, signing keys, or other sensitive host data.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: flavor
+    attributes:
+      label: Image flavor
+      options:
+        - base
+        - kde
+        - xfce
+        - Not flavor-specific
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Image revision or digest
+      description: Prefer the org.opencontainers.image.revision label or immutable digest over a tag.
+      placeholder: Commit SHA or sha256 digest
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Include the smallest safe sequence that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Relevant output
+      description: Redact credentials and unrelated host details. Include complete errors when possible.
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed credentials, signing material, and personal information from this report.
+          required: true
+        - label: I identified whether this occurred during a local build, disk install, VM boot, or upgrade.
+          required: true

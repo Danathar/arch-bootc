@@ -1,0 +1,3 @@
+# Keep optional checks stable across local and CI runs. Add new checks here only
+# after proving the shipped scripts and tests pass with the pinned CI version.
+enable=avoid-nullary-conditions
