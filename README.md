@@ -57,3 +57,12 @@ tools, and manual alternatives.
 |                          [CI/CD](docs/ci-cd.md) |                                                                           Enabling GitHub Actions and image signing on your fork |
 |                    [Renovate](docs/renovate.md) |                                                                                    How dependency updates are tracked and merged |
 | [Updating & Day-2 Operations](docs/updating.md) |                               `bootc switch`, a known composefs GC issue and its fix, and comparing packages between deployments |
+|              [Quality signals](docs/quality.md) |                                        Every automated check this repo runs, what each one proves, and where the gaps are |
+|      [PR review rubric](docs/review-rubric.md) |                                                              What a reviewer checks on a pull request, in the order it matters |
+|                      [Metrics](docs/metrics.md) |                                              PR acceptance, time to merge, and CI health — with the `gh` commands to recompute |
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to run the checks, what not to
+change casually, and what a pull request needs to say. [AGENTS.md](AGENTS.md)
+is the authoritative policy behind it.
