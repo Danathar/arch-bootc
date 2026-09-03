@@ -226,6 +226,10 @@ curl -sfL https://raw.githubusercontent.com/bootc-dev/bootc/main/Cargo.toml | gr
 No output, or a line that moves the dependency behind a feature, means the blocker is gone and
 the next Renovate PR should go green by itself.
 
+Reported upstream as [bootc-dev/bootc#2431](https://github.com/bootc-dev/bootc/issues/2431),
+which proposes gating the dependency behind a cargo feature. Watching that issue is the other
+way to hear about a fix.
+
 ## The Dependency Dashboard
 
 Renovate maintains an issue titled **Dependency Dashboard** listing everything it tracks and
