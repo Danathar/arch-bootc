@@ -181,6 +181,62 @@ That makes native auto-merge safe *and* immediate, because GitHub now has real c
 on. Note that branch protection would also apply to your own direct pushes to `main` unless
 `enforce_admins` is left off.
 
+## Known blocked updates
+
+An update whose build fails is **already held**: `platformAutomerge` is off, so Renovate does
+the merging itself and waits for every branch check to pass. A red PR never automerges. That
+matters, because it means a broken upstream release needs **no `allowedVersions` pin** to keep
+it out — and adding one would be actively harmful. A version pin stops Renovate opening PRs at
+all, which removes the only signal that would tell you when the problem is fixed. That is how a
+"temporary" hold becomes a year on an old dependency.
+
+So the rule here is: **leave the PR open and red.** Renovate reuses one branch per package
+range (`renovate/bootc-dev-bootc-1.x`), so when a newer version appears it updates that same
+branch and rebuilds. Either the build fails again and nothing moves, or upstream fixed it, the
+build goes green, and Renovate merges it on its own. The update clears itself; nobody has to
+remember to go and check.
+
+One limit on that. This repo sets `rebaseWhen: "conflicted"`, so Renovate refreshes the branch
+when the *dependency* gains a new version, but does **not** rebase it onto a moved `main` unless
+the branch actually conflicts. So the self-clearing path covers an upstream fix, not a fix made
+here: if the blocker is resolved on our side instead — say by building the missing library in
+the image — the open PR may still be testing the old base and need a manual rebase before it
+goes green.
+
+The cost is that a red PR sitting open is meaningless unless the reason is written down. So
+write it here.
+
+### bootc, held at v1.16.10 since 2026-09-03
+
+`bootc-dev/bootc` v1.16.11 added `selinux = "=0.5.0"` to `[dependencies]` in its `Cargo.toml`.
+It is a direct, unconditional dependency — there is no `[features]` section gating it — so the
+build needs the libselinux C headers, and fails without them:
+
+```
+error: failed to run custom build command for `selinux-sys v0.6.15`
+selinux-sys: Failed to find 'selinux/selinux.h'
+make: *** [Makefile:44: manpages] Error 1
+```
+
+This is not fixable by adding a package. **Arch ships neither `libselinux` nor `libsepol`** in
+its official repositories, so the options are a third-party repository (which `AGENTS.md`
+forbids without explicit authorization for that exact source), building both libraries from
+source in the bootc build stage, or waiting. Note that the commit pin is *not* the problem: the
+tag re-point check passes and the build gets as far as `cargo`.
+
+To check whether upstream has resolved it:
+
+```bash
+curl -sfL https://raw.githubusercontent.com/bootc-dev/bootc/main/Cargo.toml | grep -n '^selinux'
+```
+
+No output, or a line that moves the dependency behind a feature, means the blocker is gone and
+the next Renovate PR should go green by itself.
+
+Reported upstream as [bootc-dev/bootc#2431](https://github.com/bootc-dev/bootc/issues/2431),
+which proposes gating the dependency behind a cargo feature. Watching that issue is the other
+way to hear about a fix.
+
 ## The Dependency Dashboard
 
 Renovate maintains an issue titled **Dependency Dashboard** listing everything it tracks and
