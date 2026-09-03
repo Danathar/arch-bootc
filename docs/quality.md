@@ -40,11 +40,14 @@ It proves the covered lines execute and assert correctly. It does not prove the
 uncovered ones do anything; the percentages printed alongside each floor are
 context, not a target.
 
-*Known sharp edge:* traced-line counts are bash-version sensitive. The floors
-were set from CI's bash (5.2.x on `ubuntu-24.04`); a newer bash can trace one or
-two fewer lines for identical code and fail the gate locally while CI stays
-green. If a floor fails locally by a hair and you did not touch the script,
-check `bash --version` before assuming a regression.
+*Known sharp edge:* traced-line counts are bash-version sensitive. Identical
+code traces 44 lines of `ostree-pkg-diff` under bash 5.2.21 and 43 under 5.3.9,
+so a floor calibrated to one environment fails in the other for no real reason.
+Floors are therefore set to the lowest count across supported bash versions, not
+the highest one CI happens to produce. If a floor fails locally by a line or two
+and you did not touch the script, check `bash --version` and compare assertion
+counts against CI before assuming a regression -- the assertion totals are the
+signal that actually distinguishes a lost test from a trace difference.
 
 **ShellCheck.** Catches quoting, word-splitting, and unset-variable classes in
 the shipped scripts and the test scripts alike — the tests are held to the same
