@@ -7,9 +7,65 @@ set -euo pipefail
 #   - pkg version      (removed from current boot)
 #   ! pkg old -> new   (version changed)
 
-if [[ "${EUID}" -ne 0 ]]; then
-  exec sudo --preserve-env=PATH bash "$0" "$@"
-fi
+# --- pure helpers ----------------------------------------------------------
+#
+# Everything above the "real program" marker below is free of side effects and
+# reads no system state beyond what it is handed, so tests can source this file
+# and call these directly. Keep it that way: anything that mounts, unmounts or
+# shells out to pacman belongs below the marker.
+
+# Print the value of a kernel command-line key (e.g. `composefs`, `ostree`).
+# The cmdline file is a parameter so tests can pass a fixture instead of
+# /proc/cmdline. Prints nothing when the key is absent.
+karg_value() {
+  local key="$1" cmdline="${2:-/proc/cmdline}"
+  [[ -r "${cmdline}" ]] || return 0
+  tr ' ' '\n' <"${cmdline}" | awk -F= -v key="${key}" '$1==key {print $2; exit}'
+}
+
+# Split an `ostree=` kernel argument (/ostree/boot.N/<os>/<boot>/<serial>) into
+# its stateroot and deployment id, printed as "<os> <boot>.<serial>". Prints
+# nothing when the value is not that shape.
+parse_ostree_karg() {
+  local karg="$1"
+  if [[ "${karg}" =~ ^/ostree/boot\.[0-9]+/([^/]+)/([^/]+)/([0-9]+)$ ]]; then
+    printf '%s %s.%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+  fi
+}
+
+# Stateroot and deployment id of the booted entry in `ostree admin status`
+# output -- the single line that starts with `*`.
+status_booted_os() {
+  awk '/^\*/{print $2; exit}' <<<"$1"
+}
+
+status_booted_boot() {
+  awk '/^\*/{print $3; exit}' <<<"$1"
+}
+
+# The deployment to diff the booted one against: the entry explicitly marked
+# (rollback) if there is one, else the first other deployment of the same
+# stateroot. Prints nothing when the booted deployment is the only one.
+status_previous() {
+  local status="$1" os="$2" boot="$3" previous
+  previous="$(awk -v os="${os}" '$1==os && /\(rollback\)/ {print $2; exit}' <<<"${status}")"
+  if [[ -z "${previous}" ]]; then
+    previous="$(awk -v os="${os}" -v boot="${boot}" '$1==os && $2!=boot {print $2; exit}' <<<"${status}")"
+  fi
+  printf '%s\n' "${previous}"
+}
+
+# Emit the +/-/! report for two `pacman -Q` listings. Both files must already be
+# sorted on the package name: join walks them in order and silently misses
+# pairings otherwise.
+emit_pkg_diff() {
+  local old_list="$1" new_list="$2"
+  join -a1 -a2 -e "-" -o 0,1.2,2.2 "${old_list}" "${new_list}" | awk '
+$2=="-" { printf("+ %s %s\n", $1, $3); next }
+$3=="-" { printf("- %s %s\n", $1, $2); next }
+$2!=$3   { printf("! %s %s -> %s\n", $1, $2, $3) }
+'
+}
 
 cleanup_mnt_old=""
 cleanup_mnt_new=""
@@ -47,15 +103,23 @@ run_db_diff() {
   pacman --dbpath "${old_db}" -Q | sort >"${cleanup_list_old}"
   pacman --dbpath "${new_db}" -Q | sort >"${cleanup_list_new}"
 
-  join -a1 -a2 -e "-" -o 0,1.2,2.2 "${cleanup_list_old}" "${cleanup_list_new}" | awk '
-$2=="-" { printf("+ %s %s\n", $1, $3); next }
-$3=="-" { printf("- %s %s\n", $1, $2); next }
-$2!=$3   { printf("! %s %s -> %s\n", $1, $2, $3) }
-'
+  emit_pkg_diff "${cleanup_list_old}" "${cleanup_list_new}"
 }
 
+# --- real program ----------------------------------------------------------
+#
+# Sourcing stops here, so tests get the helpers above without running any of the
+# below or re-executing themselves under sudo.
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+  return 0
+fi
+
+if [[ "${EUID}" -ne 0 ]]; then
+  exec sudo --preserve-env=PATH bash "$0" "$@"
+fi
+
 # Composefs-native layout (common with modern bootc): use composefs image IDs.
-composefs_id="$(tr ' ' '\n' </proc/cmdline | awk -F= '$1=="composefs" {print $2; exit}')"
+composefs_id="$(karg_value composefs)"
 
 composefs_root=""
 for candidate in "${OSTREE_SYSROOT:-}" "/" "/sysroot" "/sysroot/state" "/mnt"; do
@@ -139,22 +203,20 @@ boot=""
 last=""
 
 if status="$(ostree admin --sysroot="${sysroot}" status 2>/dev/null)"; then
-  os="$(awk '/^\*/{print $2; exit}' <<<"${status}")"
-  boot="$(awk '/^\*/{print $3; exit}' <<<"${status}")"
+  os="$(status_booted_os "${status}")"
+  boot="$(status_booted_boot "${status}")"
 
   if [[ -n "${os}" && -n "${boot}" ]]; then
-    last="$(awk -v os="${os}" '$1==os && /\(rollback\)/ {print $2; exit}' <<<"${status}")"
-    if [[ -z "${last}" ]]; then
-      last="$(awk -v os="${os}" -v boot="${boot}" '$1==os && $2!=boot {print $2; exit}' <<<"${status}")"
-    fi
+    last="$(status_previous "${status}" "${os}" "${boot}")"
   fi
 fi
 
 if [[ -z "${os}" || -z "${boot}" ]]; then
-  ostree_karg="$(tr ' ' '\n' </proc/cmdline | awk -F= '$1=="ostree" {print $2; exit}')"
-  if [[ "${ostree_karg}" =~ ^/ostree/boot\.[0-9]+/([^/]+)/([^/]+)/([0-9]+)$ ]]; then
-    os="${BASH_REMATCH[1]}"
-    boot="${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+  ostree_karg="$(karg_value ostree)"
+  parsed_karg="$(parse_ostree_karg "${ostree_karg}")"
+  if [[ -n "${parsed_karg}" ]]; then
+    os="${parsed_karg%% *}"
+    boot="${parsed_karg#* }"
   fi
 fi
 

@@ -80,14 +80,38 @@ Those tests always point the script at a throwaway fixture directory via
 discovers ESPs from the real mount table, and the tests would delete real boot
 artifacts on whatever machine ran them. Keep new tests on the same escape hatch.
 
+`tests/test-ostree-pkg-diff.sh` covers `ostree-pkg-diff`'s parsing: the
+`composefs=`/`ostree=` kernel-argument lookups, the `ostree admin status` parse
+that picks the booted and rollback deployments, and the `join`+`awk` that turns
+two `pacman -Q` listings into the `+`/`-`/`!` report.
+
+That script is split in half to make this possible. Everything above its
+`--- real program ---` marker is pure — it reads only what it is handed — and
+everything below it mounts erofs images, shells out to pacman, and re-executes
+under sudo. Sourcing returns at the marker, so the tests get the helpers and
+none of the side effects. Two consequences worth knowing before editing it:
+
+- New parsing logic belongs *above* the marker, taking its input as a
+  parameter (as `karg_value` takes the cmdline path) rather than reading a
+  fixed system path. Below the marker it is untestable off a real deployment.
+- `test_sourcing_does_not_run_the_program` is what enforces the marker. It runs
+  the source with a stub `sudo` on `PATH`, so if the guard is ever dropped the
+  suite reports a failure instead of hanging on a real password prompt.
+
 `just lint` shellchecks the test scripts too, so they are held to the same bar as
 the scripts they cover.
 
-`build.yaml` does not run them yet. To gate builds on the tests, add a `test` job
-that checks out the repo and runs `./tests/run-tests.sh`, then change
-`build_push`'s `needs: lint` to `needs: [lint, test]`. Adding
-`/mnt/tests/run-tests.sh` and `/mnt/tests/test-prune-esp.sh` to the `ShellCheck`
-step's argument list keeps CI's shellcheck coverage in step with `just lint`.
+`build.yaml` runs them: a `test` job checks out the repo and runs
+`./tests/run-tests.sh`, and `build_push` needs `[lint, test]`, so no image is
+built or published from a revision whose tests fail. The job needs nothing but
+the checkout and finishes well before the build would, so it costs no meaningful
+wall-clock time.
+
+Adding a new `tests/test-*.sh` file picks it up automatically in `run-tests.sh`,
+which globs, but **not** in either shellcheck invocation — both list files
+explicitly. Add it to the `shellcheck` line in the `Justfile`'s `lint` recipe and
+to the `ShellCheck` step's `/mnt/tests/...` arguments in `build.yaml`, or it
+silently escapes linting.
 
 ## Workflow linting (zizmor)
 

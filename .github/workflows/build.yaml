@@ -49,11 +49,29 @@ jobs:
             "${SHELLCHECK_IMAGE}" \
             /mnt/system_files/usr/libexec/arch-bootc-prune-esp \
             /mnt/system_files/usr/bin/ostree-pkg-diff \
-            /mnt/scripts/quickstart.sh
+            /mnt/scripts/quickstart.sh \
+            /mnt/tests/run-tests.sh \
+            /mnt/tests/test-prune-esp.sh \
+            /mnt/tests/test-ostree-pkg-diff.sh
+
+  test:
+    name: Shell unit tests
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # Plain bash, no root, no container runtime, no network -- so this needs
+      # nothing beyond the checkout and finishes long before the build would.
+      - name: Run shell unit tests
+        run: ./tests/run-tests.sh
 
   build_push:
     name: Build and push image
-    needs: lint
+    needs: [lint, test]
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
