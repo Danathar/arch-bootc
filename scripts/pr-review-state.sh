@@ -103,14 +103,15 @@ fi
 # One query for everything, so the threads and the checks are read at the same
 # head SHA rather than from two calls that could straddle a push.
 read -r -d '' query <<'GRAPHQL' || true
-query($owner: String!, $repo: String!, $number: Int!) {
+query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       number
       title
       isDraft
       headRefOid
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           isResolved
           isOutdated
@@ -162,16 +163,60 @@ else
   name="${owner_and_name#*/}"
 fi
 
-if ! response="$(gh api graphql \
-  -F owner="${owner}" -F repo="${name}" -F number="${pr_number}" \
-  -f query="${query}" 2>&1)"; then
+fetch_page() {
+  gh api graphql \
+    -F owner="${owner}" -F repo="${name}" -F number="${pr_number}" \
+    -F cursor="${1:-}" -f query="${query}" 2>&1
+}
+
+if ! response="$(fetch_page)"; then
   printf 'error: GraphQL query failed: %s\n' "${response}" >&2
   exit 2
 fi
 
+# Walk the remaining pages of review threads. A pull request with more than
+# 100 threads is unusual, but reporting "nothing outstanding" because the one
+# unresolved thread landed on page two would defeat the entire point of this
+# script -- an exit code of 0 has to mean it looked at all of them.
+#
+# Only the threads are paginated. The pull request metadata and the check
+# rollup come from the first page, which is what makes them a consistent
+# snapshot rather than two reads that could straddle a push.
+threads="$(printf '%s' "${response}" | jq -c '.data.repository.pullRequest.reviewThreads.nodes')"
+cursor="$(printf '%s' "${response}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty')"
+has_next="$(printf '%s' "${response}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false')"
+
+# Bounded, and the bound is not decoration. The loop advances only on the
+# cursor the server hands back; a server that repeats a cursor, or an
+# intermediary that replays a cached page, would otherwise spin forever
+# against a script whose whole job is to be run unattended in CI. Ten pages
+# is a thousand review threads.
+pages=0
+while [[ "${has_next}" == "true" && -n "${cursor}" ]]; do
+  pages=$((pages + 1))
+  if ((pages > 10)); then
+    echo "error: review threads did not finish paginating after 10 pages" >&2
+    exit 2
+  fi
+  previous_cursor="${cursor}"
+  if ! page="$(fetch_page "${cursor}")"; then
+    printf 'error: GraphQL query failed while paginating review threads: %s\n' "${page}" >&2
+    exit 2
+  fi
+  threads="$(jq -c -n --argjson a "${threads}" \
+    --argjson b "$(printf '%s' "${page}" | jq -c '.data.repository.pullRequest.reviewThreads.nodes')" \
+    '$a + $b')"
+  cursor="$(printf '%s' "${page}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty')"
+  has_next="$(printf '%s' "${page}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false')"
+  if [[ "${cursor}" == "${previous_cursor}" ]]; then
+    echo "error: review thread pagination did not advance past cursor ${cursor}" >&2
+    exit 2
+  fi
+done
+
 # Flatten into the shape the report and --json both consume, so there is one
 # definition of "unresolved" rather than two that can disagree.
-if ! summary="$(printf '%s' "${response}" | jq '
+if ! summary="$(printf '%s' "${response}" | jq --argjson threads "${threads}" '
   .data.repository.pullRequest as $pr
   | ($pr.commits.nodes[0].commit.statusCheckRollup) as $rollup
   | {
@@ -181,7 +226,7 @@ if ! summary="$(printf '%s' "${response}" | jq '
       headRefOid: $pr.headRefOid,
       rollupState: ($rollup.state // "NONE"),
       threads: [
-        $pr.reviewThreads.nodes[]
+        $threads[]
         | {
             resolved: .isResolved,
             outdated: .isOutdated,
@@ -206,6 +251,15 @@ if ! summary="$(printf '%s' "${response}" | jq '
 ' 2>&1)"; then
   printf 'error: could not parse the GraphQL response: %s\n' "${summary}" >&2
   exit 2
+fi
+
+# The check rollup is capped at 100 contexts and is not paginated: unlike a
+# review thread, a check that does not fit cannot be "unresolved feedback
+# someone is waiting on", and the count here is a property of the workflows in
+# this repository rather than of what reviewers did. Say so if it is ever hit
+# rather than quietly reporting a truncated list.
+if [[ "$(printf '%s' "${summary}" | jq '.checks | length')" == "100" ]]; then
+  echo "warning: 100 check contexts returned; the list may be truncated" >&2
 fi
 
 if ((emit_json)); then

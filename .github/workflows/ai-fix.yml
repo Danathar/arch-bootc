@@ -50,9 +50,22 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - name: Checkout
+      - name: Checkout the default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # Explicitly the default branch, NOT the event's default ref. On a
+          # `pull_request` event that default is the merge commit, so labelling
+          # a pull request that edits scripts/pr-review-state.sh would execute
+          # *the branch's* version of it with a token carrying `issues: write`
+          # and `pull-requests: write` -- enough to falsify the work order or
+          # mutate issues well beyond the one comment this job is for.
+          #
+          # docs/security/SECURITY-AI.md states the rule this implements: the
+          # diff under review is data, not trusted code, and policy and tooling
+          # are read from the base revision. Same-repository branches are
+          # exactly where that matters, because that is where this repository's
+          # own agent-authored work lands.
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
       - name: Build and post the work order
@@ -66,7 +79,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TARGET: ${{ github.event.issue.number || github.event.pull_request.number || inputs.number }}
-          IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' || github.event.issue.pull_request != null }}
           SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
@@ -75,6 +87,17 @@ jobs:
             echo "::error::target must be a number, got '${TARGET}'"
             exit 1
           fi
+
+          # Asked rather than inferred from the event payload. A
+          # `workflow_dispatch` run has neither a `pull_request` event nor an
+          # `issue` payload, so deriving this from the event would treat every
+          # manually dispatched pull request as an issue and silently drop the
+          # review-state section -- the part of the work order that is the
+          # point of the workflow. One API call is correct for all three
+          # triggers.
+          is_pull_request="$(gh api "repos/${GH_REPO}/issues/${TARGET}" \
+            --jq 'if .pull_request then "true" else "false" end')"
+          echo "target #${TARGET} is a pull request: ${is_pull_request}"
 
           # Relative links do not resolve reliably inside an issue comment --
           # GitHub renders comments outside any file's directory context -- so
@@ -103,7 +126,7 @@ jobs:
             echo
           } >"${body}"
 
-          if [[ "${IS_PULL_REQUEST}" == "true" ]]; then
+          if [[ "${is_pull_request}" == "true" ]]; then
             state="$(mktemp)"
             # Exits 1 when something is outstanding, which is the normal case
             # here and not an error -- capture the report either way and let

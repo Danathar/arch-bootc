@@ -220,6 +220,14 @@ used as a gate:
 | `1` | Something is outstanding |
 | `2` | Usage or API error |
 
+Review threads are **paginated**, and that is load-bearing rather than tidy: an
+exit code of `0` has to mean the script looked at every thread, not at the first
+hundred. The loop is bounded and refuses to continue on a cursor that does not
+advance, because it is meant to run unattended. The check rollup is *not*
+paginated — it is capped at 100 contexts, which is a property of this
+repository's workflows rather than of what reviewers did — and the script warns
+if that cap is ever reached instead of quietly reporting a short list.
+
 Two things it deliberately does not claim. A **resolved thread is not evidence
 the underlying issue was fixed** — only that someone marked it resolved. And an
 empty check list is a *skip*, not a pass; the report says so in place, because
@@ -242,7 +250,23 @@ automated is the part that was manual and easy to get wrong: assembling the
 thread-aware state, and putting the rules in front of the work instead of
 leaving them to be looked up afterwards.
 
-Every value originating outside the repository reaches the script through
+**The checkout is pinned to the default branch, not to the event's ref.** On a
+`pull_request` event that ref is the merge commit, so labelling a pull request
+that edits `scripts/pr-review-state.sh` would run *the branch's* copy of it with
+a token carrying `issues: write` and `pull-requests: write` — enough to falsify
+the work order or mutate issues far beyond the one comment the job exists for.
+This is the rule in [security/SECURITY-AI.md](security/SECURITY-AI.md) applied
+to itself: the diff under review is data, not trusted code. Same-repository
+branches are exactly where it matters, because that is where this repository's
+own agent-authored work lands.
+
+Whether the target is a pull request is **asked**, not inferred from the event
+payload: a `workflow_dispatch` run has neither a `pull_request` event nor an
+`issue` payload, so deriving it would treat every manually dispatched pull
+request as an issue and silently drop the review-state section. One API call is
+correct for all three triggers.
+
+Every other value originating outside the repository reaches the script through
 `env:` and none is interpolated into it; the target number is rejected unless it
 is digits. The only untrusted text that reaches the comment is review excerpts,
 written to a file and fenced rather than passed through a shell. Fork pull

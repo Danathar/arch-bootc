@@ -79,7 +79,18 @@ case "$1 ${2:-}" in
       printf 'HTTP 502: Bad gateway\n' >&2
       exit 1
     fi
-    cat "${GH_STUB_FIXTURE}"
+    # Serve the second page once a non-empty cursor is passed, so pagination
+    # is exercised the way the API actually drives it rather than by counting
+    # calls.
+    cursor=""
+    for arg in "$@"; do
+      [[ "${arg}" == cursor=* ]] && cursor="${arg#cursor=}"
+    done
+    if [[ -n "${cursor}" && -n "${GH_STUB_FIXTURE2:-}" ]]; then
+      cat "${GH_STUB_FIXTURE2}"
+    else
+      cat "${GH_STUB_FIXTURE}"
+    fi
     ;;
   "repo view") printf 'Danathar/arch-bootc\n' ;;
   "pr view") printf '%s\n' "${GH_STUB_CURRENT_PR:-77}" ;;
@@ -94,14 +105,15 @@ chmod +x "${STUB_DIR}/gh"
 # Build a GraphQL response. Threads and checks are passed in as JSON arrays so
 # each case states only what it is actually testing.
 write_fixture() {
-  local threads="$1" checks="$2" rollup="${3:-SUCCESS}"
-  cat >"${FIXTURE}" <<JSON
+  local threads="$1" checks="$2" rollup="${3:-SUCCESS}" page_info="${4:-}" target="${5:-${FIXTURE}}"
+  [[ -z "${page_info}" ]] && page_info='{"hasNextPage": false, "endCursor": null}'
+  cat >"${target}" <<JSON
 {"data":{"repository":{"pullRequest":{
   "number": 77,
   "title": "a change under review",
   "isDraft": false,
   "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
-  "reviewThreads": {"nodes": ${threads}},
+  "reviewThreads": {"pageInfo": ${page_info}, "nodes": ${threads}},
   "commits": {"nodes": [{"commit": {"statusCheckRollup":
     $(if [[ "${rollup}" == "null" ]]; then printf 'null'; else printf '{"state": "%s", "contexts": {"nodes": %s}}' "${rollup}" "${checks}"; fi)
   }}]}
@@ -198,6 +210,56 @@ write_fixture "[]" "[]" null
 output="$(run_script --repo Danathar/arch-bootc 77)"
 assert_status "no threads and no checks exits 0" 0 "$?"
 assert_contains "an empty check list is called a skip, not a pass" "${output}" "that is a skip, not a pass"
+
+# --- pagination -----------------------------------------------------------
+#
+# The failure this guards against is the worst one the script can have: a
+# clean-looking exit 0 that simply did not look at the thread that mattered.
+# Page one holds only resolved threads, so a script that stops there reports
+# nothing outstanding.
+
+FIXTURE2="${WORK_DIR}/response-page2.json"
+write_fixture \
+  "[$(thread true false 'Containerfile' 10 10 'reviewer' 'settled')]" \
+  "[$(check_run 'Shell tests and coverage' SUCCESS)]" \
+  SUCCESS \
+  '{"hasNextPage": true, "endCursor": "CURSOR1"}'
+write_fixture \
+  "[$(thread false false 'packages-base.txt' 7 7 'critic' 'this one is on page two')]" \
+  "[$(check_run 'Shell tests and coverage' SUCCESS)]" \
+  SUCCESS \
+  '{"hasNextPage": false, "endCursor": null}' \
+  "${FIXTURE2}"
+
+output="$(PATH="${STUB_DIR}:${PATH}" GH_STUB_FIXTURE="${FIXTURE}" GH_STUB_FIXTURE2="${FIXTURE2}" \
+  "${BASH}" "${SCRIPT}" --repo Danathar/arch-bootc 77 2>&1)"
+assert_status "an unresolved thread on page two still exits 1" 1 "$?"
+assert_contains "the second page's thread is reported" "${output}" "packages-base.txt:7"
+assert_contains "threads from both pages are counted" "${output}" "2 total, 1 unresolved"
+
+# Page one's contents on their own are clean, which is what makes the two
+# assertions above discriminating rather than incidental: a script that
+# stopped at the first page would report this pull request as having nothing
+# outstanding.
+write_fixture \
+  "[$(thread true false 'Containerfile' 10 10 'reviewer' 'settled')]" \
+  "[$(check_run 'Shell tests and coverage' SUCCESS)]"
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "page one's contents alone exit 0" 0 "$?"
+assert_contains "page one's contents alone report nothing outstanding" "${output}" "(none outstanding)"
+
+# A server that never advances its cursor must fail rather than spin. This is
+# the shape a replaying cache or a buggy intermediary produces, and the script
+# is meant to run unattended.
+write_fixture \
+  "[$(thread true false 'Containerfile' 10 10 'reviewer' 'settled')]" \
+  "[$(check_run 'Shell tests and coverage' SUCCESS)]" \
+  SUCCESS \
+  '{"hasNextPage": true, "endCursor": "STUCK"}'
+output="$(PATH="${STUB_DIR}:${PATH}" GH_STUB_FIXTURE="${FIXTURE}" GH_STUB_FIXTURE2="${FIXTURE}" \
+  timeout 30 "${BASH}" "${SCRIPT}" --repo Danathar/arch-bootc 77 2>&1)"
+assert_status "a non-advancing cursor is an error, not an infinite loop" 2 "$?"
+assert_contains "the stuck cursor is named" "${output}" "did not advance past cursor STUCK"
 
 # --- machine-readable output ----------------------------------------------
 
