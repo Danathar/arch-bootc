@@ -55,17 +55,34 @@ fail() {
   return 0
 }
 
-# The invariant holds when PATTERN is present in FILE.
+# The invariant holds when PATTERN is present in FILE as an *active* line.
+#
+# Comment lines are stripped first, and that is the whole point rather than a
+# detail. Every security control asserted below is described in a nearby
+# rationale comment using the same words as the instruction that implements it:
+# `PermitRootLogin prohibit-password` appears both in the sshd drop-in and in
+# the comment above it, and `pam_wheel.so use_uid` appears in the sed that
+# uncomments it and in three comments explaining why. A plain grep is therefore
+# satisfied by the *explanation* of a control that has been deleted -- which is
+# exactly backwards, since the comment is what survives a careless edit.
 assert_present() {
   local description="$1" file="$2" pattern="$3" note="${4:-}"
   if [[ ! -f "${file}" ]]; then
     fail "${description}" "${file} does not exist"
     return
   fi
-  if grep -Eq -- "${pattern}" "${file}"; then
+  # Deliberately not `grep -Ev ... | grep -Eq ...`. Under `set -o pipefail`
+  # that pipeline is a race: `grep -q` exits the moment it matches, the
+  # upstream grep takes SIGPIPE, and the pipeline reports 141 instead of 0 --
+  # so the assertion fails at random on a tree that is perfectly fine. It was
+  # observed failing roughly one run in eight before this was rewritten to use
+  # a here-string, which involves no pipeline at all.
+  local active
+  active="$(grep -Ev '^[[:space:]]*#' "${file}")"
+  if grep -Eq -- "${pattern}" <<<"${active}"; then
     pass "${description}"
   else
-    fail "${description}" "${note:-no line in ${file} matches: ${pattern}}"
+    fail "${description}" "${note:-no active (non-comment) line in ${file} matches: ${pattern}}"
   fi
 }
 
@@ -82,6 +99,28 @@ assert_absent() {
     pass "${description}"
   else
     fail "${description}" "${note:-${file} matches ${pattern}}: ${hits//$'\n'/ | }"
+  fi
+}
+
+# The invariant holds when PATTERN is absent from every file in FILES.
+# Used where a property can be introduced from more than one place -- notably
+# anything copied into the image through system_files/, which lands in the
+# base stage before the desktop flavors run their own package installs.
+assert_absent_in() {
+  local description="$1" pattern="$2"
+  shift 2
+  local hits=""
+  local file
+  for file in "$@"; do
+    [[ -f "${file}" ]] || continue
+    while IFS= read -r hit; do
+      hits+="${file}:${hit} "
+    done < <(grep -En -- "${pattern}" "${file}" | grep -v '^[0-9]*:[[:space:]]*#')
+  done
+  if [[ -z "${hits}" ]]; then
+    pass "${description}"
+  else
+    fail "${description}" "${hits}"
   fi
 }
 
@@ -191,8 +230,10 @@ assert_present "bootc is built from the canonical upstream repository" \
 # The tag-to-commit check is a supply-chain control, not a formality: a git tag
 # is mutable and bootc runs as root on every machine booting this image. It has
 # to refuse the build, not warn.
-if grep -A3 -E 'if \[ "\$\{bootc_head\}" != "\$\{BOOTC_COMMIT\}" \]' "${CONTAINERFILE}" |
-  grep -q 'exit 1'; then
+# Here-string rather than a pipe into `grep -q`, for the SIGPIPE reason
+# explained in assert_present above.
+mismatch_branch="$(grep -A3 -E 'if \[ "\$\{bootc_head\}" != "\$\{BOOTC_COMMIT\}" \]' "${CONTAINERFILE}")"
+if grep -q 'exit 1' <<<"${mismatch_branch}"; then
   pass "a re-pointed bootc tag fails the build rather than warning"
 else
   fail "a re-pointed bootc tag fails the build rather than warning" \
@@ -221,11 +262,31 @@ else
     "cache bust at line '${cache_bust_line:-none}', first pacman -Syu at line '${first_syu_line:-none}'"
 fi
 
-assert_absent "no third-party pacman signing key is imported" \
-  "${CONTAINERFILE}" 'pacman-key'
+# Both of these have to look beyond the Containerfile. `COPY system_files/ /`
+# lands in the base stage *before* the KDE and XFCE stages run their own
+# `pacman -Syu`, so a pacman.conf or pacman.d fragment copied in through that
+# tree can redirect those installs without a single suspicious line appearing
+# in the Containerfile itself.
+shopt -s globstar nullglob
+copied_files=("${CONTAINERFILE}" system_files/**)
+shopt -u globstar nullglob
 
-assert_absent "no third-party pacman repository is added" \
-  "${CONTAINERFILE}" '^[^#]*Server[[:space:]]*=[[:space:]]*(https?|rsync)://'
+assert_absent_in "no third-party pacman signing key is imported" \
+  'pacman-key' "${copied_files[@]}"
+
+assert_absent_in "no third-party pacman repository is configured" \
+  '^[^#]*Server[[:space:]]*=[[:space:]]*(https?|rsync)://' "${copied_files[@]}"
+
+# A pacman configuration file arriving through system_files/ is a change to
+# where packages come from, which is T3 whatever its contents. None exists
+# today; introducing one should be a decision, not a diff nobody looked at.
+pacman_config="$(find system_files -path '*pacman*' 2>/dev/null)"
+if [[ -z "${pacman_config}" ]]; then
+  pass "no pacman configuration is shipped through system_files/"
+else
+  fail "no pacman configuration is shipped through system_files/" \
+    "found: ${pacman_config//$'\n'/ | }"
+fi
 
 # ---------------------------------------------------------------------------
 group "Service enablement layout (AGENTS.md: 'Service enablement policy')"
@@ -236,9 +297,30 @@ assert_absent "systemctl preset-all is not used" \
 # Enablement symlinks belong in /usr/lib/systemd/system/<target>.wants/, not in
 # /etc, which is machine-local state subject to a three-way merge on upgrade.
 # `systemctl mask` legitimately writes to /etc and is exempt -- it is the
-# documented exception, and it is what actually survives a package upgrade.
-assert_absent "enablement symlinks are not created under /etc/systemd/system" \
-  "${CONTAINERFILE}" '^[^#]*ln -s[^&|]*/etc/systemd/system/[^[:space:]]*\.wants/'
+# documented exception, and the only thing that reliably survives a package
+# upgrade.
+#
+# There is more than one route to the forbidden state, so match the state
+# rather than one spelling of it: any reference to a .wants directory under
+# /etc catches `ln -s` however it is split across lines, `install -d`, a
+# redirect, or anything else that writes there.
+assert_absent "nothing writes to a .wants directory under /etc/systemd/system" \
+  "${CONTAINERFILE}" '/etc/systemd/system/[^[:space:]]*\.wants'
+
+# `systemctl enable` writes its symlink under /etc by design, which is the
+# state the layout policy exists to avoid. `mask` and `disable` are not
+# affected.
+assert_absent "systemctl enable is not used (enablement goes under /usr/lib)" \
+  "${CONTAINERFILE}" '^[^#]*systemctl[[:space:]]+enable'
+
+# The same state can be committed directly rather than created at build time.
+etc_wants="$(find system_files/etc/systemd -path '*.wants*' 2>/dev/null)"
+if [[ -z "${etc_wants}" ]]; then
+  pass "no enablement symlink is committed under system_files/etc/systemd"
+else
+  fail "no enablement symlink is committed under system_files/etc/systemd" \
+    "found: ${etc_wants//$'\n'/ | }"
+fi
 
 # ---------------------------------------------------------------------------
 group "Workflow hygiene (docs/quality.md: zizmor findings that are easy to reintroduce)"

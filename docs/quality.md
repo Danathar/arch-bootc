@@ -88,7 +88,7 @@ which is the only routine way these paths get exercised.
 
 **The invariant checks.** `./tests/check-invariants.sh` asserts, statically over
 the checked-out tree, that the properties `AGENTS.md` calls load-bearing are
-still where they are supposed to be: the four root-login controls, the signature
+still where they are supposed to be: the root-login controls, the signature
 chain (including that `policy.json`'s `keyPath` still matches where the
 `Containerfile` copies `cosign.pub`), the `bootc` tag-and-commit pin and its
 hard failure on a mismatch, `PACMAN_CACHE_BUST` still preceding the first
@@ -100,6 +100,23 @@ file appears in **both** hand-maintained ShellCheck lists.
 It exists because a build proves the image *builds*, and an image that has
 quietly lost `pam_wheel.so use_uid` builds perfectly well. It runs in the build
 workflow's `test` job on every code change and again nightly.
+
+Two design points are worth knowing, because both were mistakes first:
+
+- **Presence assertions ignore comment lines.** Every control here is described
+  in a nearby rationale comment using the same words as the instruction that
+  implements it — `PermitRootLogin prohibit-password` appears in the sshd
+  drop-in *and* in the comment above it. A plain `grep` is therefore satisfied
+  by the surviving *explanation* of a control that has been deleted, which is
+  exactly backwards.
+- **Checks that can be reached from more than one place look in all of them.**
+  `COPY system_files/ /` lands in the base stage before the desktop flavors run
+  their own `pacman -Syu`, so a pacman fragment copied through that tree can
+  redirect those installs without a suspicious line in the `Containerfile`.
+  Likewise, enablement under `/etc` is matched by the state (any `.wants`
+  directory under `/etc/systemd/system`, `systemctl enable`, or a symlink
+  committed under `system_files/etc/systemd`) rather than by one spelling of
+  `ln -s`.
 
 It reads the `Containerfile` as text, so a step with the right shape and the
 wrong effect passes it; only a VM boot test settles that. It cannot see that
