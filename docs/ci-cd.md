@@ -89,8 +89,17 @@ traced with so this is visible in the log rather than mysterious.
 
 That is also the difference to check first when a floor fails by a line or two:
 compare the **assertion totals** (`1..N` and `all N assertions passed`) against
-a CI run. Identical totals with a lower line count is a trace difference; a
-lower total is a real lost test.
+a CI run. A lower total is a real lost test, full stop.
+
+Identical totals are weaker evidence than they look, though, and are not on
+their own a licence to lower the floor. A change can stop exercising a branch
+while every assertion still runs — an assertion made vacuous, or a code path
+deleted along with nothing that asserted on it — and the totals would not move.
+To actually distinguish the two, run the **same revision** under both Bash
+versions and compare: if the counts differ there, it is the interpreter; if they
+match each other but sit below the floor, coverage genuinely regressed. The
+report names the Bash that produced it precisely so that comparison is
+possible.
 
 `tests/run-tests.sh` is the ungated runner. It executes every
 `tests/test-*.sh` and `tests/e2e/test-*.sh`, and fails if any of them does.

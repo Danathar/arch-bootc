@@ -21,7 +21,10 @@ failed=()
 for test_file in "${test_files[@]}"; do
   relative_test="${test_file#"${SCRIPT_DIR}/"}"
   echo "==> ${relative_test}"
-  if bash "${test_file}"; then
+  # "${BASH}" rather than a bare `bash` so the whole suite runs under one
+  # interpreter -- see the note in check-coverage.sh about why the reported
+  # Bash version has to be the one that actually produced the trace.
+  if "${BASH}" "${test_file}"; then
     echo "--> PASS ${relative_test}"
   else
     echo "--> FAIL ${relative_test}" >&2
