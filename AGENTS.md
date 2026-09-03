@@ -290,11 +290,21 @@ security tradeoff explicitly.
 
 ### bootc provenance
 
-`bootc` is compiled from a Renovate-pinned upstream source tag. This is a
-deliberate choice over installing a prebuilt binary from a third-party pacman
-repository, and it is not merely a performance question. Do not change how
-`bootc` is obtained, and do not add a third-party package repository or signing
-key to the image, without explicit authorization for that exact source.
+`bootc` is compiled from upstream source, pinned by both a Renovate-tracked
+release tag (`BOOTC_VERSION`) and the commit that tag resolved to
+(`BOOTC_COMMIT`). This is a deliberate choice over installing a prebuilt binary
+from a third-party pacman repository, and it is not merely a performance
+question. Do not change how `bootc` is obtained, and do not add a third-party
+package repository or signing key to the image, without explicit authorization
+for that exact source.
+
+The build verifies that the cloned tag still resolves to `BOOTC_COMMIT` and
+fails otherwise. That check is a supply-chain control, not a formality: a git
+tag is mutable, and `bootc` runs as root on every machine booting this image.
+Do not remove it, do not relax it to a warning, and never change
+`BOOTC_VERSION` without changing `BOOTC_COMMIT` to the peeled commit of the new
+tag — the `^{}` row of
+`git ls-remote --tags https://github.com/bootc-dev/bootc.git 'vX.Y.Z*'`.
 
 ### Service enablement policy
 

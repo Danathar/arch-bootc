@@ -20,7 +20,7 @@ skips forks by default; without that line nothing would run at all.
 
 | Dependency | Pinned as | Where | How Renovate finds it |
 | --- | --- | --- | --- |
-| `bootc-dev/bootc` | git tag, built from source | `Containerfile` `ARG BOOTC_VERSION` | inline `# renovate:` comment |
+| `bootc-dev/bootc` | git tag **and** commit SHA, built from source | `Containerfile` `ARG BOOTC_VERSION` + `ARG BOOTC_COMMIT` | custom regex manager (`github-tags`, with digest) |
 | Arch base image | `:latest@sha256:…` | `Containerfile` `FROM` | `dockerfile` manager |
 | `ublue-os/brew` | `:latest@sha256:…` | `Containerfile` `COPY --from=` | `dockerfile` manager |
 | `actions/checkout` | commit SHA | `build.yml` | `github-actions` manager |
@@ -36,19 +36,41 @@ skips forks by default; without that line nothing would run at all.
 Two of these need explanation.
 
 **bootc** is not a container image reference — it is an `ARG` consumed by
-`git clone --branch "${BOOTC_VERSION}"`. Renovate only sees it because of the annotation
-directly above it:
+`git clone --branch "${BOOTC_VERSION}"`, and it is pinned twice: by tag, and by the commit
+that tag resolved to when it was reviewed.
 
 ```dockerfile
-# renovate: datasource=github-releases depName=bootc-dev/bootc
 ARG BOOTC_VERSION=vX.Y.Z
+ARG BOOTC_COMMIT=<40-hex commit sha>
 ```
 
-(Renovate rewrites the version in place, so the real file always shows whatever is current —
-check `Containerfile` rather than this doc for the pinned value.)
+A git tag is mutable, so the tag alone would let a re-pointed upstream tag ship a different
+bootc than the one released — and bootc is the root-privileged tool that composes and upgrades
+every machine booting this image. The `Containerfile` therefore compares `git rev-parse HEAD`
+against `BOOTC_COMMIT` immediately after cloning and **fails the build**, naming both SHAs,
+before `make` ever runs.
 
-If that comment is ever removed or reworded, bootc silently freezes at whatever version it is
-on. Nothing will fail; updates just stop arriving.
+`BOOTC_COMMIT` is the *peeled* commit. These are annotated tags, so `refs/tags/vX.Y.Z` is the
+tag object and `refs/tags/vX.Y.Z^{}` is the commit; the latter is what a `--branch <tag>` clone
+leaves at `HEAD`, and therefore what the check compares. To resolve it by hand for a manual
+bump, take the `^{}` row from:
+
+```bash
+git ls-remote --tags https://github.com/bootc-dev/bootc.git 'vX.Y.Z*'
+```
+
+(Renovate rewrites both values in place, so the real file always shows whatever is current —
+check `Containerfile` rather than this doc for the pinned values.)
+
+There is deliberately **no** inline `# renovate:` annotation above `ARG BOOTC_VERSION` any
+more. A single custom regex manager captures both lines in one `matchString` — the tag as
+`currentValue`, the commit as `currentDigest` — so they can only move together. Restoring that
+comment would let `customManagers:dockerfileVersions` bump the tag on its own again, and a tag
+bumped without its commit is a guaranteed failed build.
+
+If that manager's `matchStrings` ever stop matching — a reformatted `ARG` line, a tag that is
+not `vX.Y.Z` — bootc silently freezes at whatever version it is on. Nothing will fail; updates
+just stop arriving.
 
 **chunkah and shellcheck** are pinned by tag only. A `packageRule` explicitly disables
 `digest`/`pin`/`pinDigest` updates for both, so Renovate offers new tagged releases but never
