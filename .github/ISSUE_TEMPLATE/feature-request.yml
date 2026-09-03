@@ -1,0 +1,44 @@
+name: Feature request
+description: Propose a focused change to the image or its development workflow
+title: "[feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: User need
+      description: What problem should this solve, and for whom?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful outcome rather than only an implementation.
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Affected flavors
+      multiple: true
+      options:
+        - base
+        - kde
+        - xfce
+        - Development workflow only
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Safety and upgrade impact
+      description: Note effects on boot, upgrades, signing, authentication, storage, or installed machines.
+  - type: textarea
+    id: validation
+    attributes:
+      label: Acceptance evidence
+      description: What check would distinguish a working implementation from the current behavior?
+    validations:
+      required: true

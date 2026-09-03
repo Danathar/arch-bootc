@@ -1,0 +1,1 @@
+{"date":"2026-07-25","area":"vm-security-testing","correction":"Use an explicit target user and a wrong-password negative control when scripting su; the implicit trailing-dash form produced a false positive.","evidence":"CLAUDE.md gotchas"}

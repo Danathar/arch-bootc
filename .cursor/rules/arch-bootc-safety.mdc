@@ -1,0 +1,16 @@
+---
+description: Safety and validation policy for every arch-bootc change
+alwaysApply: true
+---
+
+Read and follow `AGENTS.md` as the authoritative repository policy before
+editing. Preserve its consent gates and treat host resources as persistent user
+data. Do not run privileged linting, build an image, create or boot a VM, touch a
+block device, publish anything, or clean up resources without the exact approval
+required there.
+
+Keep changes focused and preserve the rationale comments in `Containerfile`.
+Never weaken the image's root-login protections, signature policy, daily pacman
+cache bust, bootc provenance, or systemd enablement rules. Validate each affected
+flavor independently when a build is authorized; otherwise report the missing
+runtime evidence explicitly.
