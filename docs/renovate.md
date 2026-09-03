@@ -196,6 +196,13 @@ branch and rebuilds. Either the build fails again and nothing moves, or upstream
 build goes green, and Renovate merges it on its own. The update clears itself; nobody has to
 remember to go and check.
 
+One limit on that. This repo sets `rebaseWhen: "conflicted"`, so Renovate refreshes the branch
+when the *dependency* gains a new version, but does **not** rebase it onto a moved `main` unless
+the branch actually conflicts. So the self-clearing path covers an upstream fix, not a fix made
+here: if the blocker is resolved on our side instead — say by building the missing library in
+the image — the open PR may still be testing the old base and need a manual rebase before it
+goes green.
+
 The cost is that a red PR sitting open is meaningless unless the reason is written down. So
 write it here.
 
