@@ -65,6 +65,19 @@
       "depNameTemplate": "zizmor",
       "datasourceTemplate": "pypi",
       "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "Track bootc-dev/bootc release + pinned commit. github-tags (not github-releases) so Renovate can resolve BOOTC_COMMIT as the tag's digest and keep it in sync with BOOTC_VERSION on every bump, the same way GitHub Actions pins update their trailing-comment tag alongside the pinned SHA.",
+      "managerFilePatterns": [
+        "/^Containerfile$/"
+      ],
+      "matchStrings": [
+        "ARG BOOTC_VERSION=(?<currentValue>v\\d+\\.\\d+\\.\\d+)\\nARG BOOTC_COMMIT=(?<currentDigest>[0-9a-f]{40})"
+      ],
+      "depNameTemplate": "bootc-dev/bootc",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver-coerced"
     }
   ],
 

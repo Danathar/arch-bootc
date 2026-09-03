@@ -37,8 +37,16 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
     pacman -S --clean --noconfirm
 
 # https://github.com/bootc-dev/bootc/issues/1801
-# renovate: datasource=github-releases depName=bootc-dev/bootc
+# BOOTC_COMMIT is the commit BOOTC_VERSION's tag currently points to, verified
+# against below after the clone: a git tag is mutable, so this catches a tag
+# re-point (compromised upstream credentials/CI, or an accidental
+# force-push) instead of silently compiling and shipping whatever commit the
+# tag resolves to at build time. Matches the pin-and-verify pattern already
+# used for every `uses:` reference in .github/workflows/*.yaml. Both values
+# are tracked together by the "Track bootc-dev/bootc release + pinned commit"
+# customManager in renovate.json.
 ARG BOOTC_VERSION=v1.16.10
+ARG BOOTC_COMMIT=3e76c16556c55e6d15d31bd47602b231e2131cb2
 # base-devel is deliberately NOT installed here (or in packages-base.txt).
 # The `rust` package already hard-depends on gcc/lld/llvm-libs/compiler-rt,
 # which is all the C toolchain `cargo build` needs for linking. The only
@@ -59,6 +67,7 @@ ARG BOOTC_VERSION=v1.16.10
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     pacman -S --needed --asdeps --noconfirm rust make go-md2man elfutils && \
     git clone --branch "${BOOTC_VERSION}" --depth 1 "https://github.com/bootc-dev/bootc.git" /tmp/bootc && \
+    [ "$(git -C /tmp/bootc rev-parse HEAD)" = "${BOOTC_COMMIT}" ] || { echo "bootc tag ${BOOTC_VERSION} resolved to unexpected commit; expected ${BOOTC_COMMIT}" >&2; exit 1; } && \
     make -C /tmp/bootc bin install-all && \
     printf "systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n" | tee /usr/lib/dracut/dracut.conf.d/30-bootcrew-fix-bootc-module.conf && \
     printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" ostree bootc "' | tee "/usr/lib/dracut/dracut.conf.d/30-bootcrew-bootc-container-build.conf" && \
