@@ -65,7 +65,12 @@ writes them. Pass each interpreter you want observed and it writes the
 That is the whole reason it exists. The calibration rule below — a floor is the
 lowest count across supported Bash versions, never the highest one CI happens
 to produce — lived only in prose, which means it held only as long as everyone
-remembered it. Here it is mechanical.
+remembered it. Here it is mechanical, and mechanical means enforced:
+**`--apply` is refused unless every version in the policy's `supportedBash`
+list has been observed.** Raising a floor to 44 from a 5.2 host alone would
+leave every 5.3 environment failing a gate that nothing is wrong with, which is
+the exact mistake the rule exists to prevent — so the tool will not let you make
+it. Reporting is not gated, because it changes nothing.
 
 **It raises and never lowers,** and the asymmetry is deliberate rather than
 cautious. The evidence for raising a floor is complete: the suite demonstrably

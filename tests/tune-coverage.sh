@@ -32,6 +32,8 @@ Compare the coverage floors against what the suite reaches, and report which
 could be raised. With --apply, raise them in place.
 
   --apply        Rewrite .coverage-thresholds.json. Raises only, never lowers.
+                 Refused unless every Bash version in the policy's
+                 supportedBash list has been observed.
   --bash PATH    An interpreter to observe under. Repeatable. Defaults to the
                  one running this script. The floor written is the MINIMUM
                  across all of them.
@@ -101,12 +103,23 @@ read_policy_number() {
 headroom="$(read_policy_number headroom 0)"
 min_observations="$(read_policy_number minObservations 1)"
 
+# The supported Bash versions, as major.minor. --apply is refused unless every
+# one of them has been observed -- see the check after the observation loop.
+supported_bash=()
+while IFS= read -r supported; do
+  [[ -n "${supported}" ]] && supported_bash+=("${supported}")
+done < <(
+  sed -nE 's/.*"supportedBash":[[:space:]]*\[([^]]*)\].*/\1/p' "${POLICY}" |
+    tr ',' '\n' | sed -nE 's/.*"([0-9]+\.[0-9]+)".*/\1/p'
+)
+
 if ! grep -q '"direction": "raise-only"' "${POLICY}"; then
   echo "error: this script only implements the raise-only policy" >&2
   exit 2
 fi
 
 declare -A observed=()
+observed_versions=()
 observations=0
 
 for interpreter in "${interpreters[@]}"; do
@@ -118,6 +131,7 @@ for interpreter in "${interpreters[@]}"; do
   # being observed, not by this one.
   # shellcheck disable=SC2016
   version="$("${interpreter}" -c 'echo "${BASH_VERSION}"')"
+  observed_versions+=("${version%%.*}.$(cut -d. -f2 <<<"${version}")")
   printf '==> observing under bash %s (%s)\n' "${version}" "${interpreter}"
 
   # check-coverage.sh exits non-zero when a floor fails, which is a result to
@@ -152,6 +166,34 @@ done
 if ((observations < min_observations)); then
   printf 'error: policy requires %d observation(s), got %d\n' "${min_observations}" "${observations}" >&2
   exit 2
+fi
+
+# Writing a floor from a single interpreter is the exact mistake this script
+# exists to prevent. Bash 5.2 reaches 44 lines of ostree-pkg-diff where 5.3
+# reaches 43; raising the floor to 44 from a 5.2 host alone would leave every
+# 5.3 environment failing a gate that nothing is actually wrong with.
+#
+# So --apply is refused unless every supported version has been observed.
+# Reporting is not gated the same way -- it changes nothing, and being able to
+# see where the floors stand from whatever interpreter is to hand is useful.
+if ((apply)) && ((${#supported_bash[@]} > 0)); then
+  missing=()
+  for supported in "${supported_bash[@]}"; do
+    seen=0
+    for actual in "${observed_versions[@]}"; do
+      [[ "${actual}" == "${supported}" ]] && seen=1
+    done
+    ((seen)) || missing+=("${supported}")
+  done
+  if ((${#missing[@]} > 0)); then
+    printf 'error: --apply needs an observation from every supported Bash version.\n' >&2
+    printf '       missing: %s\n' "${missing[*]}" >&2
+    printf '       observed: %s\n' "${observed_versions[*]}" >&2
+    printf '       Pass each with --bash, or run without --apply to report only.\n' >&2
+    printf '       Floors are the lowest count across supported versions; writing one\n' >&2
+    printf '       from a single interpreter is what this rule exists to prevent.\n' >&2
+    exit 2
+  fi
 fi
 
 printf '\ncoverage floors, minimum across %d observation(s), headroom %d:\n\n' \

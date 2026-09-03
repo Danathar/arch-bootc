@@ -41,7 +41,13 @@
     "supportedBashRationale": [
       "5.2.21 is what ubuntu-24.04 runners ship, and 5.3.x is current on",
       "developer machines. Both have to pass, which is what makes the",
-      "minimum-across-observations rule necessary rather than pedantic."
+      "minimum-across-observations rule necessary rather than pedantic.",
+      "--apply is REFUSED unless every version listed here has been observed.",
+      "Without that gate the rule would still depend on the operator",
+      "remembering to pass --bash twice, and raising a floor to 44 from a 5.2",
+      "host alone would leave every 5.3 environment failing a gate that",
+      "nothing is actually wrong with. Reporting is not gated, because it",
+      "changes nothing."
     ]
   },
 
