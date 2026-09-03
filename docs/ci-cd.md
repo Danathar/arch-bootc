@@ -219,10 +219,16 @@ on green CI." A label that means someone approved something must never be
 reachable from a file path, so the path labels live under an `area/` prefix that
 no automation acts on.
 
-**It only ever adds.** `sync-labels` is off, so the labeler never removes a
-label — including one it applied itself that no longer matches. A stale `area/`
-label is a smaller problem than automation removing a label a maintainer applied
-on purpose.
+**It keeps the labels honest.** `sync-labels` is on, so a label is removed again
+when the paths stop supporting it. `documentation` is what makes that
+non-negotiable: a pull request that starts as documentation and gains code on a
+later push *does* run the build, and a surviving `documentation` label would
+assert the opposite of what happened. The cost is that a hand-applied label is
+removed again if the paths do not support it — the right trade here, because
+these labels are derived rather than editorial, and a label that lies about
+whether CI ran is worse than automation overriding a manual one. Only the seven
+labels in the configuration are ever touched; `hold`, `needs-human`, and the
+approval labels are not.
 
 **It runs on `pull_request`, not `pull_request_target`.** The target variant
 would run with this repository's write token against a fork's branch; the only
@@ -234,8 +240,11 @@ skipped for fork pull requests instead. See
 The workflow creates any label it needs that does not exist yet, so no manual
 repository setup is required; existing labels are left untouched. Colours and
 descriptions live in the workflow's catalog while paths live in
-`.github/labeler.yml`, and the workflow **fails** if a label is configured in
-one without an entry in the other, so the two cannot drift apart silently.
+`.github/labeler.yml`, and the workflow **fails in either direction** — a
+configured label with no catalog entry, or a catalog entry with no path rule —
+so the two cannot drift apart silently. The second direction is the quieter
+one: it is how a deleted path rule leaves a repository label behind that
+nothing will ever apply.
 
 A label is a triage hint, not a verdict. No path rule can tell a `Containerfile`
 comment fix from a change to how `bootc` is fetched — both touch the same file.

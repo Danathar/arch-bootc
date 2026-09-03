@@ -73,14 +73,31 @@ jobs:
             catalogued["${entry%%|*}"]=1
           done
 
+          declare -A configured=()
+          while IFS= read -r name; do
+            configured["${name}"]=1
+          done < <(sed -nE 's/^([A-Za-z][A-Za-z0-9._/-]*):[[:space:]]*$/\1/p' .github/labeler.yml)
+
+          # Both directions. A configured label with no catalog entry cannot be
+          # created, so actions/labeler would fail the run. A catalog entry with
+          # no configuration is the quieter failure: it provisions a repository
+          # label that nothing will ever apply, which is how a path rule gets
+          # deleted without anyone noticing its label outlived it.
           drift=0
-          while IFS= read -r configured; do
-            if [[ -z "${catalogued[${configured}]:-}" ]]; then
+          for name in "${!configured[@]}"; do
+            if [[ -z "${catalogued[${name}]:-}" ]]; then
               printf '::error file=.github/labeler.yml::label %s is configured but has no catalog entry in .github/workflows/labeler.yml\n' \
-                "${configured}"
+                "${name}"
               drift=1
             fi
-          done < <(sed -nE 's/^([A-Za-z][A-Za-z0-9._/-]*):[[:space:]]*$/\1/p' .github/labeler.yml)
+          done
+          for name in "${!catalogued[@]}"; do
+            if [[ -z "${configured[${name}]:-}" ]]; then
+              printf '::error file=.github/workflows/labeler.yml::label %s has a catalog entry but no path rule in .github/labeler.yml\n' \
+                "${name}"
+              drift=1
+            fi
+          done
           if ((drift != 0)); then
             exit 1
           fi
@@ -106,10 +123,18 @@ jobs:
       - name: Apply labels from changed paths
         uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0
         with:
-          # Default, stated explicitly because it is the load-bearing choice:
-          # the labeler only ever *adds* a label. With sync-labels enabled it
-          # would also remove any label in the configuration that no longer
-          # matches, which means it would strip a label a human had applied on
-          # purpose. A stale `area/` label is a smaller problem than automation
-          # arguing with a maintainer.
-          sync-labels: false
+          # Every label in .github/labeler.yml states a fact about the changed
+          # paths, so all of them have to be removed again when they stop being
+          # true. `documentation` is the one that makes this non-negotiable: it
+          # means "no build, no tests and no ShellCheck ran on this pull
+          # request". A pull request that starts as documentation and then
+          # gains code on a later push does run the build -- and without
+          # sync-labels the label would survive and assert the opposite.
+          #
+          # The cost is that a label a human applied by hand is removed again
+          # if the paths do not support it. That is the right trade here
+          # because these labels are derived, not editorial: a label that lies
+          # about whether CI ran is worse than automation overriding a manual
+          # one. Only the seven labels in the configuration are ever touched --
+          # `hold`, `needs-human`, and the approval labels are untouched.
+          sync-labels: true

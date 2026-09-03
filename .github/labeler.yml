@@ -13,7 +13,13 @@
 # docs/risk-tiers.md -- classify by what the diff does.
 #
 # Every label named here must have an entry in the workflow's provisioning
-# table, which fails the run if the two lists drift apart.
+# table, and every entry there must have a rule here. The workflow fails on
+# either mismatch, so the two lists cannot drift apart silently.
+#
+# All of these are removed again when they stop matching (`sync-labels: true`):
+# they state facts about the changed paths, and a `documentation` label left on
+# a pull request that has since gained code would assert that no build ran when
+# one did.
 
 # Applied only when *every* changed file is Markdown or under docs/ -- which is
 # exactly the condition under which build.yml's `paths-ignore` skips the whole
