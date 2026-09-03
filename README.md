@@ -48,18 +48,20 @@ tools, and manual alternatives.
 
 ## Documentation
 
-|                                             Doc |                                                                                                                           Covers |
-|------------------------------------------------:|---------------------------------------------------------------------------------------------------------------------------------:|
-|        [Customizations](docs/customizations.md) |                          What's preinstalled in this image, and why it works on Arch (upstream bootc/ostree compatibility notes) |
-|            [Installation](docs/installation.md) | `just quickstart` (guided VM/bare-metal install), quick start from the published image, building locally, and bare-metal install |
-|              [VM Workflow](docs/vm-workflow.md) |                                                        Creating a local VM and driving it from the host via the QEMU guest agent |
-|                [First Boot](docs/first-boot.md) |                                  Bootstrapping your first admin user — console, guest agent, or cloud-init — plus Homebrew setup |
-|                          [CI/CD](docs/ci-cd.md) |                                                                           Enabling GitHub Actions and image signing on your fork |
-|                    [Renovate](docs/renovate.md) |                                                                                    How dependency updates are tracked and merged |
-| [Updating & Day-2 Operations](docs/updating.md) |                               `bootc switch`, a known composefs GC issue and its fix, and comparing packages between deployments |
-|              [Quality signals](docs/quality.md) |                                        Every automated check this repo runs, what each one proves, and where the gaps are |
-|      [PR review rubric](docs/review-rubric.md) |                                                              What a reviewer checks on a pull request, in the order it matters |
-|                      [Metrics](docs/metrics.md) |                                              PR acceptance, time to merge, and CI health — with the `gh` commands to recompute |
+|                                                Doc |                                                                                                                           Covers |
+|---------------------------------------------------:|---------------------------------------------------------------------------------------------------------------------------------:|
+|           [Customizations](docs/customizations.md) |                          What's preinstalled in this image, and why it works on Arch (upstream bootc/ostree compatibility notes) |
+|               [Installation](docs/installation.md) | `just quickstart` (guided VM/bare-metal install), quick start from the published image, building locally, and bare-metal install |
+|                 [VM Workflow](docs/vm-workflow.md) |                                                        Creating a local VM and driving it from the host via the QEMU guest agent |
+|                   [First Boot](docs/first-boot.md) |                                  Bootstrapping your first admin user — console, guest agent, or cloud-init — plus Homebrew setup |
+|                             [CI/CD](docs/ci-cd.md) |                                                                           Enabling GitHub Actions and image signing on your fork |
+|                       [Renovate](docs/renovate.md) |                                                                                    How dependency updates are tracked and merged |
+|    [Updating & Day-2 Operations](docs/updating.md) |                               `bootc switch`, a known composefs GC issue and its fix, and comparing packages between deployments |
+|                 [Quality signals](docs/quality.md) |                                               Every automated check this repo runs, what each one proves, and where the gaps are |
+|          [PR review rubric](docs/review-rubric.md) |                                                                What a reviewer checks on a pull request, in the order it matters |
+|            [Change risk tiers](docs/risk-tiers.md) |                                                How a change is classified before it is written, and the evidence each tier needs |
+| [AI security policy](docs/security/SECURITY-AI.md) |                          What agent-assisted changes defend, which inputs are untrusted, and the invariants that hold regardless |
+|                         [Metrics](docs/metrics.md) |                                                PR acceptance, time to merge, and CI health — with the `gh` commands to recompute |
 
 ## Contributing
 
