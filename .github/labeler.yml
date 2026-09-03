@@ -1,0 +1,83 @@
+---
+# Path-based labels applied by .github/workflows/labeler.yml.
+#
+# These are triage hints, not verdicts, and they deliberately do not overlap
+# with the `quality`, `testing`, `ci`, and `security` labels, which the Hive
+# automation uses to mean "approved for auto-merge on green CI". A label that
+# means "an owner approved this" must never be reachable from a file path, so
+# every label added here is either the plain `documentation` label or lives
+# under an `area/` prefix that no automation acts on.
+#
+# Nothing here can classify a change's risk tier: a `Containerfile` comment fix
+# and a change to how `bootc` is fetched touch the same file. See
+# docs/risk-tiers.md -- classify by what the diff does.
+#
+# Every label named here must have an entry in the workflow's provisioning
+# table, and every entry there must have a rule here. The workflow fails on
+# either mismatch, so the two lists cannot drift apart silently.
+#
+# All of these are removed again when they stop matching (`sync-labels: true`):
+# they state facts about the changed paths, and a `documentation` label left on
+# a pull request that has since gained code would assert that no build ran when
+# one did.
+
+# Applied only when *every* changed file is Markdown or under docs/ -- which is
+# exactly the condition under which build.yml's `paths-ignore` skips the whole
+# build. So this label means "no build, no tests, no ShellCheck ran on this pull
+# request", which is worth seeing at a glance.
+documentation:
+  - changed-files:
+      - any-glob-to-all-files:
+          - "**/*.md"
+          - "docs/**"
+
+# What ships in the image.
+area/image:
+  - changed-files:
+      - any-glob-to-any-file:
+          - Containerfile
+          - packages-*.txt
+          - system_files/**
+
+# How the image is built and judged, rather than what it contains.
+area/ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/workflows/**
+          - .github/labeler.yml
+          - renovate.json
+
+area/tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - tests/**
+          - .coverage-thresholds.json
+
+area/scripts:
+  - changed-files:
+      - any-glob-to-any-file:
+          - scripts/**
+          - Justfile
+
+# The signature chain: the key copied into the image, the policy that requires
+# it, and the registry configuration that locates the signatures. A change here
+# is T3 even when the diff is one line.
+area/security-model:
+  - changed-files:
+      - any-glob-to-any-file:
+          - cosign.pub
+          - system_files/etc/containers/**
+          - docs/security/**
+
+# The rules agents work under. Changing them changes what every later change is
+# allowed to do, which is why they get their own label.
+area/agent-policy:
+  - changed-files:
+      - any-glob-to-any-file:
+          - AGENTS.md
+          - CLAUDE.md
+          - CONTRIBUTING.md
+          - .github/copilot-instructions.md
+          - .github/prompts/**
+          - .claude/**
+          - .cursor/**

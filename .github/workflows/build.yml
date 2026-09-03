@@ -59,11 +59,20 @@ jobs:
             /mnt/scripts/pr-review-state.sh \
             /mnt/tests/run-tests.sh \
             /mnt/tests/check-coverage.sh \
+            /mnt/tests/check-invariants.sh \
             /mnt/tests/test-prune-esp.sh \
             /mnt/tests/test-ostree-pkg-diff.sh \
             /mnt/tests/test-ostree-pkg-diff-db.sh \
             /mnt/tests/test-pr-review-state.sh \
             /mnt/tests/e2e/test-quickstart-dry-run.sh
+          # homebrew.sh is sourced by /etc/profile.d, not executed directly, so
+          # it has no shebang for shellcheck to read -- hence the separate
+          # invocation with an explicit --shell, matching the Justfile's `lint`
+          # recipe. It was linted there but not here until
+          # tests/check-invariants.sh compared the two lists and found the gap.
+          sudo docker run --rm -v "${PWD}:/mnt:ro" \
+            "${SHELLCHECK_IMAGE}" --shell=bash \
+            /mnt/system_files/etc/profile.d/homebrew.sh
 
   test:
     name: Shell tests and coverage
@@ -80,6 +89,13 @@ jobs:
       # nothing beyond the checkout and finishes long before the build would.
       - name: Run shell tests and enforce coverage floors
         run: ./tests/check-coverage.sh
+
+      # Static assertions over the checked-out tree that the security
+      # invariants AGENTS.md calls load-bearing are still where they are
+      # supposed to be. A build proves the image builds; an image that has
+      # quietly lost `pam_wheel.so use_uid` builds perfectly well.
+      - name: Assert repository invariants
+        run: ./tests/check-invariants.sh
 
   build_push:
     name: Build and push image

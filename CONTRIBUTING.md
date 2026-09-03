@@ -40,13 +40,22 @@ The shell tests are plain bash: no framework, no root, no container runtime, no
 network. They are the cheapest useful signal and the same thing CI runs.
 
 ```bash
-just test          # runs ./tests/check-coverage.sh
+just test          # ./tests/check-coverage.sh + ./tests/check-invariants.sh
 ```
 
-That runs every `tests/test-*.sh` and `tests/e2e/test-*.sh`, then enforces the
-per-script floors in `.coverage-thresholds.json`. Raise a floor when you add
-coverage; do not lower one to make a regression pass. See
-[docs/quality.md](docs/quality.md) for what each signal does and does not prove.
+That runs every `tests/test-*.sh` and `tests/e2e/test-*.sh`, enforces the
+per-script floors in `.coverage-thresholds.json`, and then asserts the
+repository invariants. Raise a floor when you add coverage; do not lower one to
+make a regression pass. See [docs/quality.md](docs/quality.md) for what each
+signal does and does not prove.
+
+`check-invariants.sh` is the one worth knowing about before you hit it.
+It asserts statically that the properties this file calls load-bearing below —
+the root-login model, the signature chain, the `bootc` pin,
+`PACMAN_CACHE_BUST`, the systemd enablement layout — are still present, and that
+every shell file appears in **both** hand-maintained ShellCheck lists. If you
+are deliberately changing one of those, update the check in the same commit and
+say so in the pull request; if you are not, a failure means something drifted.
 
 ```bash
 just lint          # shellcheck + systemd-analyze verify
@@ -63,7 +72,9 @@ Adding a `tests/test-*.sh` file picks it up automatically in `run-tests.sh`,
 which globs, but **not** in either shellcheck invocation — both list files
 explicitly. Add it to the `shellcheck` line in the `Justfile`'s `lint` recipe
 and to the `ShellCheck` step's arguments in the build workflow, or it silently
-escapes linting.
+escapes linting. `check-invariants.sh` now fails when a file is missing from
+either list, so this is caught rather than noticed in review — which is how it
+was caught the first time.
 
 ## Things not to change casually
 
