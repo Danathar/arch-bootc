@@ -18,6 +18,7 @@ produced:
 | Workflow static analysis (zizmor) | `Lint workflows` workflow | Any change under `.github/workflows/**` |
 | Image signature (cosign) | `Sign container image` step | Pushes to `main` only |
 | Dependency freshness | Renovate PRs | Continuously |
+| Path labels (incl. `documentation`, which marks a PR no build ran on) | Labels on the PR | Pull requests from this repository |
 
 ```bash
 gh run list --branch main --limit 10
