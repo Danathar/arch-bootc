@@ -46,8 +46,8 @@ jobs:
         # The catalog below is the source of truth for a label's colour and
         # description; .github/labeler.yml is the source of truth for which
         # paths map to it. That split means the two can drift, so this step
-        # fails when a label is configured there without an entry here --
-        # turning a duplication into a checked invariant.
+        # fails on a mismatch in either direction -- turning a duplication
+        # into a checked invariant.
         #
         # Existing labels are never modified. `documentation` predates this
         # workflow and keeps whatever colour and description it already has.
