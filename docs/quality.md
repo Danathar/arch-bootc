@@ -48,6 +48,34 @@ It proves the covered lines execute and assert correctly. It does not prove the
 uncovered ones do anything; the percentages printed alongside each floor are
 context, not a target.
 
+**Tuning the floors.** `./tests/tune-coverage.sh` compares each floor against
+what the suite actually reaches and reports which could be raised; `--apply`
+writes them. Pass each interpreter you want observed and it writes the
+*minimum* across all of them:
+
+```bash
+./tests/tune-coverage.sh                                    # report only
+./tests/tune-coverage.sh --bash /usr/bin/bash --bash /opt/bash-5.2 --apply
+```
+
+That is the whole reason it exists. The calibration rule below — a floor is the
+lowest count across supported Bash versions, never the highest one CI happens
+to produce — lived only in prose, which means it held only as long as everyone
+remembered it. Here it is mechanical.
+
+**It raises and never lowers,** and the asymmetry is deliberate rather than
+cautious. The evidence for raising a floor is complete: the suite demonstrably
+reached that many lines. The evidence for lowering one is an absence, and a lost
+test and a Bash-version trace difference are indistinguishable from the count
+alone — only assertion totals separate them. So a floor above what the suite
+reaches is reported as a regression and left alone, with a pointer at what to
+compare. The policy, and the reasoning for each knob, is in
+[.github/auto-qa-tuning.json](../.github/auto-qa-tuning.json).
+
+Nothing runs it on a schedule. It is operator-run and edits one local file: a
+bot that adjusted the quality gate on its own would be automating exactly the
+decision the gate exists to force.
+
 *Known sharp edge:* traced-line counts are bash-version sensitive. Identical
 code traces 44 lines of `ostree-pkg-diff` under bash 5.2.21 and 43 under 5.3.9,
 so a floor calibrated to one environment fails in the other for no real reason.

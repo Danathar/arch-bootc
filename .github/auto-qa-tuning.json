@@ -1,0 +1,54 @@
+{
+  "$comment": [
+    "Policy for tuning this repository's automated quality thresholds.",
+    "Read and enforced by tests/tune-coverage.sh; see docs/quality.md.",
+    "This file is the rules. The thresholds themselves live in",
+    ".coverage-thresholds.json and are only ever changed by a reviewed commit."
+  ],
+
+  "coverage": {
+    "thresholdsFile": ".coverage-thresholds.json",
+    "reportCommand": "./tests/check-coverage.sh",
+
+    "direction": "raise-only",
+    "directionRationale": [
+      "A floor may be raised automatically because the evidence for raising it",
+      "is complete: the suite demonstrably reached that many lines. Lowering a",
+      "floor is the opposite -- the evidence is an absence, and the two causes",
+      "(a lost test, or a Bash version tracing the same code differently) are",
+      "indistinguishable from the count alone. Lowering therefore stays a human",
+      "decision with a stated reason, per CONTRIBUTING.md."
+    ],
+
+    "headroom": 0,
+    "headroomRationale": [
+      "Floors sit exactly at the observed minimum. Slack would let a real",
+      "regression hide inside it, and the floor is a ratchet, not a target."
+    ],
+
+    "minObservations": 1,
+    "observationRule": "minimum-across-observations",
+    "observationRationale": [
+      "Traced-line counts are Bash-version sensitive: identical code traces 44",
+      "lines of ostree-pkg-diff under 5.2.21 and 43 under 5.3.9. A floor",
+      "calibrated against one interpreter fails in the other for no real reason,",
+      "so a floor is the LOWEST count across every interpreter observed, never",
+      "the highest one CI happens to produce. Passing more interpreters with",
+      "--bash makes that rule mechanical instead of remembered."
+    ],
+
+    "supportedBash": ["5.2", "5.3"],
+    "supportedBashRationale": [
+      "5.2.21 is what ubuntu-24.04 runners ship, and 5.3.x is current on",
+      "developer machines. Both have to pass, which is what makes the",
+      "minimum-across-observations rule necessary rather than pedantic."
+    ]
+  },
+
+  "notAutomated": [
+    "Nothing here commits, pushes, or opens a pull request. tests/tune-coverage.sh",
+    "is run by a person and its --apply mode edits one local file. A bot that",
+    "adjusted the quality gate on its own schedule would be automating exactly",
+    "the decision the gate exists to force."
+  ]
+}
