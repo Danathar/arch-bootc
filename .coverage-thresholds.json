@@ -1,5 +1,5 @@
 {
   "scripts/quickstart.sh": 201,
-  "system_files/usr/bin/ostree-pkg-diff": 44,
+  "system_files/usr/bin/ostree-pkg-diff": 43,
   "system_files/usr/libexec/arch-bootc-prune-esp": 46
 }

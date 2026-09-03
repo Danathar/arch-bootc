@@ -78,6 +78,20 @@ The gate also fails when a new executable Bash entry point under `scripts/` or
 the shipped `usr/bin`/`usr/libexec` paths has no threshold. Raise a floor when
 tests add coverage; do not lower one to make a regression pass.
 
+**Set a floor to the lowest count across supported Bash versions, not the
+highest one CI happens to print.** Bash's xtrace output is not identical between
+releases: the same `ostree-pkg-diff` code, exercised by the same 36 assertions,
+traces 44 lines under bash 5.2.21 (what `ubuntu-24.04` runners ship) and 43
+under 5.3.9. A floor calibrated to CI alone therefore fails on a developer
+machine with a newer Bash while CI stays green — which is exactly what happened
+to the `ostree-pkg-diff` floor of 44. The report prints the Bash version it
+traced with so this is visible in the log rather than mysterious.
+
+That is also the difference to check first when a floor fails by a line or two:
+compare the **assertion totals** (`1..N` and `all N assertions passed`) against
+a CI run. Identical totals with a lower line count is a trace difference; a
+lower total is a real lost test.
+
 `tests/run-tests.sh` is the ungated runner. It executes every
 `tests/test-*.sh` and `tests/e2e/test-*.sh`, and fails if any of them does.
 `tests/test-prune-esp.sh` covers `arch-bootc-prune-esp`: argument

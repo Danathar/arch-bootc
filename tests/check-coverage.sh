@@ -32,6 +32,12 @@ ARCH_BOOTC_COVERAGE_TRACE="${TRACE_FILE}" \
 BASH_ENV="${TRACE_ENV}" \
   bash "${SCRIPT_DIR}/run-tests.sh"
 
+# Traced-line counts vary slightly by Bash version for identical code (see the
+# threshold note in docs/ci-cd.md), so record which Bash produced this report.
+# Without it, a one-line miss looks like a coverage regression rather than the
+# environment difference it usually is.
+printf 'coverage: traced with bash %s on %s\n' "${BASH_VERSION}" "$(uname -s)"
+
 declare -A covered_lines=()
 while IFS=: read -r source_path line_number _; do
   source_path="${source_path#+}"
