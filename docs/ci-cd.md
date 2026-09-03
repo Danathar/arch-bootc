@@ -250,6 +250,66 @@ A label is a triage hint, not a verdict. No path rule can tell a `Containerfile`
 comment fix from a change to how `bootc` is fetched — both touch the same file.
 Classify a change by what the diff does; see [risk-tiers.md](risk-tiers.md).
 
+## Nightly compliance
+
+`.github/workflows/nightly-compliance.yml` runs three checks at 05:40 UTC, on
+`workflow_dispatch`, and — for the workflow file itself — on pull requests.
+They share a theme: each one can change from true to false with **no commit
+happening at all**, which is precisely what a build-triggered check cannot
+notice.
+
+| Job | Asks | Fails when |
+| --- | --- | --- |
+| `invariants` | Are the load-bearing properties still in the tree? | `./tests/check-invariants.sh` finds one missing |
+| `bootc-pin` | Does `BOOTC_VERSION` still resolve to `BOOTC_COMMIT` upstream? | The tag was re-pointed or deleted |
+| `signatures` | Do the published images still verify against `cosign.pub`? | Any flavor's `latest` fails `cosign verify` |
+
+Each is a separate job so a failure names itself in the run list instead of
+hiding behind whichever check ran first, and the `signatures` job uses a
+`fail-fast: false` matrix so one bad flavor does not cancel the other two.
+
+**`invariants`.** Also wired into the build workflow's `test` job, so it gates
+every code change as well as running nightly. See
+[quality.md](quality.md) for what it asserts and — more usefully — what it
+cannot see.
+
+**`bootc-pin`.** The `Containerfile` already refuses to build when the tag no
+longer resolves to the pinned commit. That check only fires when something
+triggers a build, and it surfaces as a build failure, which reads like broken CI
+rather than what it is. This job asks upstream the same question daily and
+reports it as its own event, because a git tag is mutable, `bootc` runs as root
+on every machine booting this image, and a re-pointed tag is a supply-chain
+problem rather than a version bump. Run it by hand with:
+
+```bash
+version=$(sed -nE 's/^ARG BOOTC_VERSION=(.+)$/\1/p' Containerfile | head -1)
+git ls-remote --tags https://github.com/bootc-dev/bootc.git "refs/tags/${version}^{}"
+```
+
+The `^{}` row is the one that matters: these are annotated tags, so the plain
+row is the tag object and `BOOTC_COMMIT` is the commit it peels to.
+
+**`signatures`.** Runs `cosign verify --key cosign.pub` against the published
+`latest` of each flavor, deliberately **without registry credentials**. A pass
+therefore means the signature verifies for anyone pulling the published image,
+which is the property the in-image policy depends on — not merely that CI can
+verify its own artifact with its own token. Because `cosign.pub` comes from the
+checkout, it also catches the key in the repository drifting away from the key
+the pipeline signs with. Reproduce it locally with no setup:
+
+```bash
+cosign verify --key cosign.pub ghcr.io/danathar/arch-bootc-base:latest
+```
+
+The `cosign-release` version is written as a literal rather than through an env
+var, because `renovate.json`'s custom manager matches that exact string — an
+expansion would quietly drop this workflow out of its reach and let signing and
+verification drift onto different cosign majors.
+
+This does not make signature verification end-to-end. Nothing yet pulls an image
+under the shipped `policy.json` and confirms it accepts a signed image and
+rejects an unsigned one; see the gaps section of [quality.md](quality.md).
+
 ## Keeping pinned versions up to date
 
 `bootc`, the base images, the GitHub Actions and the cosign/chunkah/zizmor versions are all
