@@ -29,6 +29,9 @@ jobs:
   zizmor:
     name: Scan workflows with zizmor
     runs-on: ubuntu-24.04
+    # One uv install plus a static scan of this repo's two workflow files;
+    # anything past 10 minutes is a hang, not a slow run.
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:

@@ -8,7 +8,7 @@ RUN grep "= */var" /etc/pacman.conf | sed "/= *\/var/s/.*=// ; s/ //" | xargs -n
 # See https://gitlab.archlinux.org/archlinux/archlinux-docker/-/blob/master/pacman-conf.d-noextract.conf?ref_type=heads
 RUN sed -i 's/^[[:space:]]*NoExtract/#&/' /etc/pacman.conf
 
-# CI's remote buildah layer cache (see build.yaml) keys a RUN step purely on
+# CI's remote buildah layer cache (see build.yml) keys a RUN step purely on
 # its instruction text + parent layer digest -- it has no way to know Arch's
 # live repositories changed underneath it. Left alone, a cache hit here would
 # silently *skip* pacman -Syu entirely and ship whatever was cached, possibly

@@ -35,7 +35,7 @@ images.
 
 CI automatically publishes a fork's images to `ghcr.io/<your-username-or-org>`
 (`IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"` in
-`build.yaml`), but the policy files above do **not** pick that up
+`build.yml`), but the policy files above do **not** pick that up
 automatically — they still say `ghcr.io/danathar`. If you don't update them,
 your fork's images simply won't match the scoped policy and will fall through
 to the `insecureAcceptAnything` default (harmless, but the in-image
@@ -119,7 +119,7 @@ authorized VM procedure in `CLAUDE.md` remains the runtime test for that.
 `just lint` shellchecks the test scripts too, so they are held to the same bar as
 the scripts they cover.
 
-`build.yaml` runs the tests and coverage gate: a `test` job checks out the repo
+`build.yml` runs the tests and coverage gate: a `test` job checks out the repo
 and runs `./tests/check-coverage.sh`, and `build_push` needs `[lint, test]`, so no
 image is built or published from a revision whose tests or coverage floors
 fail. The job needs nothing but the checkout and finishes well before the build
@@ -129,7 +129,7 @@ Adding a new `tests/test-*.sh` or `tests/e2e/test-*.sh` file picks it up
 automatically in `run-tests.sh`, which globs both locations, but **not** in
 either shellcheck invocation — both list files explicitly. Add it to the
 `shellcheck` line in the `Justfile`'s `lint` recipe and to the `ShellCheck`
-step's `/mnt/tests/...` arguments in `build.yaml`, or it silently escapes
+step's `/mnt/tests/...` arguments in `build.yml`, or it silently escapes
 linting.
 
 ## Workflow linting (zizmor)
@@ -149,7 +149,7 @@ to reintroduce:
 - **`template-injection`** — a `${{ ... }}` inside a `run:` block is pasted in as raw text
   *before* the shell parses the script, so a value containing a quote or `$(...)` executes as
   code. The fix is to pass the expansion through the step's `env:` and reference it as an
-  ordinary shell variable. Several steps in `build.yaml` do this now (`METADATA_TAGS`,
+  ordinary shell variable. Several steps in `build.yml` do this now (`METADATA_TAGS`,
   `PUSH_DIGEST`, `REPO_NAME`) — follow that pattern rather than interpolating directly.
 
 The job runs with `GH_TOKEN` set so zizmor's online audits are active; without it zizmor

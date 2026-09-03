@@ -85,7 +85,7 @@ Before editing, changing branches, or performing Git operations:
 - Identify the current branch, its upstream, and the relevant base commit.
 - Inventory untracked and modified files. Assume they belong to the user.
 - Read the relevant parts of `Containerfile`, the `packages-*.txt` lists,
-  `system_files/`, `.github/workflows/build.yaml`, `CLAUDE.md`, the `docs/`
+  `system_files/`, `.github/workflows/build.yml`, `CLAUDE.md`, the `docs/`
   page covering the area being changed, and recent history.
 - State the intended scope, non-goals, branch plan, and validation plan.
 
@@ -159,7 +159,7 @@ for temporary testing.
 - Never run broad cleanup. Specifically: no `podman rm -a`, `podman rmi -a -f`,
   `podman system prune`, `podman image prune -a`, `buildah rm --all`,
   `buildah rmi --all`, or wildcard deletion. Note that
-  `.github/workflows/build.yaml` legitimately runs some of these on ephemeral CI
+  `.github/workflows/build.yml` legitimately runs some of these on ephemeral CI
   runners; that is not license to run them on the user's host.
 - Before any cleanup, inspect `distrobox list`, `podman ps -a`, `podman images`,
   and the exact image and container relationships, then state the exact targets

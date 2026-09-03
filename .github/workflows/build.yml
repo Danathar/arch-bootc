@@ -35,6 +35,12 @@ jobs:
   lint:
     name: Lint shell scripts
     runs-on: ubuntu-24.04
+    # Without an explicit cap, a hung step runs until GitHub's 360-minute
+    # runner default kills it, holding this workflow's concurrency group for
+    # the whole time. Every job below therefore sets one, sized to its
+    # observed runtime plus headroom, so a hang fails fast instead of
+    # quietly burning most of a day.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -59,6 +65,7 @@ jobs:
   test:
     name: Shell tests and coverage
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -75,6 +82,11 @@ jobs:
     name: Build and push image
     needs: [lint, test]
     runs-on: ubuntu-24.04
+    # Green runs on main have landed between roughly 12 and 50 minutes,
+    # dominated by compiling bootc and by the rechunk step. 90 leaves room
+    # for a slow runner or a cold layer cache while still catching a real
+    # hang well before the 360-minute default would.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -412,6 +424,7 @@ jobs:
     needs: build_push
     if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

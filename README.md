@@ -1,6 +1,6 @@
 # Arch Linux Bootc
 
-[![build](https://github.com/Danathar/arch-bootc/actions/workflows/build.yaml/badge.svg)](https://github.com/Danathar/arch-bootc/actions/workflows/build.yaml)
+[![build](https://github.com/Danathar/arch-bootc/actions/workflows/build.yml/badge.svg)](https://github.com/Danathar/arch-bootc/actions/workflows/build.yml)
 
 > **Note:** This repo was created primarily using directed AI, though its contents have been manually tested and inspected. I believe it's important for anyone using open-source tools on GitHub to have this context before relying on them. Special thanks to the upstream repository [bootcrew/arch-bootc](https://github.com/bootcrew/arch-bootc) for the foundational bootstrapping work.
 

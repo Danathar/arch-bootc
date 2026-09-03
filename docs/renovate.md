@@ -1,7 +1,7 @@
 # Dependency updates with Renovate
 
 This repo keeps its build tooling up to date with [Renovate](https://docs.renovatebot.com/).
-Renovate watches the pinned versions in `Containerfile` and `.github/workflows/build.yaml`,
+Renovate watches the pinned versions in `Containerfile` and `.github/workflows/build.yml`,
 opens a PR when something newer exists, and merges that PR itself once the build passes.
 
 Everything is configured in [`renovate.json`](../renovate.json) at the repo root.
@@ -23,15 +23,15 @@ skips forks by default; without that line nothing would run at all.
 | `bootc-dev/bootc` | git tag, built from source | `Containerfile` `ARG BOOTC_VERSION` | inline `# renovate:` comment |
 | Arch base image | `:latest@sha256:…` | `Containerfile` `FROM` | `dockerfile` manager |
 | `ublue-os/brew` | `:latest@sha256:…` | `Containerfile` `COPY --from=` | `dockerfile` manager |
-| `actions/checkout` | commit SHA | `build.yaml` | `github-actions` manager |
-| `docker/metadata-action` | commit SHA | `build.yaml` | `github-actions` manager |
-| `redhat-actions/buildah-build` | commit SHA | `build.yaml` | `github-actions` manager |
-| `sigstore/cosign-installer` | commit SHA | `build.yaml` | `github-actions` manager |
-| cosign CLI | `cosign-release: vX.Y.Z` | `build.yaml` | custom regex manager |
-| chunkah image | `quay.io/coreos/chunkah:vX.Y.Z` | `build.yaml` env | custom regex manager |
-| shellcheck image | `docker.io/koalaman/shellcheck:vX.Y.Z` | `build.yaml` `SHELLCHECK_IMAGE` env | custom regex manager |
+| `actions/checkout` | commit SHA | `build.yml` | `github-actions` manager |
+| `docker/metadata-action` | commit SHA | `build.yml` | `github-actions` manager |
+| `redhat-actions/buildah-build` | commit SHA | `build.yml` | `github-actions` manager |
+| `sigstore/cosign-installer` | commit SHA | `build.yml` | `github-actions` manager |
+| cosign CLI | `cosign-release: vX.Y.Z` | `build.yml` | custom regex manager |
+| chunkah image | `quay.io/coreos/chunkah:vX.Y.Z` | `build.yml` env | custom regex manager |
+| shellcheck image | `docker.io/koalaman/shellcheck:vX.Y.Z` | `build.yml` `SHELLCHECK_IMAGE` env | custom regex manager |
 | zizmor | `ZIZMOR_VERSION: X.Y.Z` | `zizmor.yaml` env | custom regex manager (`pypi`) |
-| runner image | `ubuntu-24.04` | `build.yaml` `runs-on` | `github-actions` manager |
+| runner image | `ubuntu-24.04` | `build.yml` `runs-on` | `github-actions` manager |
 
 Two of these need explanation.
 
@@ -86,13 +86,13 @@ manually if Flathub ever changes it.
 2. **It creates a branch** — `renovate/<something>` — containing just the version bump.
 3. **It opens a PR immediately.** It does *not* wait for a build first. The PR is open and
    visibly "unchecked" for roughly the length of a build.
-4. **`build.yaml` triggers on the PR** and compiles all three flavors (`base`, `kde`, `xfce`)
+4. **`build.yml` triggers on the PR** and compiles all three flavors (`base`, `kde`, `xfce`)
    in parallel — three check runs, around 20 minutes.
    On PRs the workflow *only builds*: the rechunk, push-to-GHCR and cosign steps are gated to
    non-PR events, so nothing is published from a PR.
 5. **On a later Renovate run**, it looks at the PR's status. Green → it squash-merges. Red or
    still running → it leaves the PR alone and checks again next time.
-6. **The merge to `main` triggers `build.yaml` again**, and this time the full path runs:
+6. **The merge to `main` triggers `build.yml` again**, and this time the full path runs:
    build → rechunk with chunkah → push to GHCR → sign with cosign.
 
 Step 5 is the important one: **Renovate does the merging, not GitHub.** See
