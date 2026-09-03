@@ -35,10 +35,18 @@ wrong — and compressing that to one line throws away the part that transfers.
   here has been filed in the wrong place.
 - Anything volatile. If it stops being true when the current work merges, it
   belongs in the session summary.
-- Prompts, transcripts, credentials, personal data, command output, or host
-  inventory — no VM names, pool names, disk paths, or IP addresses. Same
-  constraints as [`.memory/README.md`](../../.memory/README.md), because the
-  same risks apply.
+- Prompts, transcripts, credentials, personal data, or host inventory — no VM
+  names, pool names, disk paths, or IP addresses. Same risks as
+  [`.memory/README.md`](../../.memory/README.md).
+
+  Command output is the one place this differs from `.memory/`, and the
+  difference is deliberate rather than an oversight: quoted output is the
+  evidence a reflection stands on, and the Standards section below requires it.
+  So **sanitised** output — a command, its exit status, a diff, a sequence of
+  statuses — is not merely allowed but expected. What stays out is raw or
+  unreviewed output, and anything carrying the host-specific detail listed
+  above. Read the snippet before pasting it; if it needs redacting, redact it
+  rather than dropping the evidence.
 
 ## Standards
 

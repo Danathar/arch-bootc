@@ -1,8 +1,10 @@
 # 2026-09-03 — Three checks that passed for the wrong reason
 
-Written while adding `tests/check-invariants.sh`, the path labeler, and the
-`ai-fix` work order. All three problems below were in *new* checks, found before
-they merged. The common thread is worth more than any of them individually: in
+Written while adding `tests/check-invariants.sh` (#162), the path labeler
+(#161), and the `ai-fix` work order (#163). All three problems below were in
+*new* checks, found before they merged; each section links both to the file as
+it stands and to the pull request whose review found the problem, so the
+evidence survives later edits to the file. The common thread is worth more than any of them individually: in
 each case something reported success, and the success was an artifact of how the
 check was built rather than evidence about the thing it checked.
 
@@ -36,7 +38,8 @@ but for the wrong reason, and I recorded a pass.
 
 **What changed.** Presence assertions strip comment lines before matching, and
 the negative controls delete only executable lines. See the `assert_present`
-comment in [`tests/check-invariants.sh`](../../tests/check-invariants.sh).
+comment in [`tests/check-invariants.sh`](../../tests/check-invariants.sh); the
+review that found it and the reasoning at the time are in #162.
 
 **The transferable rule.** A negative control has to be the *minimal* change
 that breaks the property. A broad mutation proves the check reacts to
@@ -65,8 +68,10 @@ tripping checks they could not possibly affect — deleting a `pam_wheel` line
 "broke" `PACMAN_CACHE_BUST is declared`. The anomaly was in the *shape* of the
 results, not in any single run.
 
-**What changed.** Both affected sites use a here-string and no pipeline.
-Verified over 40 consecutive runs on an unmodified tree: zero failures.
+**What changed.** Both affected sites use a here-string and no pipeline —
+see the same `assert_present`, and the `mismatch_branch` assignment below it, in
+[`tests/check-invariants.sh`](../../tests/check-invariants.sh). Verified over 40
+consecutive runs on an unmodified tree: zero failures. Landed in #162.
 
 **The transferable rule.** An intermittently-red check is worse than no check —
 it trains everyone to re-run until green. And results that are *implausible*
@@ -93,7 +98,13 @@ requests earlier, in
 review is data, and policy and tooling are read from the base revision. The
 workflow was not applying that rule to itself.
 
-**What changed.** The checkout pins `ref: ${{ github.event.repository.default_branch }}`.
+**What changed.** The checkout pins
+`ref: ${{ github.event.repository.default_branch }}` — see the `Checkout the
+default branch` step in
+[`.github/workflows/ai-fix.yml`](../../.github/workflows/ai-fix.yml), landed in
+#163. That workflow and `scripts/pr-review-state.sh` reached `main` after this
+reflection was first written, so if you are reading a revision of the tree that
+predates them, #163 is the durable record.
 
 **The transferable rule.** Writing a policy down does not apply it. The first
 thing to check against a new policy is the change that introduced it, and the
