@@ -15,3 +15,8 @@ to `corrections.jsonl` only when the correction also needs a searchable history:
 
 Keep entries factual, repository-specific, and safe to publish. A proposed
 lesson is not a correction until review or a discriminating test confirms it.
+
+If the lesson does not fit on one line — if the useful part is *why* the mistake
+was possible and what caught it — write it up in
+[docs/reflections/](../docs/reflections/) instead, and add a one-line pointer
+here only if it also needs to be greppable.

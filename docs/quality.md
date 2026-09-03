@@ -21,6 +21,7 @@ produced:
 | bootc tag still resolves to its pinned commit | `bootc-pin` job, nightly workflow | Nightly |
 | Published image signature verifies against `cosign.pub` | `signatures` job, nightly workflow | Nightly, per flavor |
 | Dependency freshness | Renovate PRs | Continuously |
+| Thread-aware review state | `./scripts/pr-review-state.sh` | On demand; embedded in the `ai-fix-requested` work order |
 | Path labels (incl. `documentation`, which marks a PR no build ran on) | Labels on the PR | Pull requests from this repository |
 
 ```bash

@@ -17,9 +17,17 @@ request that discovers it:
 | [docs/](../docs/) | Anything a user or maintainer needs, not just an agent |
 | `Containerfile` comments | Why a build step is written the way it is, and what was already tried |
 | [.memory/corrections.jsonl](../.memory/corrections.jsonl) | A correction that also needs searchable history |
+| [docs/reflections/](../docs/reflections/) | Why a mistake was possible and what caught it, when the reasoning does not compress to one line |
 
 A note here that turns out to be durable has been filed in the wrong place.
 Move it and delete the entry.
+
+The split between the last two is about shape, not importance. A correction
+compresses to one line because the lesson *is* the line. Some lessons do not:
+the useful part is the chain — what looked fine, what the check said, why the
+check was wrong — and that belongs in `docs/reflections/`. Either way the *rule*
+lands in `AGENTS.md`, `CLAUDE.md`, or `docs/`; a rule that lives only in a
+reflection has been filed in the wrong place too.
 
 ## Rules for this file
 

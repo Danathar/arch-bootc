@@ -62,6 +62,7 @@ tools, and manual alternatives.
 |            [Change risk tiers](docs/risk-tiers.md) |                                                How a change is classified before it is written, and the evidence each tier needs |
 | [AI security policy](docs/security/SECURITY-AI.md) |                          What agent-assisted changes defend, which inputs are untrusted, and the invariants that hold regardless |
 |                         [Metrics](docs/metrics.md) |                                                PR acceptance, time to merge, and CI health — with the `gh` commands to recompute |
+|                   [Reflections](docs/reflections/) |                                  Durable write-ups of what went wrong here, how it was caught, and what would catch it next time |
 
 ## Contributing
 

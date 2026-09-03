@@ -56,6 +56,7 @@ jobs:
             /mnt/system_files/usr/libexec/arch-bootc-prune-esp \
             /mnt/system_files/usr/bin/ostree-pkg-diff \
             /mnt/scripts/quickstart.sh \
+            /mnt/scripts/pr-review-state.sh \
             /mnt/tests/run-tests.sh \
             /mnt/tests/check-coverage.sh \
             /mnt/tests/check-invariants.sh \
@@ -63,6 +64,7 @@ jobs:
             /mnt/tests/test-prune-esp.sh \
             /mnt/tests/test-ostree-pkg-diff.sh \
             /mnt/tests/test-ostree-pkg-diff-db.sh \
+            /mnt/tests/test-pr-review-state.sh \
             /mnt/tests/e2e/test-quickstart-dry-run.sh
           # homebrew.sh is sourced by /etc/profile.d, not executed directly, so
           # it has no shebang for shellcheck to read -- hence the separate
