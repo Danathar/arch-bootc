@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run every tests/test-*.sh in sequence and report a per-file pass/fail summary.
+# Run every tests/test-*.sh and tests/e2e/test-*.sh in sequence and report a
+# per-file pass/fail summary.
 #
 # The tests are plain bash: no framework, no root, no container runtime, no
 # network. Each test file must exit non-zero when any of its assertions fail.
@@ -9,7 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 shopt -s nullglob
-test_files=("${SCRIPT_DIR}"/test-*.sh)
+test_files=("${SCRIPT_DIR}"/test-*.sh "${SCRIPT_DIR}"/e2e/test-*.sh)
 
 if (( ${#test_files[@]} == 0 )); then
   echo "error: no test files found in ${SCRIPT_DIR}" >&2
@@ -18,12 +19,13 @@ fi
 
 failed=()
 for test_file in "${test_files[@]}"; do
-  echo "==> ${test_file##*/}"
+  relative_test="${test_file#"${SCRIPT_DIR}/"}"
+  echo "==> ${relative_test}"
   if bash "${test_file}"; then
-    echo "--> PASS ${test_file##*/}"
+    echo "--> PASS ${relative_test}"
   else
-    echo "--> FAIL ${test_file##*/}" >&2
-    failed+=("${test_file##*/}")
+    echo "--> FAIL ${relative_test}" >&2
+    failed+=("${relative_test}")
   fi
   echo
 done

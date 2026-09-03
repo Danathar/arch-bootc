@@ -60,17 +60,27 @@ those machines (via a normal `bootc upgrade`) before CI fully switches to
 signing with the rotated key, or they can end up unable to verify — and
 therefore unable to pull — anything from `ghcr.io/danathar` in the meantime.
 
-## Shell unit tests
+## Shell tests and coverage gate
 
 The tests live in `tests/` and are plain bash — no framework, no root, no
 container runtime, no network — so the same command CI runs works locally:
 
 ```bash
-just test        # or: ./tests/run-tests.sh
+just test        # or: ./tests/check-coverage.sh
 ```
 
-`tests/run-tests.sh` executes every `tests/test-*.sh` and fails if any of them
-does. `tests/test-prune-esp.sh` covers `arch-bootc-prune-esp`: argument
+`tests/check-coverage.sh` runs the suite under Bash xtrace and fails if any
+shipped script drops below its minimum unique traced-line count in
+`.coverage-thresholds.json`. The report also shows traced lines as a percentage
+of non-comment lines for context. Thresholds are separate per script so strong
+coverage of one helper cannot hide another script disappearing from the suite.
+The gate also fails when a new executable Bash entry point under `scripts/` or
+the shipped `usr/bin`/`usr/libexec` paths has no threshold. Raise a floor when
+tests add coverage; do not lower one to make a regression pass.
+
+`tests/run-tests.sh` is the ungated runner. It executes every
+`tests/test-*.sh` and `tests/e2e/test-*.sh`, and fails if any of them does.
+`tests/test-prune-esp.sh` covers `arch-bootc-prune-esp`: argument
 handling, candidate discovery, the keep-set parsed out of BLS entries (including
 CRLF line endings and a final line with no newline), the refuse-to-prune guard
 when no entry references `/EFI/Linux/<id>/`, and `--dry-run`.
@@ -98,20 +108,29 @@ none of the side effects. Two consequences worth knowing before editing it:
   the source with a stub `sudo` on `PATH`, so if the guard is ever dropped the
   suite reports a failure instead of hanging on a real password prompt.
 
+`tests/e2e/test-quickstart-dry-run.sh` drives the complete VM path through the
+interactive quickstart. It shadows every mutating command with a failing stub,
+supplies deterministic responses for the read-only host probes, and verifies
+the printed install keeps the loopback, `qemu:///session`, sparse-image, and
+cloud-init boundaries. This tests orchestration without building an image,
+writing a disk, or touching libvirt. It is not evidence that an image boots; the
+authorized VM procedure in `CLAUDE.md` remains the runtime test for that.
+
 `just lint` shellchecks the test scripts too, so they are held to the same bar as
 the scripts they cover.
 
-`build.yaml` runs them: a `test` job checks out the repo and runs
-`./tests/run-tests.sh`, and `build_push` needs `[lint, test]`, so no image is
-built or published from a revision whose tests fail. The job needs nothing but
-the checkout and finishes well before the build would, so it costs no meaningful
-wall-clock time.
+`build.yaml` runs the tests and coverage gate: a `test` job checks out the repo
+and runs `./tests/check-coverage.sh`, and `build_push` needs `[lint, test]`, so no
+image is built or published from a revision whose tests or coverage floors
+fail. The job needs nothing but the checkout and finishes well before the build
+would, so it costs no meaningful wall-clock time.
 
-Adding a new `tests/test-*.sh` file picks it up automatically in `run-tests.sh`,
-which globs, but **not** in either shellcheck invocation — both list files
-explicitly. Add it to the `shellcheck` line in the `Justfile`'s `lint` recipe and
-to the `ShellCheck` step's `/mnt/tests/...` arguments in `build.yaml`, or it
-silently escapes linting.
+Adding a new `tests/test-*.sh` or `tests/e2e/test-*.sh` file picks it up
+automatically in `run-tests.sh`, which globs both locations, but **not** in
+either shellcheck invocation — both list files explicitly. Add it to the
+`shellcheck` line in the `Justfile`'s `lint` recipe and to the `ShellCheck`
+step's `/mnt/tests/...` arguments in `build.yaml`, or it silently escapes
+linting.
 
 ## Workflow linting (zizmor)
 

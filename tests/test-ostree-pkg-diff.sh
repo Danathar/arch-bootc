@@ -18,6 +18,22 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 PKG_DIFF="${REPO_ROOT}/system_files/usr/bin/ostree-pkg-diff"
 
+# Set up cleanup and a fail-closed sudo stub before sourcing the production
+# script. If its sourcing guard ever regresses, the script must hit this stub
+# rather than re-execing the test through the host's real sudo.
+cleanup_work_dir() {
+  [[ -n "${WORK_DIR:-}" && -d "${WORK_DIR}" ]] && rm -rf -- "${WORK_DIR}"
+}
+WORK_DIR="$(mktemp -d)"
+trap cleanup_work_dir EXIT
+
+SOURCE_STUB_DIR="${WORK_DIR}/source-stub-bin"
+mkdir -p "${SOURCE_STUB_DIR}"
+printf '#!/usr/bin/env bash\necho SUDO_WAS_CALLED >&2\nexit 97\n' \
+  >"${SOURCE_STUB_DIR}/sudo"
+chmod +x "${SOURCE_STUB_DIR}/sudo"
+PATH="${SOURCE_STUB_DIR}:${PATH}"
+
 # The path is built at runtime, so shellcheck cannot follow it without -x; the
 # source= hint below is for anyone who does run it that way.
 # shellcheck source=../system_files/usr/bin/ostree-pkg-diff disable=SC1091
@@ -29,15 +45,6 @@ set +e
 
 failures=0
 tests_run=0
-
-# Named cleanup_work_dir, not cleanup: the sourced script defines its own
-# cleanup() for its mount/tempfile teardown and would clobber a trap handler
-# of that name.
-cleanup_work_dir() {
-  [[ -n "${WORK_DIR:-}" && -d "${WORK_DIR}" ]] && rm -rf -- "${WORK_DIR}"
-}
-WORK_DIR="$(mktemp -d)"
-trap cleanup_work_dir EXIT
 
 fail() {
   printf 'not ok - %s\n' "$*" >&2
@@ -83,7 +90,7 @@ assert_contains() {
   if [[ "${haystack}" == *"${needle}"* ]]; then
     check "${desc}" 0
   else
-    check "${desc}" 1 "output did not contain '${needle}'"
+    check "${desc}" 1 "output did not contain '${needle}'; got: ${haystack}"
   fi
 }
 
