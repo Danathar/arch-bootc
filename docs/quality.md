@@ -93,14 +93,22 @@ relying on an agent having read the policy carefully:
 - **Denied** — reading `cosign.key` or other private-key and secret shapes;
   broad container cleanup (`podman system prune`, `rm -a`, `rmi -a`, `buildah rm
   --all`); any mutation on the shared `qemu:///system` libvirt connection; and
-  the destructive git recovery commands (`reset --hard`, `clean`, force-push,
-  `checkout --`, `restore`).
+  the git commands `AGENTS.md` rules out as improvised recovery (`reset --hard`,
+  `clean`, force-push, `checkout --`, `restore`, `stash`).
 - **Prompted** — anything under `sudo`, local image builds, `just lint`,
-  `virt-install` and `virsh`, and every git or `gh` write: branch, commit, push,
-  PR create/edit/merge, workflow dispatch, secret set. These map to the consent
-  gates in `AGENTS.md`.
+  `virt-install` and `virsh`, `losetup`, and every git or `gh` write: branch,
+  commit, push, PR create/edit/merge, workflow dispatch, secret set. These map to
+  the consent gates in `AGENTS.md`.
 - **Allowed** — the non-privileged test suite, `shellcheck`, `bash -n`, and
   read-only git and host inspection.
+
+Two entries are stricter in practice than the lists above suggest. `git stash`
+is denied outright, where `AGENTS.md` only requires approval — denial is the
+blunter reading, and the recovery is to ask rather than to stash. And the
+read-only `virsh -c qemu:///session list`/`pool-list` and `losetup -a` entries in
+the allow list are also matched by the broader `virsh *` and `losetup*` ask
+rules, so in practice they prompt. Both resolve toward prompting, which is the
+safe direction; tighten them if the prompts get tedious.
 
 Be clear about the limits. These are prefix matches on command strings, so a
 differently-spelled or composed command reaches the same effect without matching
