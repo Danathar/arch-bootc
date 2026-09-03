@@ -189,6 +189,127 @@ The version is pinned in the workflow's `ZIZMOR_VERSION` env var rather than tra
 `latest`, so a new zizmor release adding new audits can't turn `main` red on its own —
 Renovate bumps it as a PR whose own run proves it still passes.
 
+## Pull request labels
+
+`.github/workflows/labeler.yml` applies path-based labels to pull requests from
+this repository, driven by the path-to-label map in `.github/labeler.yml`.
+
+| Label | Applied when |
+| --- | --- |
+| `documentation` | **Every** changed file is Markdown or under `docs/` |
+| `area/image` | `Containerfile`, `packages-*.txt`, `system_files/` |
+| `area/ci` | `.github/workflows/`, `.github/labeler.yml`, `renovate.json` |
+| `area/tests` | `tests/`, `.coverage-thresholds.json` |
+| `area/scripts` | `scripts/`, `Justfile` |
+| `area/security-model` | `cosign.pub`, `system_files/etc/containers/`, `docs/security/` |
+| `area/agent-policy` | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, editor and agent rule files |
+
+Four details are deliberate rather than incidental.
+
+**`documentation` uses `any-glob-to-all-files`.** It lands only when *every*
+changed file is Markdown or under `docs/` — which is exactly when `build.yml`'s
+`paths-ignore` skips the build entirely. The label therefore means "no build, no
+tests and no ShellCheck ran on this pull request," which is the one thing worth
+seeing at a glance on a green-looking, check-less PR. See
+[quality.md](quality.md).
+
+**Nothing here reuses an approval label.** The `quality`, `testing`, `ci` and
+`security` labels in this repository mean "approved by an owner for auto-merge
+on green CI." A label that means someone approved something must never be
+reachable from a file path, so the path labels live under an `area/` prefix that
+no automation acts on.
+
+**It keeps the labels honest.** `sync-labels` is on, so a label is removed again
+when the paths stop supporting it. `documentation` is what makes that
+non-negotiable: a pull request that starts as documentation and gains code on a
+later push *does* run the build, and a surviving `documentation` label would
+assert the opposite of what happened. The cost is that a hand-applied label is
+removed again if the paths do not support it — the right trade here, because
+these labels are derived rather than editorial, and a label that lies about
+whether CI ran is worse than automation overriding a manual one. Only the seven
+labels in the configuration are ever touched; `hold`, `needs-human`, and the
+approval labels are not.
+
+**It runs on `pull_request`, not `pull_request_target`.** The target variant
+would run with this repository's write token against a fork's branch; the only
+thing it would buy is labelling fork pull requests, and a fork's `GITHUB_TOKEN`
+is read-only regardless of the permissions a workflow requests. The job is
+skipped for fork pull requests instead. See
+[security/SECURITY-AI.md](security/SECURITY-AI.md).
+
+The workflow creates any label it needs that does not exist yet, so no manual
+repository setup is required; existing labels are left untouched. Colours and
+descriptions live in the workflow's catalog while paths live in
+`.github/labeler.yml`, and the workflow **fails in either direction** — a
+configured label with no catalog entry, or a catalog entry with no path rule —
+so the two cannot drift apart silently. The second direction is the quieter
+one: it is how a deleted path rule leaves a repository label behind that
+nothing will ever apply.
+
+A label is a triage hint, not a verdict. No path rule can tell a `Containerfile`
+comment fix from a change to how `bootc` is fetched — both touch the same file.
+Classify a change by what the diff does; see [risk-tiers.md](risk-tiers.md).
+
+## Nightly compliance
+
+`.github/workflows/nightly-compliance.yml` runs three checks at 05:40 UTC, on
+`workflow_dispatch`, and — for the workflow file itself — on pull requests.
+They share a theme: each one can change from true to false with **no commit
+happening at all**, which is precisely what a build-triggered check cannot
+notice.
+
+| Job | Asks | Fails when |
+| --- | --- | --- |
+| `invariants` | Are the load-bearing properties still in the tree? | `./tests/check-invariants.sh` finds one missing |
+| `bootc-pin` | Does `BOOTC_VERSION` still resolve to `BOOTC_COMMIT` upstream? | The tag was re-pointed or deleted |
+| `signatures` | Do the published images still verify against `cosign.pub`? | Any flavor's `latest` fails `cosign verify` |
+
+Each is a separate job so a failure names itself in the run list instead of
+hiding behind whichever check ran first, and the `signatures` job uses a
+`fail-fast: false` matrix so one bad flavor does not cancel the other two.
+
+**`invariants`.** Also wired into the build workflow's `test` job, so it gates
+every code change as well as running nightly. See
+[quality.md](quality.md) for what it asserts and — more usefully — what it
+cannot see.
+
+**`bootc-pin`.** The `Containerfile` already refuses to build when the tag no
+longer resolves to the pinned commit. That check only fires when something
+triggers a build, and it surfaces as a build failure, which reads like broken CI
+rather than what it is. This job asks upstream the same question daily and
+reports it as its own event, because a git tag is mutable, `bootc` runs as root
+on every machine booting this image, and a re-pointed tag is a supply-chain
+problem rather than a version bump. Run it by hand with:
+
+```bash
+version=$(sed -nE 's/^ARG BOOTC_VERSION=(.+)$/\1/p' Containerfile | head -1)
+git ls-remote --tags https://github.com/bootc-dev/bootc.git "refs/tags/${version}^{}"
+```
+
+The `^{}` row is the one that matters: these are annotated tags, so the plain
+row is the tag object and `BOOTC_COMMIT` is the commit it peels to.
+
+**`signatures`.** Runs `cosign verify --key cosign.pub` against the published
+`latest` of each flavor, deliberately **without registry credentials**. A pass
+therefore means the signature verifies for anyone pulling the published image,
+which is the property the in-image policy depends on — not merely that CI can
+verify its own artifact with its own token. Because `cosign.pub` comes from the
+checkout, it also catches the key in the repository drifting away from the key
+the pipeline signs with. Reproduce it locally with no setup:
+
+```bash
+cosign verify --key cosign.pub ghcr.io/danathar/arch-bootc-base:latest
+```
+
+The `cosign-release` version is written as a literal rather than through an env
+var, because `renovate.json`'s custom manager matches that exact string — an
+expansion would quietly drop this workflow out of its reach and let signing and
+verification drift onto different cosign majors.
+
+This does not make signature verification end-to-end. Nothing yet pulls an image
+under the shipped `policy.json` and confirms it accepts a signed image and
+rejects an unsigned one; see the gaps section of [quality.md](quality.md).
+
 ## Keeping pinned versions up to date
 
 `bootc`, the base images, the GitHub Actions and the cosign/chunkah/zizmor versions are all

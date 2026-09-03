@@ -1,0 +1,152 @@
+---
+name: Nightly compliance
+on:
+  schedule:
+    # Offset from the build workflow's 10:05 UTC run so the two do not compete
+    # for runners, and early enough that a failure is waiting in the morning.
+    - cron: "40 5 * * *"
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    # Only self-tests. The invariants job also runs on every code change via
+    # build.yml's `test` job, so re-running it here for every pull request
+    # would duplicate work without adding signal.
+    paths:
+      - ".github/workflows/nightly-compliance.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Three checks that a build cannot make, because a build proves the image
+# builds and these are all things that stay true or stop being true without
+# any commit happening at all:
+#
+#   invariants  -- the security properties AGENTS.md calls load-bearing are
+#                  still present in the tree.
+#   bootc-pin   -- the upstream tag this image compiles bootc from still
+#                  resolves to the commit it was pinned against.
+#   signatures  -- the images this repository has actually published still
+#                  verify against the key in this repository.
+#
+# Each is a separate job so one failure names itself in the run list rather
+# than hiding behind whichever check happened to run first.
+jobs:
+  invariants:
+    name: Repository invariants
+    runs-on: ubuntu-24.04
+    # Static reads of a checked-out tree. Anything past 5 minutes is a hang.
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Assert repository invariants
+        run: ./tests/check-invariants.sh
+
+  bootc-pin:
+    name: bootc tag still resolves to the pinned commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Re-resolve BOOTC_VERSION against upstream
+        # The Containerfile already fails the build when the tag no longer
+        # resolves to BOOTC_COMMIT. That check only runs when something
+        # triggers a build, and it reports the problem as a build failure --
+        # which reads like a broken build rather than what it is.
+        #
+        # A git tag is mutable and bootc runs as root on every machine booting
+        # this image, so a tag being re-pointed upstream is a supply-chain
+        # event worth learning about on its own schedule, named as itself.
+        # This job asks upstream the same question once a day and does not
+        # touch the image.
+        run: |
+          set -euo pipefail
+          version="$(sed -nE 's/^ARG BOOTC_VERSION=(.+)$/\1/p' Containerfile | head -1)"
+          commit="$(sed -nE 's/^ARG BOOTC_COMMIT=(.+)$/\1/p' Containerfile | head -1)"
+          if [[ -z "${version}" || -z "${commit}" ]]; then
+            echo "::error file=Containerfile::could not read BOOTC_VERSION/BOOTC_COMMIT"
+            exit 1
+          fi
+          echo "pinned: ${version} -> ${commit}"
+
+          # Annotated tags resolve in two rows: the tag object, and the commit
+          # it peels to under the ^{} suffix. BOOTC_COMMIT is the peeled
+          # commit, so prefer that row and fall back to the plain one for a
+          # lightweight tag.
+          refs="$(git ls-remote --tags https://github.com/bootc-dev/bootc.git \
+            "refs/tags/${version}" "refs/tags/${version}^{}")"
+          if [[ -z "${refs}" ]]; then
+            echo "::error file=Containerfile::tag ${version} no longer exists upstream"
+            exit 1
+          fi
+          resolved="$(printf '%s\n' "${refs}" |
+            awk '/\^\{\}$/ {peeled = $1} !peeled {plain = $1} END {print (peeled != "" ? peeled : plain)}')"
+          echo "upstream: ${version} -> ${resolved}"
+
+          if [[ "${resolved}" != "${commit}" ]]; then
+            echo "::error file=Containerfile::bootc tag ${version} now resolves to ${resolved}, but this image is pinned to ${commit}. A release tag was re-pointed upstream; treat this as a supply-chain event, not a version bump."
+            exit 1
+          fi
+          echo "bootc pin intact: ${version} still resolves to ${commit}"
+
+  signatures:
+    name: Published ${{ matrix.flavor }} image is signed by this repository's key
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [base, kde, xfce]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Written as a literal, not via an env var, because renovate.json's
+          # custom manager matches the string `cosign-release: vX.Y.Z` in a
+          # workflow file. Pinning it here through an expansion would silently
+          # drop this file out of that manager's reach, and signing and
+          # verification would be free to drift onto different cosign majors.
+          cosign-release: v3.1.3
+
+      - name: Verify the published image against cosign.pub
+        # docs/quality.md lists this as a gap in as many words: "CI signs;
+        # nothing in CI pulls the signed image under the shipped policy and
+        # confirms it verifies." This closes the verification half of it.
+        #
+        # Deliberately unauthenticated. cosign is given no registry credentials
+        # here, so a pass means the signature verifies for *anyone pulling the
+        # published image*, which is the property the in-image policy actually
+        # depends on -- not merely that CI can verify its own artifact with its
+        # own token.
+        #
+        # cosign.pub is read from the checkout, so this also catches the key in
+        # the repository drifting away from the key the pipeline signs with.
+        # That is the same file the Containerfile copies to the keyPath
+        # policy.json names, which tests/check-invariants.sh asserts separately.
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}-${{ matrix.flavor }}:latest
+        run: |
+          set -euo pipefail
+          image="${IMAGE,,}"
+          echo "verifying ${image}"
+          cosign verify --key cosign.pub "${image}"
