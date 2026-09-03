@@ -189,6 +189,58 @@ The version is pinned in the workflow's `ZIZMOR_VERSION` env var rather than tra
 `latest`, so a new zizmor release adding new audits can't turn `main` red on its own —
 Renovate bumps it as a PR whose own run proves it still passes.
 
+## Pull request labels
+
+`.github/workflows/labeler.yml` applies path-based labels to pull requests from
+this repository, driven by the path-to-label map in `.github/labeler.yml`.
+
+| Label | Applied when |
+| --- | --- |
+| `documentation` | **Every** changed file is Markdown or under `docs/` |
+| `area/image` | `Containerfile`, `packages-*.txt`, `system_files/` |
+| `area/ci` | `.github/workflows/`, `.github/labeler.yml`, `renovate.json` |
+| `area/tests` | `tests/`, `.coverage-thresholds.json` |
+| `area/scripts` | `scripts/`, `Justfile` |
+| `area/security-model` | `cosign.pub`, `system_files/etc/containers/`, `docs/security/` |
+| `area/agent-policy` | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, editor and agent rule files |
+
+Four details are deliberate rather than incidental.
+
+**`documentation` uses `any-glob-to-all-files`.** It lands only when *every*
+changed file is Markdown or under `docs/` — which is exactly when `build.yml`'s
+`paths-ignore` skips the build entirely. The label therefore means "no build, no
+tests and no ShellCheck ran on this pull request," which is the one thing worth
+seeing at a glance on a green-looking, check-less PR. See
+[quality.md](quality.md).
+
+**Nothing here reuses an approval label.** The `quality`, `testing`, `ci` and
+`security` labels in this repository mean "approved by an owner for auto-merge
+on green CI." A label that means someone approved something must never be
+reachable from a file path, so the path labels live under an `area/` prefix that
+no automation acts on.
+
+**It only ever adds.** `sync-labels` is off, so the labeler never removes a
+label — including one it applied itself that no longer matches. A stale `area/`
+label is a smaller problem than automation removing a label a maintainer applied
+on purpose.
+
+**It runs on `pull_request`, not `pull_request_target`.** The target variant
+would run with this repository's write token against a fork's branch; the only
+thing it would buy is labelling fork pull requests, and a fork's `GITHUB_TOKEN`
+is read-only regardless of the permissions a workflow requests. The job is
+skipped for fork pull requests instead. See
+[security/SECURITY-AI.md](security/SECURITY-AI.md).
+
+The workflow creates any label it needs that does not exist yet, so no manual
+repository setup is required; existing labels are left untouched. Colours and
+descriptions live in the workflow's catalog while paths live in
+`.github/labeler.yml`, and the workflow **fails** if a label is configured in
+one without an entry in the other, so the two cannot drift apart silently.
+
+A label is a triage hint, not a verdict. No path rule can tell a `Containerfile`
+comment fix from a change to how `bootc` is fetched — both touch the same file.
+Classify a change by what the diff does; see [risk-tiers.md](risk-tiers.md).
+
 ## Keeping pinned versions up to date
 
 `bootc`, the base images, the GitHub Actions and the cosign/chunkah/zizmor versions are all

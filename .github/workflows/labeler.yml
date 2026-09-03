@@ -1,0 +1,115 @@
+---
+name: Label pull requests
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  label:
+    name: Apply path labels
+    runs-on: ubuntu-24.04
+    # Two API-bound steps and no build; anything past 5 minutes is a hang.
+    timeout-minutes: 5
+    # `pull_request`, not `pull_request_target`, on purpose. The target variant
+    # would run with this repository's write token against a fork's branch --
+    # the shape docs/security/SECURITY-AI.md names as a T3 decision -- and the
+    # only thing it would buy is labelling fork pull requests. A fork's
+    # GITHUB_TOKEN is downgraded to read-only regardless of the permissions
+    # requested below, so skip the job there rather than reach for a trigger
+    # that would make labelling worth an escalation.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      # actions/labeler applies labels to the pull request.
+      pull-requests: write
+      # Labels live on the issues API, so creating a missing one needs this.
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Ensure every configured label exists
+        # actions/labeler fails the run if a label named in the configuration
+        # does not exist in the repository, so provision them here rather than
+        # requiring a manual settings change before the workflow can work.
+        #
+        # The catalog below is the source of truth for a label's colour and
+        # description; .github/labeler.yml is the source of truth for which
+        # paths map to it. That split means the two can drift, so this step
+        # fails when a label is configured there without an entry here --
+        # turning a duplication into a checked invariant.
+        #
+        # Existing labels are never modified. `documentation` predates this
+        # workflow and keeps whatever colour and description it already has.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # name|colour|description
+          catalog=(
+            "documentation|0075ca|Improvements or additions to documentation"
+            "area/image|1d76db|Changes what ships in the image: Containerfile, package lists, system_files"
+            "area/ci|0e8a16|Changes how the image is built or judged, not what it contains"
+            "area/tests|fbca04|Shell tests, the test runner, or the coverage floors"
+            "area/scripts|5319e7|scripts/ and the Justfile"
+            "area/security-model|b60205|Signing key, signature policy, or registry configuration"
+            "area/agent-policy|bfd4f2|The guardrails agents work under: AGENTS.md, CLAUDE.md, CONTRIBUTING.md, editor rules"
+          )
+
+          declare -A catalogued=()
+          for entry in "${catalog[@]}"; do
+            catalogued["${entry%%|*}"]=1
+          done
+
+          drift=0
+          while IFS= read -r configured; do
+            if [[ -z "${catalogued[${configured}]:-}" ]]; then
+              printf '::error file=.github/labeler.yml::label %s is configured but has no catalog entry in .github/workflows/labeler.yml\n' \
+                "${configured}"
+              drift=1
+            fi
+          done < <(sed -nE 's/^([A-Za-z][A-Za-z0-9._/-]*):[[:space:]]*$/\1/p' .github/labeler.yml)
+          if ((drift != 0)); then
+            exit 1
+          fi
+
+          declare -A present=()
+          while IFS= read -r existing; do
+            present["${existing}"]=1
+          done < <(gh label list --limit 200 --json name --jq '.[].name')
+
+          for entry in "${catalog[@]}"; do
+            name="${entry%%|*}"
+            remainder="${entry#*|}"
+            colour="${remainder%%|*}"
+            description="${remainder#*|}"
+            if [[ -n "${present[${name}]:-}" ]]; then
+              printf 'label already exists, leaving it alone: %s\n' "${name}"
+              continue
+            fi
+            printf 'creating label: %s\n' "${name}"
+            gh label create "${name}" --color "${colour}" --description "${description}"
+          done
+
+      - name: Apply labels from changed paths
+        uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0
+        with:
+          # Default, stated explicitly because it is the load-bearing choice:
+          # the labeler only ever *adds* a label. With sync-labels enabled it
+          # would also remove any label in the configuration that no longer
+          # matches, which means it would strip a label a human had applied on
+          # purpose. A stale `area/` label is a smaller problem than automation
+          # arguing with a maintainer.
+          sync-labels: false
