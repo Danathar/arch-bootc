@@ -83,7 +83,7 @@ assert_contains() {
   if [[ "${haystack}" == *"${needle}"* ]]; then
     check "${desc}" 0
   else
-    check "${desc}" 1 "output did not contain '${needle}'"
+    check "${desc}" 1 "output did not contain '${needle}'; got: ${haystack}"
   fi
 }
 

@@ -51,11 +51,13 @@ jobs:
             /mnt/system_files/usr/bin/ostree-pkg-diff \
             /mnt/scripts/quickstart.sh \
             /mnt/tests/run-tests.sh \
+            /mnt/tests/check-coverage.sh \
             /mnt/tests/test-prune-esp.sh \
-            /mnt/tests/test-ostree-pkg-diff.sh
+            /mnt/tests/test-ostree-pkg-diff.sh \
+            /mnt/tests/e2e/test-quickstart-dry-run.sh
 
   test:
-    name: Shell unit tests
+    name: Shell tests and coverage
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -66,8 +68,8 @@ jobs:
           persist-credentials: false
       # Plain bash, no root, no container runtime, no network -- so this needs
       # nothing beyond the checkout and finishes long before the build would.
-      - name: Run shell unit tests
-        run: ./tests/run-tests.sh
+      - name: Run shell tests and enforce coverage floors
+        run: ./tests/check-coverage.sh
 
   build_push:
     name: Build and push image
