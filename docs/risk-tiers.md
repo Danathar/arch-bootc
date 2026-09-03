@@ -14,12 +14,12 @@ proves.
 
 ## The tiers
 
-| Tier | Reaches | Automated signal that runs | Extra evidence required |
-| --- | --- | --- | --- |
-| **T0** Documentation | Readers only | **None** | Read the rendered result |
-| **T1** Build and test harness | CI, local workflow | Tests, ShellCheck, zizmor | Name the checks and their output |
-| **T2** Image contents | Every machine that installs or upgrades | Three-flavor build | Which flavors built; upgrade effect |
-| **T3** Boot, security model, provenance, or published artifacts | Root on every machine running this image | Three-flavor build | A VM boot test, and an explicit statement that the security model is in scope |
+| Tier | Reaches | Extra evidence required |
+| --- | --- | --- |
+| **T0** Documentation | Readers only | Read the rendered result |
+| **T1** Build and test harness | CI, local workflow | Name the checks that ran and what they printed |
+| **T2** Image contents | Every machine that installs or upgrades | Which flavors built; effect on an upgrade |
+| **T3** Boot, security model, provenance, or published artifacts | Root on every machine running this image | Evidence that exercises the changed path, and an explicit statement that the security model is in scope |
 
 Take the **highest** tier matched by any file in the diff. A pull request that
 touches `docs/` and `Containerfile` is T2 or T3, not T0; the documentation half
@@ -28,13 +28,37 @@ does not dilute the rest.
 When two tiers both look defensible, round up. The cost of over-classifying is
 one extra check; the cost of under-classifying is a machine that does not boot.
 
+**CI cannot tell these tiers apart, which is the whole reason the table has a
+last column.** There is only one path split in the automation, and it is not the
+tier boundary:
+
+- If *every* changed file matches `**/*.md` or `docs/**`, the build workflow is
+  skipped entirely and nothing runs.
+- Otherwise the build workflow runs in full — shell tests, coverage floors,
+  ShellCheck, and the three-flavor image build — whether the diff touched
+  `renovate.json`, `tests/`, `packages-kde.txt`, or the signing step.
+- zizmor runs on top of that only when `.github/workflows/**` changes.
+
+So a T1 change to `renovate.json` gets a complete three-flavor build it did not
+need, and a T3 change to the signing step gets the same build without ever
+executing the step it changed. The automated signal is close to tier-blind; the
+extra evidence column is what actually scales with risk.
+
 ## T0 — Documentation
 
-`*.md` anywhere, `docs/`, issue and pull request templates, `.github/prompts/`.
+`*.md` anywhere, `docs/`, `.github/pull_request_template.md`,
+`.github/prompts/`.
 
 **What runs: nothing.** The build workflow sets
 `paths-ignore: ["**/*.md", "docs/**"]`, and the zizmor workflow only triggers on
 `.github/workflows/**`. A T0 pull request therefore shows *no checks at all*.
+
+**The issue forms are not T0 by this definition, even though they read like it.**
+`.github/ISSUE_TEMPLATE/bug-report.yml`, `feature-request.yml`, and `config.yml`
+are YAML, so they match neither `**/*.md` nor `docs/**`. Editing one triggers the
+full build workflow — shell tests, ShellCheck, and a three-flavor image build —
+for a change that cannot possibly affect the image. Treat them as T1: the checks
+run, so quote them, and do not describe the change as "docs only".
 
 That is correct — there is nothing for those jobs to check — but it means the
 usual shorthand breaks down. **An absent check is not a passed check.** "Green"
@@ -52,10 +76,18 @@ expectations that come with the real tier still apply.
 `tests/`, `.coverage-thresholds.json`, `Justfile`, `.github/workflows/`,
 `.github/labeler.yml`, `.shellcheckrc`, `.editorconfig`, `renovate.json`.
 
+Plus `.github/ISSUE_TEMPLATE/`, per the note above.
+
 These change how the image is *judged*, not what it contains. A mistake here
 does not ship a bad image directly; it lets a bad image ship later by removing
 the signal that would have caught it. That makes weakening a check the
 characteristic T1 failure, and it is the thing to look for in review.
+
+What runs is *more* than the diff suggests: the full build workflow, including
+the three-flavor image build, fires for any of these paths, and zizmor fires on
+top of it only for `.github/workflows/**`. A green check on a T1 pull request
+therefore mostly proves the image still builds, which was not in question. The
+evidence that matters is the check the change actually affects.
 
 Evidence: run the checks the diff affects and paste what they printed.
 
@@ -122,22 +154,45 @@ the diff is:
   package versions can orphan cosign signatures and break `bootc upgrade` on
   installed systems.
 
-Evidence:
+Evidence: everything T2 requires, plus evidence that exercises **the path this
+change touches**. That is not one thing, because T3 covers two kinds of change
+and the usual answer is only right for one of them.
 
-- Everything T2 requires, plus a **VM boot test** following
-  [CLAUDE.md](../CLAUDE.md) exactly — including confirming the image's
-  `org.opencontainers.image.revision` label matches the commit you meant to
-  test, rather than trusting a tag.
-- An explicit statement in the pull request that this is a security or boot
-  change and what the intended new model is. A T3 change described as a cleanup
-  is a review failure even if the code is correct.
+*For anything a running system can demonstrate* — the root-login model, service
+enablement, the boot path, `bootc upgrade` behavior — a **VM boot test**
+following [CLAUDE.md](../CLAUDE.md) exactly, including confirming the image's
+`org.opencontainers.image.revision` label matches the commit you meant to test
+rather than trusting a tag.
+
+*For the publication path* — the push, sign, and package-retention jobs — a VM
+boot test proves nothing, and neither does a green pull request check: those
+steps are gated to non-pull-request events on the default branch, so **the pull
+request build never executes the code being changed**. Say so, and substitute
+evidence that does reach it:
+
+- Walk the changed step against a real run's logs, naming the run.
+- For a signing change, verify a resulting image's signature against
+  `cosign.pub` under the shipped policy, rather than inferring it from a green
+  job.
+- For a retention change, state which package versions the new setting keeps and
+  deletes against the versions actually published now, and confirm the versions
+  a deployed system could still be pulling survive — including the separate
+  signature manifests, which a naive prune can orphan.
+- Expect the first real exercise to be the run on `main` after the merge, and
+  say what you will check on it and what the rollback is.
+
+Either way, an explicit statement in the pull request that this is a security or
+boot change and what the intended new model is. A T3 change described as a
+cleanup is a review failure even if the code is correct.
 - For a security control: proof the test **discriminates**. Observe it failing
   without the change. A check that passes both ways proves nothing — and see
   the false-positive `su` result recorded in [CLAUDE.md](../CLAUDE.md) before
   trusting any in-guest security result.
 
-**T3 never merges on a green check alone.** No CI job boots the image, so the
-signal that would catch a T3 regression does not exist in CI by construction.
+**T3 never merges on a green check alone.** No CI job boots the image, and the
+publish, sign, and retention steps do not run on a pull request at all — so for
+both halves of T3, the signal that would catch a regression does not exist in CI
+by construction.
 
 ## What automation does per tier
 
