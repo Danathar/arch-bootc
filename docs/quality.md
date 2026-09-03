@@ -17,6 +17,9 @@ produced:
 | `bootc container lint`, `systemd-analyze verify`, dangling-symlink check | Inside the build, per flavor | Same |
 | Workflow static analysis (zizmor) | `Lint workflows` workflow | Any change under `.github/workflows/**` |
 | Image signature (cosign) | `Sign container image` step | Pushes to `main` only |
+| Repository invariants | `Assert repository invariants` step, build workflow; `invariants` job, nightly workflow | Same as the tests, plus nightly |
+| bootc tag still resolves to its pinned commit | `bootc-pin` job, nightly workflow | Nightly |
+| Published image signature verifies against `cosign.pub` | `signatures` job, nightly workflow | Nightly, per flavor |
 | Dependency freshness | Renovate PRs | Continuously |
 
 ```bash
@@ -82,6 +85,43 @@ rechunk, push, and sign steps, so a green PR check exercises less than a push to
 
 Booting is covered by the manual VM procedure in [CLAUDE.md](../CLAUDE.md),
 which is the only routine way these paths get exercised.
+
+**The invariant checks.** `./tests/check-invariants.sh` asserts, statically over
+the checked-out tree, that the properties `AGENTS.md` calls load-bearing are
+still where they are supposed to be: the four root-login controls, the signature
+chain (including that `policy.json`'s `keyPath` still matches where the
+`Containerfile` copies `cosign.pub`), the `bootc` tag-and-commit pin and its
+hard failure on a mismatch, `PACMAN_CACHE_BUST` still preceding the first
+`pacman -Syu`, the absence of third-party package sources, the systemd
+enablement layout, SHA-pinned actions with `persist-credentials: false` and
+`timeout-minutes`, and — the one that had already gone wrong — that every shell
+file appears in **both** hand-maintained ShellCheck lists.
+
+It exists because a build proves the image *builds*, and an image that has
+quietly lost `pam_wheel.so use_uid` builds perfectly well. It runs in the build
+workflow's `test` job on every code change and again nightly.
+
+It reads the `Containerfile` as text, so a step with the right shape and the
+wrong effect passes it; only a VM boot test settles that. It cannot see that
+display managers refuse root, because that behavior comes from the packaged
+units rather than from anything in this tree. And a failure means an invariant
+is no longer *visible* where it was — a deliberate security change updates the
+script in the same commit and says so.
+
+**The nightly bootc pin check.** The `Containerfile` already refuses to build
+when `BOOTC_VERSION`'s tag no longer resolves to `BOOTC_COMMIT`. That check only
+fires when something triggers a build, and it surfaces as a build failure, which
+reads like broken CI rather than what it is. The nightly job asks upstream the
+same question on its own schedule and names it: a git tag is mutable, `bootc`
+runs as root on every machine booting this image, and a re-pointed tag is a
+supply-chain event.
+
+**The nightly signature verification.** Runs `cosign verify --key cosign.pub`
+against the published `latest` of each flavor, **with no registry credentials**.
+That is the point: a pass means the signature verifies for anyone pulling the
+published image, not merely that CI can verify its own artifact with its own
+token. It also catches `cosign.pub` in the repository drifting away from the key
+the pipeline actually signs with.
 
 **zizmor.** Static analysis of the workflow files themselves — credential
 persistence, template injection, and similar. Two findings it already fixed here
@@ -162,8 +202,15 @@ Stated plainly so nobody mistakes silence for coverage:
   sensitive as described above.
 - **`Containerfile` has no unit tests.** Its correctness rests on the build's
   own lint steps, the rationale comments, and review.
-- **Signature verification is not tested end to end.** CI signs; nothing in CI
-  pulls the signed image under the shipped policy and confirms it verifies.
+- **Signature verification is tested, but not end to end.** The nightly
+  `signatures` job confirms each published flavor verifies against `cosign.pub`
+  with no credentials, which is the property a user depends on. What still is
+  not tested is the *policy* path: nothing pulls the image under the shipped
+  `system_files/etc/containers/policy.json` and confirms that
+  `sigstoreSigned` + `matchRepository` accepts it and rejects an unsigned image.
+  `check-invariants.sh` asserts that policy's `keyPath` matches where
+  `cosign.pub` is copied, which closes the most likely way the two drift apart,
+  but that is a static check, not an execution of the policy.
 
 Trend data for the process around all this — how much lands, how fast, how often
 review finds something — lives in [metrics.md](metrics.md).
