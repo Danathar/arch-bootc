@@ -65,6 +65,7 @@ jobs:
             /mnt/tests/test-ostree-pkg-diff.sh \
             /mnt/tests/test-ostree-pkg-diff-db.sh \
             /mnt/tests/test-pr-review-state.sh \
+            /mnt/tests/test-quickstart-baremetal.sh \
             /mnt/tests/e2e/test-quickstart-dry-run.sh
           # homebrew.sh is sourced by /etc/profile.d, not executed directly, so
           # it has no shebang for shellcheck to read -- hence the separate
