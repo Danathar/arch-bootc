@@ -224,6 +224,18 @@ forbids without explicit authorization for that exact source), building both lib
 source in the bootc build stage, or waiting. Note that the commit pin is *not* the problem: the
 tag re-point check passes and the build gets as far as `cargo`.
 
+**Waiting is the chosen option, and upstream has agreed to fix it.**
+[bootc-dev/bootc#2431](https://github.com/bootc-dev/bootc/issues/2431) tracks it — open and
+labelled `triaged`, with the maintainer replying *"Yes sorry, we can make selinux a build-time
+option."* That turns this from an indefinite wait into one with a known endpoint, which is what
+makes leaving the PR red the right call rather than merely the easy one. There is no later
+release to move to either: v1.16.11 is still the newest.
+
+Two records track it here, deliberately: PR #143 is the *mechanism* — it self-clears, as
+described above — and issue #168 is the CI-side record, labelled `hold`. Both stay open. Closing
+#168 would assert the blocker is dealt with while it is still live, and the CI agent would
+re-file it on the next failed run anyway. It should be closed by the change that unblocks it.
+
 To check whether upstream has resolved it:
 
 ```bash
