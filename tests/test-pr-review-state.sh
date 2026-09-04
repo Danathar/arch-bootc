@@ -86,14 +86,41 @@ case "$1 ${2:-}" in
     for arg in "$@"; do
       [[ "${arg}" == cursor=* ]] && cursor="${arg#cursor=}"
     done
+    # A server that keeps handing back a fresh cursor forever. The counter file
+    # names each page, so every reply advances and the only thing that can stop
+    # the script is its own page bound.
+    if [[ -n "${GH_STUB_ENDLESS:-}" ]]; then
+      pages_served=$(($(cat "${GH_STUB_ENDLESS}" 2>/dev/null || printf 0) + 1))
+      printf '%s' "${pages_served}" >"${GH_STUB_ENDLESS}"
+      sed "s/@CURSOR@/PAGE${pages_served}/" "${GH_STUB_FIXTURE}"
+      exit 0
+    fi
+    # Fail only on a paginating call, so the first page still succeeds and the
+    # error can only come from the pagination loop.
+    if [[ -n "${cursor}" && -n "${GH_STUB_FAIL_PAGE2:-}" ]]; then
+      printf 'HTTP 502: Bad gateway\n' >&2
+      exit 1
+    fi
     if [[ -n "${cursor}" && -n "${GH_STUB_FIXTURE2:-}" ]]; then
       cat "${GH_STUB_FIXTURE2}"
     else
       cat "${GH_STUB_FIXTURE}"
     fi
     ;;
-  "repo view") printf 'Danathar/arch-bootc\n' ;;
-  "pr view") printf '%s\n' "${GH_STUB_CURRENT_PR:-77}" ;;
+  "repo view")
+    if [[ -n "${GH_STUB_REPO_FAIL:-}" ]]; then
+      printf 'no git remote found for the current directory\n' >&2
+      exit 1
+    fi
+    printf 'Danathar/arch-bootc\n'
+    ;;
+  "pr view")
+    if [[ -n "${GH_STUB_PR_FAIL:-}" ]]; then
+      printf 'no pull requests found for branch\n' >&2
+      exit 1
+    fi
+    printf '%s\n' "${GH_STUB_CURRENT_PR:-77}"
+    ;;
   *)
     printf 'unexpected gh invocation: %s\n' "$*" >&2
     exit 90
@@ -130,6 +157,19 @@ check_run() { # name conclusion
   printf '{"__typename":"CheckRun","name":"%s","conclusion":"%s","status":"COMPLETED","detailsUrl":"https://example.invalid/run"}' "$1" "$2"
 }
 
+# A check that has not finished reports a null `conclusion`; its state is in
+# `status` instead, which is why the script reads `.conclusion // .status`.
+running_check_run() { # name status
+  printf '{"__typename":"CheckRun","name":"%s","conclusion":null,"status":"%s","detailsUrl":"https://example.invalid/run"}' "$1" "$2"
+}
+
+# The other half of the rollup union. Classic commit statuses -- what an
+# external service posts to the statuses API -- carry `context`/`state`/
+# `targetUrl` under different names than a CheckRun does.
+status_context() { # context state
+  printf '{"__typename":"StatusContext","context":"%s","state":"%s","targetUrl":"https://example.invalid/status"}' "$1" "$2"
+}
+
 run_script() {
   PATH="${STUB_DIR}:${PATH}" GH_STUB_FIXTURE="${FIXTURE}" "${BASH}" "${SCRIPT}" "$@" 2>&1
 }
@@ -139,6 +179,10 @@ run_script() {
 output="$(run_script --help)"
 assert_status "--help exits 0" 0 "$?"
 assert_contains "--help explains the exit codes" "${output}" "Exit status:"
+
+output="$(run_script -h)"
+assert_status "-h exits 0" 0 "$?"
+assert_contains "-h prints the same usage as --help" "${output}" "Usage: pr-review-state.sh"
 
 output="$(run_script --not-a-flag 77)"
 assert_status "an unknown option is a usage error" 2 "$?"
@@ -203,6 +247,132 @@ assert_status "a failing check exits 1 even with no threads" 1 "$?"
 assert_contains "the failing check is listed" "${output}" "FAILURE"
 assert_contains "the failing check is counted" "${output}" "1 failing check(s)"
 
+# --- every state the gate counts as failing -------------------------------
+#
+# `FAILURE` above is the obvious one. The other four are in the filter because
+# each is a way for a check to stop without having passed, and the one that
+# matters most here is `CANCELLED`: a cancelled run is not a run that said
+# nothing, it is a run that did not finish, and treating it as neutral would
+# let a gate report "nothing outstanding" for a commit nothing verified.
+
+for failing_state in TIMED_OUT CANCELLED ERROR ACTION_REQUIRED; do
+  write_fixture "[]" "[$(check_run 'Shell tests and coverage' "${failing_state}")]" FAILURE
+  output="$(run_script --repo Danathar/arch-bootc 77)"
+  assert_status "${failing_state} is counted as failing" 1 "$?"
+  # The report's state column is 14 characters wide, so the one state longer
+  # than that is matched by its visible prefix rather than its full name.
+  assert_contains "${failing_state} is reported in the check list" "${output}" "${failing_state:0:14}"
+  assert_contains "${failing_state} reaches the outstanding line" "${output}" "1 failing check(s)"
+done
+
+# The truncation above is a property of the human-readable column only. Anything
+# consuming the exit code and `--json` has to see the state GitHub actually
+# reported, or a caller matching on it would never match ACTION_REQUIRED.
+write_fixture "[]" "[$(check_run 'Shell tests and coverage' ACTION_REQUIRED)]" FAILURE
+output="$(run_script --json --repo Danathar/arch-bootc 77)"
+assert_status "--json exits 1 for a check needing action" 1 "$?"
+if printf '%s' "${output}" | jq -e '.failing[0].state == "ACTION_REQUIRED"' >/dev/null 2>&1; then
+  check "--json reports the untruncated check state" 0
+else
+  check "--json reports the untruncated check state" 1 "got: ${output}"
+fi
+
+# --- a check still running is not a failure -------------------------------
+#
+# The complement of the block above, and the more surprising half: the script
+# reports pending checks but does not fail on them, so an exit 0 can still be a
+# pull request nothing has finished checking. Asserting it here means the
+# distinction is a decision rather than an accident of the filter order.
+
+write_fixture \
+  "[]" \
+  "[$(running_check_run 'Shell tests and coverage' IN_PROGRESS), $(check_run 'Lint shell scripts' SUCCESS)]" \
+  PENDING
+
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "a check still running does not fail the gate" 0 "$?"
+assert_contains "a running check falls back to its status when conclusion is null" "${output}" "IN_PROGRESS"
+assert_contains "a running check is counted as still running" "${output}" "0 failing check(s), 1 still running"
+
+write_fixture \
+  "[]" \
+  "[$(running_check_run 'Shell tests and coverage' QUEUED), $(running_check_run 'Build and push image (base)' WAITING)]" \
+  PENDING
+
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "queued and waiting checks do not fail the gate" 0 "$?"
+assert_contains "queued and waiting checks are both counted as running" "${output}" "2 still running"
+
+# --- classic commit statuses ----------------------------------------------
+#
+# The rollup is a union and the script has a branch per member. Only CheckRun
+# was exercised, so nothing showed that a StatusContext -- what an external
+# service posts to the statuses API -- is read from its own field names rather
+# than silently reported as a nameless check in an unknown state.
+
+write_fixture \
+  "[]" \
+  "[$(status_context 'ci/external-signer' FAILURE), $(status_context 'ci/mirror' SUCCESS)]" \
+  FAILURE
+
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "a failing commit status fails the gate like a check run" 1 "$?"
+assert_contains "a commit status is named by its context" "${output}" "ci/external-signer"
+assert_contains "a passing commit status is listed too" "${output}" "ci/mirror"
+assert_contains "a failing commit status is counted" "${output}" "1 failing check(s)"
+
+output="$(run_script --json --repo Danathar/arch-bootc 77)"
+assert_status "--json still exits 1 for a failing commit status" 1 "$?"
+if printf '%s' "${output}" | jq -e '.checks[0] | .name == "ci/external-signer" and .state == "FAILURE"' >/dev/null 2>&1; then
+  check "a commit status keeps its context and state in --json" 0
+else
+  check "a commit status keeps its context and state in --json" 1 "got: ${output}"
+fi
+
+# --- the check rollup is not paginated ------------------------------------
+#
+# Review threads page; the rollup does not. At exactly 100 contexts the list
+# may have been cut off, and the script says so rather than reporting a
+# truncated list as the whole picture.
+
+many_checks="$(check_run 'context-1' SUCCESS)"
+for i in $(seq 2 100); do
+  many_checks="${many_checks}, $(check_run "context-${i}" SUCCESS)"
+done
+write_fixture "[]" "[${many_checks}]"
+
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "a full rollup still exits 0 when everything passed" 0 "$?"
+assert_contains "a rollup at the cap warns that it may be truncated" "${output}" "may be truncated"
+
+# 99 is the discriminating case: one fewer context cannot have been cut off,
+# so the warning has to be absent or it means nothing when it appears.
+many_checks="$(check_run 'context-1' SUCCESS)"
+for i in $(seq 2 99); do
+  many_checks="${many_checks}, $(check_run "context-${i}" SUCCESS)"
+done
+write_fixture "[]" "[${many_checks}]"
+
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "a rollup below the cap exits 0" 0 "$?"
+assert_absent "a rollup below the cap does not warn" "${output}" "may be truncated"
+
+# --- threads missing the fields the report prints -------------------------
+#
+# A thread on a file that no longer exists reports a null `path`, and a comment
+# from a deleted account reports a null `author`. Both reach the report through
+# a fallback; without a case for them a `//` that stopped working would show up
+# as `null` in a reviewer-facing line rather than as a test failure.
+
+write_fixture \
+  '[{"isResolved":false,"isOutdated":false,"path":null,"line":null,"originalLine":null,"comments":{"nodes":[{"author":null,"body":"who wrote this","url":null}]}}]' \
+  "[$(check_run 'Shell tests and coverage' SUCCESS)]"
+
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "a thread with no path still fails the gate" 1 "$?"
+assert_contains "a thread with no path says so" "${output}" "(no file)"
+assert_contains "a thread with no author is attributed to unknown" "${output}" "by unknown"
+
 # --- a pull request nothing ran on ----------------------------------------
 
 write_fixture "[]" "[]" null
@@ -261,6 +431,43 @@ output="$(PATH="${STUB_DIR}:${PATH}" GH_STUB_FIXTURE="${FIXTURE}" GH_STUB_FIXTUR
 assert_status "a non-advancing cursor is an error, not an infinite loop" 2 "$?"
 assert_contains "the stuck cursor is named" "${output}" "did not advance past cursor STUCK"
 
+# A cursor that advances every time defeats the stuck-cursor check above, so
+# the page bound is the only thing left to stop it. This is the other half of
+# "run unattended in CI": the loop has to terminate against a server that is
+# behaving correctly by its own lights and simply never finishes.
+write_fixture \
+  "[$(thread true false 'Containerfile' 10 10 'reviewer' 'settled')]" \
+  "[$(check_run 'Shell tests and coverage' SUCCESS)]" \
+  SUCCESS \
+  '{"hasNextPage": true, "endCursor": "@CURSOR@"}'
+PAGE_COUNTER="${WORK_DIR}/endless-pages"
+: >"${PAGE_COUNTER}"
+output="$(PATH="${STUB_DIR}:${PATH}" GH_STUB_FIXTURE="${FIXTURE}" GH_STUB_ENDLESS="${PAGE_COUNTER}" \
+  timeout 60 "${BASH}" "${SCRIPT}" --repo Danathar/arch-bootc 77 2>&1)"
+assert_status "endless pagination stops at the page bound" 2 "$?"
+assert_contains "the page bound names itself" "${output}" "did not finish paginating after 10 pages"
+if [[ "$(cat "${PAGE_COUNTER}")" -le 12 ]]; then
+  check "the page bound stops after a bounded number of requests" 0
+else
+  check "the page bound stops after a bounded number of requests" 1 \
+    "served $(cat "${PAGE_COUNTER}") pages"
+fi
+
+# A failure on page two is not the same as a failure on page one: the first
+# query already succeeded, so the script is holding a partial thread list. It
+# has to report the error rather than summarise what it happened to collect.
+write_fixture \
+  "[$(thread true false 'Containerfile' 10 10 'reviewer' 'settled')]" \
+  "[$(check_run 'Shell tests and coverage' SUCCESS)]" \
+  SUCCESS \
+  '{"hasNextPage": true, "endCursor": "CURSOR1"}'
+output="$(PATH="${STUB_DIR}:${PATH}" GH_STUB_FIXTURE="${FIXTURE}" GH_STUB_FAIL_PAGE2=1 \
+  timeout 30 "${BASH}" "${SCRIPT}" --repo Danathar/arch-bootc 77 2>&1)"
+assert_status "a failure while paginating is an error, not a partial report" 2 "$?"
+assert_contains "the paginating failure says which loop it came from" "${output}" \
+  "GraphQL query failed while paginating review threads"
+assert_absent "a partial thread list is not summarised" "${output}" "Outstanding:"
+
 # --- machine-readable output ----------------------------------------------
 
 write_fixture \
@@ -283,12 +490,54 @@ output="$(PATH="${STUB_DIR}:${PATH}" GH_STUB_FIXTURE="${FIXTURE}" GH_STUB_CURREN
 assert_status "the pull request number is inferred when omitted" 0 "$?"
 assert_contains "the inferred pull request is reported" "${output}" "PR #77"
 
+# Both lookups the no-argument form depends on can fail, and each has to say
+# which one did. Reporting on the wrong pull request would be worse than
+# refusing, so neither may fall through to a guess.
+write_fixture "[]" "[$(check_run 'Shell tests and coverage' SUCCESS)]"
+output="$(PATH="${STUB_DIR}:${PATH}" GH_STUB_FIXTURE="${FIXTURE}" GH_STUB_PR_FAIL=1 \
+  "${BASH}" "${SCRIPT}" 2>&1)"
+assert_status "no pull request for the current branch is a usage error" 2 "$?"
+assert_contains "the branch lookup failure explains itself" "${output}" \
+  "no pull request number given and none found for the current branch"
+
+output="$(PATH="${STUB_DIR}:${PATH}" GH_STUB_FIXTURE="${FIXTURE}" GH_STUB_REPO_FAIL=1 \
+  "${BASH}" "${SCRIPT}" 77 2>&1)"
+assert_status "an undeterminable repository is a usage error" 2 "$?"
+assert_contains "the repository failure points at the flag that fixes it" "${output}" \
+  "pass --repo OWNER/REPO"
+
+# --repo makes both lookups unnecessary, which is the property that lets this
+# run outside a checkout at all.
+output="$(PATH="${STUB_DIR}:${PATH}" GH_STUB_FIXTURE="${FIXTURE}" GH_STUB_REPO_FAIL=1 GH_STUB_PR_FAIL=1 \
+  "${BASH}" "${SCRIPT}" --repo Danathar/arch-bootc 77 2>&1)"
+assert_status "--repo with a number needs neither lookup" 0 "$?"
+assert_contains "--repo with a number still reports the pull request" "${output}" "PR #77"
+
 # --- API failure ----------------------------------------------------------
 
 output="$(PATH="${STUB_DIR}:${PATH}" GH_STUB_FIXTURE="${FIXTURE}" GH_STUB_FAIL=1 \
   "${BASH}" "${SCRIPT}" --repo Danathar/arch-bootc 77 2>&1)"
 assert_status "a failed GraphQL query is an error, not an empty report" 2 "$?"
 assert_contains "the API failure is surfaced" "${output}" "GraphQL query failed"
+
+# A query that succeeds can still return something the flattening step cannot
+# read -- a schema change, or a proxy substituting its own body. The distinction
+# from the case above is that `gh` exited 0, so nothing but the parse guard is
+# left to notice.
+cat >"${FIXTURE}" <<'JSON'
+{"data":{"repository":{"pullRequest":{
+  "number": 77,
+  "title": "a change under review",
+  "isDraft": false,
+  "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+  "reviewThreads": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": ["not a thread object"]},
+  "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS", "contexts": {"nodes": []}}}}]}
+}}}}
+JSON
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "an unreadable response is an error, not a clean report" 2 "$?"
+assert_contains "the parse failure is surfaced" "${output}" "could not parse the GraphQL response"
+assert_absent "an unreadable response produces no summary" "${output}" "Outstanding:"
 
 # --- gh missing entirely --------------------------------------------------
 
