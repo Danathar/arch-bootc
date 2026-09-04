@@ -67,9 +67,15 @@ assert_absent() {
 
 # A real block device, used only to satisfy `[ -b ]`. Every command run against
 # it below is stubbed, and none of these functions writes anything.
+#
+# Found by enumerating /dev rather than by guessing names: a fixed list would
+# miss a host whose only block device is /dev/xvda, /dev/mmcblk0, /dev/nbd0 or
+# simply /dev/sdb, and would then fail the whole suite while a perfectly usable
+# device sat there. `[ -b ]` is a stat, not an open, so nothing here is
+# read from or held. The glob is sorted, so the choice is deterministic on a
+# given host.
 BLOCK_TOKEN=''
-for candidate in /dev/loop0 /dev/loop1 /dev/loop2 /dev/zram0 /dev/sr0 \
-  /dev/vda /dev/sda /dev/nvme0n1 /dev/dm-0; do
+for candidate in /dev/*; do
   if [[ -b "${candidate}" ]]; then
     BLOCK_TOKEN="${candidate}"
     break
@@ -79,7 +85,7 @@ if [[ -z "${BLOCK_TOKEN}" ]]; then
   # Deliberately a failure, not a skip. An absent check is not a passed one,
   # and silently dropping the guards this file exists to cover would leave the
   # suite reporting success over nothing.
-  fail "a block device is available to satisfy [ -b ] (looked in /dev for loop/zram/sr/vd/sd/nvme/dm)"
+  fail "a block device is available to satisfy [ -b ] (no block device node found anywhere in /dev)"
   printf '1..%d\n' 1
   exit 1
 fi

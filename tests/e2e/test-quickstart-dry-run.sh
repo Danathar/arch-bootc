@@ -12,8 +12,14 @@ set -uo pipefail
 # RAM-backed output directory, a declined overwrite. A guard that stops nothing
 # still exits 0 and still prints a plausible transcript, so each case asserts
 # the refusal message, the non-zero status, and that nothing was mutated on the
-# way out. All of it runs across the real process boundary: quickstart.sh has
-# no sourcing guard, so the only way in is to run it.
+# way out. All of it runs across the real process boundary, and that is the
+# point of this file rather than a limitation of it: these are the paths a user
+# reaches by typing at the prompts, so driving the script as a process is what
+# makes the evidence mean anything -- argument parsing, the prompt sequence and
+# the traps are all in scope. quickstart.sh does have a sourcing guard now, but
+# it exists for tests/test-quickstart-baremetal.sh, which needs to call the
+# bare-metal guards directly because `[ -b ]` cannot be reached through the
+# prompts here.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
