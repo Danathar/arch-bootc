@@ -820,4 +820,18 @@ main() {
     fi
 }
 
-main "$@"
+# Only run when executed, not when sourced. The bare-metal guards above --
+# validate_baremetal_target, running_system_disks, block_identity and
+# assert_target_identity -- exist to stop an install from destroying the
+# machine it is running on, and a guard that stops nothing still exits 0 and
+# prints a plausible transcript. The end-to-end dry run cannot reach them: it
+# drives the script as a process through the VM path, and validate_baremetal_
+# target's first statement is `[ -b ]`, which no PATH stub can satisfy.
+#
+# This guard lets tests/test-quickstart-baremetal.sh source the script and call
+# those functions directly with the commands they consult stubbed. It changes
+# nothing about executing the script: $0 and ${BASH_SOURCE[0]} are the same
+# path then, so main still runs exactly as before.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main "$@"
+fi

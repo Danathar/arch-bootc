@@ -121,6 +121,27 @@ rechunk, push, and sign steps, so a green PR check exercises less than a push to
 Booting is covered by the manual VM procedure in [CLAUDE.md](../CLAUDE.md),
 which is the only routine way these paths get exercised.
 
+**The bare-metal guard tests.** `tests/test-quickstart-baremetal.sh` covers the
+four functions in `scripts/quickstart.sh` whose only job is to refuse an install
+that would destroy the machine running it — a partition instead of a whole disk,
+a disk backing `/` or `/boot`, a disk with anything mounted, a disk carrying
+ZFS/LVM/RAID/LUKS signatures, and a target whose path or identity changed while
+the operator was reading the confirmation.
+
+They are worth more than the line count suggests, because **a guard that stops
+nothing still exits 0 and prints a plausible transcript** — the happy-path dry
+run cannot tell a working refusal from a deleted one. Neutering the
+self-destruction check turns exactly three assertions red.
+
+Reaching them needed a sourcing guard at the bottom of `quickstart.sh`
+(`[ "${BASH_SOURCE[0]}" = "${0}" ]`), because `validate_baremetal_target`'s
+first statement is `[ -b ]`, which no `PATH` stub can satisfy and which needs
+`CAP_MKNOD` to fake. The tests answer it with a block device that already
+exists on the host, used purely as a token: every command run against it is
+stubbed, and none of these functions writes anything. If no block device is
+found the file **fails** rather than skipping — an absent check is not a passed
+one.
+
 **The invariant checks.** `./tests/check-invariants.sh` asserts, statically over
 the checked-out tree, that the properties `AGENTS.md` calls load-bearing are
 still where they are supposed to be: the root-login controls, the signature
@@ -252,6 +273,15 @@ Stated plainly so nobody mistakes silence for coverage:
   verified only by the manual VM procedure in [CLAUDE.md](../CLAUDE.md).
 - **Coverage floors are line-based, not branch-based**, and bash-version
   sensitive as described above.
+- **`flow_baremetal`'s orchestration is still not exercised.** The four guards
+  it depends on — `validate_baremetal_target`, `running_system_disks`,
+  `block_identity`, `assert_target_identity` — are covered directly by
+  `tests/test-quickstart-baremetal.sh`, which sources the script and stubs the
+  commands they consult. The function that *sequences* them is not: the
+  end-to-end dry run answers the target menu with the VM option, and driving
+  the bare-metal path as a process would mean satisfying `[ -b ]` for a device
+  the run then goes on to treat as an install target. What is covered is every
+  refusal; what is not is the order they are applied in.
 - **`Containerfile` has no unit tests.** Its correctness rests on the build's
   own lint steps, the rationale comments, and review.
 - **Signature verification is tested, but not end to end.** The nightly
