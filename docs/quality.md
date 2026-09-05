@@ -87,8 +87,9 @@ bot that adjusted the quality gate on its own would be automating exactly the
 decision the gate exists to force.
 
 *Known sharp edge:* traced-line counts are bash-version sensitive. Identical
-code traces 44 lines of `ostree-pkg-diff` under bash 5.2.21 and 43 under 5.3.9,
-so a floor calibrated to one environment fails in the other for no real reason.
+code traces 117 lines of `ostree-pkg-diff` under bash 5.2.21 and 116 under
+5.3.9, so a floor calibrated to one environment fails in the other for no real
+reason.
 Floors are therefore set to the lowest count across supported bash versions, not
 the highest one CI happens to produce. If a floor fails locally by a line or two
 and you did not touch the script, check the Bash version the report names

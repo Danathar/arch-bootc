@@ -29,8 +29,8 @@
     "minObservations": 1,
     "observationRule": "minimum-across-observations",
     "observationRationale": [
-      "Traced-line counts are Bash-version sensitive: identical code traces 44",
-      "lines of ostree-pkg-diff under 5.2.21 and 43 under 5.3.9. A floor",
+      "Traced-line counts are Bash-version sensitive: identical code traces 117",
+      "lines of ostree-pkg-diff under 5.2.21 and 116 under 5.3.9. A floor",
       "calibrated against one interpreter fails in the other for no real reason,",
       "so a floor is the LOWEST count across every interpreter observed, never",
       "the highest one CI happens to produce. Passing more interpreters with",
@@ -44,7 +44,7 @@
       "minimum-across-observations rule necessary rather than pedantic.",
       "--apply is REFUSED unless every version listed here has been observed.",
       "Without that gate the rule would still depend on the operator",
-      "remembering to pass --bash twice, and raising a floor to 44 from a 5.2",
+      "remembering to pass --bash twice, and raising a floor to 117 from a 5.2",
       "host alone would leave every 5.3 environment failing a gate that",
       "nothing is actually wrong with. Reporting is not gated, because it",
       "changes nothing."
