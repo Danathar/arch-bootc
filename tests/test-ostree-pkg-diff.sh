@@ -450,10 +450,28 @@ test_run_db_diff_rejects_missing_new_db() {
 # loudly rather than reporting a pass they never attempted.
 
 # True when this host lets an unprivileged user create the user and mount
-# namespaces the cases below need.
+# namespaces the cases below need. On failure NAMESPACE_ERROR carries what the
+# kernel actually said, because "namespaces are unavailable" is not a diagnosis:
+# a missing unshare, a refused user namespace and a refused mount namespace are
+# three different problems with three different answers, and the skip reason is
+# the only place a CI log will ever show which one it hit.
+NAMESPACE_ERROR=""
+
 namespaces_available() {
-  command -v unshare >/dev/null 2>&1 || return 1
-  unshare --map-root-user --mount true >/dev/null 2>&1
+  if ! command -v unshare >/dev/null 2>&1; then
+    NAMESPACE_ERROR="unshare is not installed"
+    return 1
+  fi
+  local message
+  if ! message="$(unshare --map-root-user true 2>&1)"; then
+    NAMESPACE_ERROR="user namespace refused: ${message:-no message}"
+    return 1
+  fi
+  if ! message="$(unshare --map-root-user --mount true 2>&1)"; then
+    NAMESPACE_ERROR="mount namespace refused: ${message:-no message}"
+    return 1
+  fi
+  return 0
 }
 
 # Create a per-case directory under WORK_DIR and print its path.
@@ -986,7 +1004,7 @@ main() {
   else
     for test_fn in "${program_tests[@]}"; do
       skip "${test_fn}" \
-        "this host does not allow an unprivileged user + mount namespace"
+        "no unprivileged user + mount namespace here (${NAMESPACE_ERROR})"
     done
   fi
 
