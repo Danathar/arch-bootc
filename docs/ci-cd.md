@@ -69,6 +69,27 @@ container runtime, no network — so the same command CI runs works locally:
 just test        # or: ./tests/check-coverage.sh
 ```
 
+One group is a partial exception, and only a partial one. `ostree-pkg-diff`
+re-executes itself under `sudo` when `EUID` is not 0 and reads `/proc/cmdline`
+with no path argument, so its deployment discovery — the half of the script
+below the "real program" marker — cannot be reached by sourcing it or by
+handing it a fixture. The cases in `tests/test-ostree-pkg-diff.sh` that cover
+that half run the script inside a `unshare --map-root-user --mount` namespace:
+`EUID` is 0 there, so the program runs in process, and a bind mount puts a
+fixture at `/proc/cmdline` for that process tree alone. This is still not root
+— the only uid mapped into the namespace is the unprivileged one running the
+suite — and every system command the program reaches (`mount`, `pacman`,
+`ostree`, `mountpoint`, `umount`) is a stub earlier on `PATH`, so nothing is
+mounted, no loop device is opened and no package database is read.
+
+Unprivileged user namespaces can be disabled kernel-side, and some sandboxes do
+disable them. Those cases then report `ok - <name> # SKIP <reason>` and repeat
+the reason on stderr, so a run that stopped exercising deployment discovery says
+so in the job log. They still count towards the `1..N` total, which keeps the
+"a lower total is a real lost test" rule below usable — but a run full of `#
+SKIP` lines has not earned the `ostree-pkg-diff` floor, so read the log before
+concluding the floor is safe on a host that refuses namespaces.
+
 `tests/check-coverage.sh` runs the suite under Bash xtrace and fails if any
 shipped script drops below its minimum unique traced-line count in
 `.coverage-thresholds.json`. The report also shows traced lines as a percentage
