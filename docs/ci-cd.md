@@ -82,13 +82,29 @@ suite — and every system command the program reaches (`mount`, `pacman`,
 `ostree`, `mountpoint`, `umount`) is a stub earlier on `PATH`, so nothing is
 mounted, no loop device is opened and no package database is read.
 
-Unprivileged user namespaces can be disabled kernel-side, and some sandboxes do
-disable them. Those cases then report `ok - <name> # SKIP <reason>` and repeat
-the reason on stderr, so a run that stopped exercising deployment discovery says
-so in the job log. They still count towards the `1..N` total, which keeps the
-"a lower total is a real lost test" rule below usable — but a run full of `#
-SKIP` lines has not earned the `ostree-pkg-diff` floor, so read the log before
-concluding the floor is safe on a host that refuses namespaces.
+Unprivileged user namespaces can be disabled kernel-side, and some hosts do
+disable them. Those cases then report `ok - <name> # SKIP <reason>`, with the
+kernel's own message in the reason, and repeat it on stderr — so a run that
+stopped exercising deployment discovery says so in the job log. They still count
+towards the `1..N` total, which keeps the "a lower total is a real lost test"
+rule below usable; but a run full of `# SKIP` lines has not earned the
+`ostree-pkg-diff` floor, so read the log before concluding that floor is safe.
+
+**`ubuntu-24.04` runners are one of those hosts today.** The `test` job skips
+every one of these cases with `unshare: write failed /proc/self/uid_map:
+Operation not permitted` — Ubuntu 24.04 restricts unprivileged user namespaces
+through AppArmor, and GitHub's image keeps that restriction. Until the job
+relaxes it with a step such as
+
+```yaml
+- name: Allow unprivileged user namespaces
+  run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+```
+
+the deployment-discovery cases run on developer machines that permit namespaces
+and nowhere else, so do not read a green `test` job as evidence that they
+passed. Whichever remedy is chosen, confirm it by checking that the `SKIPPED:`
+lines are gone from the run.
 
 `tests/check-coverage.sh` runs the suite under Bash xtrace and fails if any
 shipped script drops below its minimum unique traced-line count in
