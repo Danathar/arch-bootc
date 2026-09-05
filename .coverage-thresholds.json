@@ -1,5 +1,6 @@
 {
   "scripts/pr-review-state.sh": 81,
+  "scripts/prune-package-versions.sh": 105,
   "scripts/quickstart.sh": 276,
   "system_files/usr/bin/ostree-pkg-diff": 43,
   "system_files/usr/libexec/arch-bootc-prune-esp": 46
