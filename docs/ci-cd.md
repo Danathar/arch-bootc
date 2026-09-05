@@ -123,12 +123,29 @@ needs, so the host's mounts are never consulted, and each passes `--dry-run`, so
 nothing is deletable even if a stub were wrong. A test that unsets
 `BOOTC_PRUNE_ESP_PATH` must keep both properties.
 
-Those tests reach the rejections that need no real block device: `findmnt` or
-`lsblk` missing, a mountpoint lookup that fails, `findmnt` output missing
-`SOURCE=` or `FSTYPE=`, a non-`vfat` filesystem, and a source that is empty or
-not a block device. The three comparisons past that point — the ESP partition
-type GUID, `RM`, and `HOTPLUG` — sit behind `[[ -b "$source" ]]`, so reaching
-them needs a real block device node and they stay untested here.
+Most of those tests reach the rejections that need no real block device:
+`findmnt` or `lsblk` missing, a mountpoint lookup that fails, `findmnt` output
+missing `SOURCE=` or `FSTYPE=`, a non-`vfat` filesystem, and a source that is
+empty or not a block device.
+
+Everything past that point — the `lsblk` lookup and the ESP partition type
+GUID, `RM` and `HOTPLUG` comparisons, which are the three that actually reject a
+plugged-in USB stick — sits behind `[[ -b "$source" ]]`, so reaching it needs a
+mount source that names a real block device node. Those tests borrow whatever
+node `/dev` already offers, found by enumerating `/dev` rather than by guessing
+a name. The node is used as a string and nothing more: `[[ -b ]]` stats it,
+`lsblk` is a stub that ignores its arguments, and nothing opens, reads, writes,
+partitions or mounts it. On a host with no block device node at all — a minimal
+container — that group prints `# SKIP` and the run still reports how many were
+skipped, so a skipped run cannot be mistaken for a full pass. Contrast
+`tests/test-quickstart-baremetal.sh`, which fails outright in that situation.
+
+The group's positive control, `test_fixed_internal_esp_is_genuine`, is not
+optional. Every other case in it ends in the same refusal, and a fixture the
+script could never accept for some unrelated reason would produce those
+refusals just as convincingly. It feeds an upper-case partition type GUID so
+that accepting it also pins the script's lower-casing of `PARTTYPE`, which no
+refusal test can observe.
 
 `tests/test-ostree-pkg-diff.sh` covers `ostree-pkg-diff`'s parsing: the
 `composefs=`/`ostree=` kernel-argument lookups, the `ostree admin status` parse
