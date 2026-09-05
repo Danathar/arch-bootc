@@ -17,17 +17,35 @@ set -uo pipefail
 # host path look genuine could not delete anything. A test that runs the
 # script with BOOTC_PRUNE_ESP_PATH unset must keep BOTH of those properties.
 #
-# No root, no mounts, no block devices, and no test framework are required --
-# the fixtures are plain directories under a temporary directory. The stubs
-# are what make the block-device-free part possible for discovery: a real ESP
-# check needs a real GPT partition, a stubbed one needs a here-doc.
+# No root, no mounts and no test framework are required -- the fixtures are
+# plain directories under a temporary directory. The stubs are what make that
+# possible for discovery: a real ESP check needs a real GPT partition, a
+# stubbed one needs a here-doc.
+#
+# One group is the exception to "no block devices". `is_genuine_esp` runs
+# `[[ -b "$source" ]]` before it consults lsblk, so the device-class checks
+# behind it -- partition type GUID, RM, HOTPLUG, the three that actually reject
+# a USB stick -- cannot be reached unless the mount source names a real block
+# device node. Those tests borrow whatever node /dev already offers, purely so
+# that test passes: the node is never opened, read, written or mounted, and
+# every command the script would run against it is a stub. When /dev has no
+# block device node at all (a minimal container), the group reports SKIP rather
+# than failing, so the suite stays runnable where test-quickstart-baremetal.sh
+# is not.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 PRUNE_ESP="${REPO_ROOT}/system_files/usr/libexec/arch-bootc-prune-esp"
 
+# GPT partition type GUID for an EFI System Partition. Duplicated from the
+# script on purpose: test_esp_parttype_guid_matches_the_script asserts the two
+# agree, so a silent edit to the constant fails here instead of quietly making
+# every device-class test assert against a GUID nothing rejects.
+ESP_PARTTYPE_GUID="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+
 failures=0
 tests_run=0
+skipped=0
 
 cleanup() {
   [[ -n "${WORK_DIR:-}" && -d "${WORK_DIR}" ]] && rm -rf -- "${WORK_DIR}"
@@ -42,6 +60,16 @@ fail() {
 
 pass() {
   printf 'ok - %s\n' "$*"
+}
+
+# Report a test that could not run here for an environmental reason. Counted in
+# the plan so the printed ok/skip lines still add up to 1..N, and reported at
+# the end so a run that skipped its way to green cannot look like a full pass.
+skip() {
+  local desc="$1" reason="$2"
+  tests_run=$((tests_run + 1))
+  skipped=$((skipped + 1))
+  printf 'ok - %s # SKIP %s\n' "${desc}" "${reason}"
 }
 
 check() {
@@ -524,6 +552,156 @@ test_empty_source_is_not_genuine() {
   assert_refused_by_genuineness_check "a vfat mount with an empty source" "${output}"
 }
 
+# --- is_genuine_esp device-class checks (need a block device node) ----------
+#
+# Everything below `[[ -n "$source" && -b "$source" ]]` -- the lsblk lookup and
+# the PARTTYPE/RM/HOTPLUG comparisons -- is unreachable while the mount source
+# is a path with no block device node behind it, which is why the group above
+# stops there. These borrow a node from /dev to satisfy that one test.
+
+# Print the path of any block device node under /dev, or nothing when the host
+# has none. Enumerated rather than guessed: a fixed list would miss a host whose
+# only block device is /dev/xvda, /dev/mmcblk0, /dev/nbd0 or simply /dev/sdb.
+#
+# The node is used as a string. is_genuine_esp's only contact with it is
+# `[[ -b ]]`, which stats it, and passing it to lsblk -- which is a stub here
+# that prints a here-doc and never looks at its arguments. Nothing in the test
+# or the script under test opens, reads, writes, partitions or mounts it, and
+# every run is --dry-run.
+find_block_device() {
+  local candidate
+  for candidate in /dev/*; do
+    if [[ -b "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+BLOCK_DEVICE="$(find_block_device || true)"
+
+# Run a device-class case, or skip it when the host has no block device node.
+# mount_info is built here rather than by the caller because every case in this
+# group needs the same thing from findmnt -- a vfat mount whose source is the
+# borrowed node -- and differs only in what lsblk reports back about it.
+run_device_class_discovery() {
+  local name="$1" dev_info="$2" dev_status="${3:-0}"
+  local esp bin
+  esp="$(new_discovery_fixture "${name}-esp")"
+  bin="$(new_stub_bin "${name}" findmnt lsblk)"
+  run_discovery "${bin}" "${esp}" \
+    "SOURCE=\"${BLOCK_DEVICE}\" FSTYPE=\"vfat\"" "${dev_info}" 0 "${dev_status}"
+}
+
+# Guard for every test in this group: 0 to run, 1 to skip.
+have_block_device() {
+  [[ -n "${BLOCK_DEVICE}" ]]
+}
+
+no_block_device_reason="no block device node found anywhere in /dev"
+
+test_esp_parttype_guid_matches_the_script() {
+  local declared
+  declared="$(sed -n 's/^ESP_PARTTYPE_GUID="\([^"]*\)".*/\1/p' "${PRUNE_ESP}" | head -n 1)"
+  assert_eq "the tests assert against the script's ESP partition type GUID" \
+    "${ESP_PARTTYPE_GUID}" "${declared}"
+}
+
+test_lsblk_lookup_failure_is_not_genuine() {
+  if ! have_block_device; then
+    skip "a device lsblk cannot look up is not genuine" "${no_block_device_reason}"
+    return
+  fi
+  run_device_class_discovery lsblk-fails "" 1
+  assert_refused_by_genuineness_check "a device lsblk cannot look up" "${RUN_OUTPUT}"
+}
+
+test_lsblk_output_without_parttype_is_not_genuine() {
+  if ! have_block_device; then
+    skip "lsblk output with no PARTTYPE field is not genuine" "${no_block_device_reason}"
+    return
+  fi
+  run_device_class_discovery no-parttype 'RM="0" HOTPLUG="0"'
+  assert_refused_by_genuineness_check "lsblk output with no PARTTYPE field" "${RUN_OUTPUT}"
+}
+
+test_lsblk_output_without_rm_is_not_genuine() {
+  if ! have_block_device; then
+    skip "lsblk output with no RM field is not genuine" "${no_block_device_reason}"
+    return
+  fi
+  run_device_class_discovery no-rm "PARTTYPE=\"${ESP_PARTTYPE_GUID}\" HOTPLUG=\"0\""
+  assert_refused_by_genuineness_check "lsblk output with no RM field" "${RUN_OUTPUT}"
+}
+
+test_lsblk_output_without_hotplug_is_not_genuine() {
+  if ! have_block_device; then
+    skip "lsblk output with no HOTPLUG field is not genuine" "${no_block_device_reason}"
+    return
+  fi
+  run_device_class_discovery no-hotplug "PARTTYPE=\"${ESP_PARTTYPE_GUID}\" RM=\"0\""
+  assert_refused_by_genuineness_check "lsblk output with no HOTPLUG field" "${RUN_OUTPUT}"
+}
+
+test_non_esp_partition_type_is_not_genuine() {
+  if ! have_block_device; then
+    skip "a non-ESP partition type is not genuine" "${no_block_device_reason}"
+    return
+  fi
+  # A Linux filesystem partition GUID: a fixed, non-removable, non-hotplug
+  # internal partition that is simply not an ESP.
+  run_device_class_discovery non-esp-parttype \
+    'PARTTYPE="0fc63daf-8483-4772-8e79-3d69d8477de4" RM="0" HOTPLUG="0"'
+  assert_refused_by_genuineness_check "a vfat partition whose type is not the ESP GUID" \
+    "${RUN_OUTPUT}"
+}
+
+test_removable_device_is_not_genuine() {
+  if ! have_block_device; then
+    skip "a removable device is not genuine" "${no_block_device_reason}"
+    return
+  fi
+  # The USB stick this whole check exists for: a correctly typed ESP on media
+  # the kernel reports as removable.
+  run_device_class_discovery removable \
+    "PARTTYPE=\"${ESP_PARTTYPE_GUID}\" RM=\"1\" HOTPLUG=\"0\""
+  assert_refused_by_genuineness_check "a correctly typed ESP on removable media" \
+    "${RUN_OUTPUT}"
+}
+
+test_hotplug_device_is_not_genuine() {
+  if ! have_block_device; then
+    skip "a hotplug device is not genuine" "${no_block_device_reason}"
+    return
+  fi
+  # The same stick seen the other way round: RM=0, but attached to a hotplug
+  # bus. Rejected on HOTPLUG alone, which is why the script tests both flags.
+  run_device_class_discovery hotplug \
+    "PARTTYPE=\"${ESP_PARTTYPE_GUID}\" RM=\"0\" HOTPLUG=\"1\""
+  assert_refused_by_genuineness_check "a correctly typed ESP on a hotplug bus" \
+    "${RUN_OUTPUT}"
+}
+
+test_fixed_internal_esp_is_genuine() {
+  if ! have_block_device; then
+    skip "a fixed internal ESP is accepted" "${no_block_device_reason}"
+    return
+  fi
+  # The positive control for the whole group. Without it the refusals prove
+  # nothing about the comparisons: a fixture the script could never accept for
+  # some unrelated reason would refuse every case just as convincingly.
+  #
+  # The GUID is upper-cased here on purpose. The script lower-cases PARTTYPE
+  # before comparing, so accepting this input is what asserts that the
+  # lower-casing is still there -- with it removed, every other test in this
+  # group still passes.
+  run_device_class_discovery genuine \
+    "PARTTYPE=\"${ESP_PARTTYPE_GUID^^}\" RM=\"0\" HOTPLUG=\"0\""
+  assert_eq "a fixed internal ESP exits 0" "0" "${RUN_STATUS}"
+  assert_contains "a fixed internal ESP is discovered and pruned" \
+    "${RUN_OUTPUT}" "would prune EFI/Linux/old"
+}
+
 main() {
   local test_fn
   for test_fn in \
@@ -551,7 +729,16 @@ main() {
     test_findmnt_output_without_fstype_is_not_genuine \
     test_non_vfat_filesystem_is_not_genuine \
     test_source_that_is_not_a_block_device_is_not_genuine \
-    test_empty_source_is_not_genuine; do
+    test_empty_source_is_not_genuine \
+    test_esp_parttype_guid_matches_the_script \
+    test_lsblk_lookup_failure_is_not_genuine \
+    test_lsblk_output_without_parttype_is_not_genuine \
+    test_lsblk_output_without_rm_is_not_genuine \
+    test_lsblk_output_without_hotplug_is_not_genuine \
+    test_non_esp_partition_type_is_not_genuine \
+    test_removable_device_is_not_genuine \
+    test_hotplug_device_is_not_genuine \
+    test_fixed_internal_esp_is_genuine; do
     printf '# %s\n' "${test_fn}"
     "${test_fn}"
   done
@@ -560,6 +747,11 @@ main() {
   if (( failures > 0 )); then
     printf '%d of %d assertions failed\n' "${failures}" "${tests_run}" >&2
     return 1
+  fi
+  if (( skipped > 0 )); then
+    printf 'all %d assertions passed (%d skipped: no block device node in /dev)\n' \
+      "${tests_run}" "${skipped}"
+    return 0
   fi
   printf 'all %d assertions passed\n' "${tests_run}"
 }
