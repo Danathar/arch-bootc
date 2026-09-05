@@ -57,6 +57,7 @@ jobs:
             /mnt/system_files/usr/bin/ostree-pkg-diff \
             /mnt/scripts/quickstart.sh \
             /mnt/scripts/pr-review-state.sh \
+            /mnt/scripts/prune-package-versions.sh \
             /mnt/tests/run-tests.sh \
             /mnt/tests/check-coverage.sh \
             /mnt/tests/check-invariants.sh \
@@ -65,6 +66,7 @@ jobs:
             /mnt/tests/test-ostree-pkg-diff.sh \
             /mnt/tests/test-ostree-pkg-diff-db.sh \
             /mnt/tests/test-pr-review-state.sh \
+            /mnt/tests/test-prune-package-versions.sh \
             /mnt/tests/test-quickstart-baremetal.sh \
             /mnt/tests/e2e/test-quickstart-dry-run.sh
           # homebrew.sh is sourced by /etc/profile.d, not executed directly, so
@@ -452,9 +454,18 @@ jobs:
         flavor: [base, kde, xfce]
 
     permissions:
+      # `contents: read` is new alongside `packages: write`: the prune step is
+      # a script in this repository now rather than a third-party action, so
+      # the job has to check the tree out to reach it.
+      contents: read
       packages: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
       - name: Prepare environment
         env:
           REPO_NAME: ${{ github.event.repository.name }}
@@ -469,22 +480,39 @@ jobs:
       # This workflow pushes `latest`, `latest.YYYYMMDD` and `YYYYMMDD` for
       # every one of the 3 flavors on every publish (daily via the schedule
       # trigger, plus every push to main), forever, with nothing removing
-      # old versions. min-versions-to-keep keeps the N most-recently-created
-      # versions of the package and deletes the rest; since a package's
+      # old versions. --min-versions-to-keep keeps the N most-recently-created
+      # versions of the package and prunes the rest; since a package's
       # `latest` tag is repointed to the newest version on every publish, the
       # version currently tagged `latest` is always among the most recent and
-      # so is always kept -- no separate `ignore-versions` carve-out needed.
+      # so is always kept. scripts/prune-package-versions.sh enforces that
+      # rather than only relying on it, and refuses to touch a version tagged
+      # `latest` whatever the ordering says.
+      #
+      # This used to be `actions/delete-package-versions`, which has had no
+      # release since 2024-02-07 and which Renovate's dashboard flags as
+      # abandoned. It was also the only step here holding delete rights over
+      # every image this repository has published, so an unfixable
+      # vulnerability in it was the worst-placed one in the workflow. The
+      # replacement is a script in this repository doing the same two REST
+      # calls through `gh`, covered by tests/test-prune-package-versions.sh.
       #
       # NOTE: the default GITHUB_TOKEN's `packages: write` permission is
-      # enough to *push* container images, but this action additionally
-      # requires the package's own "Manage Actions access" setting (Package
-      # settings on ghcr.io, not this repo's Settings) to grant this
-      # repository the Admin role before GITHUB_TOKEN can *delete* versions.
-      # Set that once per package (arch-bootc-base/-kde/-xfce) before this
-      # job can succeed.
+      # enough to *push* container images, but pruning additionally requires
+      # the package's own "Manage Actions access" setting (Package settings on
+      # ghcr.io, not this repo's Settings) to grant this repository the Admin
+      # role before GITHUB_TOKEN can *delete* versions. Set that once per
+      # package (arch-bootc-base/-kde/-xfce) before this job can succeed.
       - name: Delete old ${{ matrix.flavor }} package versions
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
-        with:
-          package-name: ${{ env.IMAGE_NAME }}-${{ matrix.flavor }}
-          package-type: container
-          min-versions-to-keep: 30
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          OWNER_TYPE: ${{ github.event.repository.owner.type }}
+          PACKAGE_NAME: ${{ env.IMAGE_NAME }}-${{ matrix.flavor }}
+        run: |
+          set -euo pipefail
+          ./scripts/prune-package-versions.sh \
+            --owner "${OWNER}" \
+            --owner-type "${OWNER_TYPE}" \
+            --package "${PACKAGE_NAME}" \
+            --package-type container \
+            --min-versions-to-keep 30

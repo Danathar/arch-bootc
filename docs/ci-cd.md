@@ -148,6 +148,17 @@ none of the side effects. Two consequences worth knowing before editing it:
   the source with a stub `sudo` on `PATH`, so if the guard is ever dropped the
   suite reports a failure instead of hanging on a real password prompt.
 
+`tests/test-prune-package-versions.sh` covers
+`scripts/prune-package-versions.sh` against a stubbed `gh`: the retention
+boundary in both directions, the refusal to accept a floor of 0, the guard that
+keeps a version tagged `latest` even when the ordering would take it, the
+tie-break when two versions share a creation timestamp, the user-versus-
+organization REST path, and every API failure that would otherwise be
+indistinguishable from an empty package. The stub records the deletions it is
+asked for, so the assertions name version ids rather than counting calls. See
+[Pruning old package versions](#pruning-old-package-versions) for what the job
+itself does.
+
 `tests/e2e/test-quickstart-dry-run.sh` drives the complete VM path through the
 interactive quickstart. It shadows every mutating command with a failing stub,
 supplies deterministic responses for the read-only host probes, and verifies
@@ -410,6 +421,44 @@ verification drift onto different cosign majors.
 This does not make signature verification end-to-end. Nothing yet pulls an image
 under the shipped `policy.json` and confirms it accepts a signed image and
 rejects an unsigned one; see the gaps section of [quality.md](quality.md).
+
+## Pruning old package versions
+
+Every publish pushes `latest`, `latest.YYYYMMDD` and `YYYYMMDD` for all three
+flavors, daily, forever. `build.yml`'s `cleanup_packages` job keeps that from
+growing without bound: for each flavor it runs
+`scripts/prune-package-versions.sh`, which lists the package's versions, keeps
+the 30 most recently created, and removes the rest.
+
+Two things about that job are worth knowing before touching it.
+
+**It can break installed systems.** A published version may be what a machine
+running this image upgrades from, and a cosign signature is a separate manifest
+that a careless prune can orphan. The retention rule is meant to keep the
+version tagged `latest` safe on its own — `latest` is repointed at the newest
+version on every publish, so it is always among the newest 30 — but the script
+does not only rely on that argument: it refuses to remove a version tagged
+`latest` whatever the ordering says, and says so loudly if one ever turns up
+outside the retained set. Use `--dry-run` to see exactly what a retention change
+would take before letting it run.
+
+**It needs a permission that is not in this repository.** The default
+`GITHUB_TOKEN`'s `packages: write` is enough to *push* images but not to delete
+versions. Each package (`arch-bootc-base`, `-kde`, `-xfce`) must additionally
+grant this repository the Admin role under its own Package settings on ghcr.io.
+Until that is set once per package the job fails, and the script reports the API
+error rather than exiting quietly — a prune job that has silently stopped
+pruning is the failure mode worth avoiding.
+
+This used to be `actions/delete-package-versions`, which has had no release
+since 2024-02-07 and which Renovate's dependency dashboard flags as abandoned.
+It was also the only step in the workflow holding delete rights over every
+published image, so leaving it unmaintained put the worst-placed dependency in
+the least-maintained state. The replacement makes the same REST calls through
+`gh`, which is already on every GitHub-hosted runner, and
+`tests/test-prune-package-versions.sh` covers the selection logic — the
+retention boundary, the `latest` guard, tie-breaking, and every API failure that
+would otherwise look like an empty package — without touching the network.
 
 ## Keeping pinned versions up to date
 
