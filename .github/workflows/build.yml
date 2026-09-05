@@ -89,9 +89,55 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      # A test that runs a shipped script as a program, rather than sourcing
+      # its helpers, needs an unprivileged user namespace. ostree-pkg-diff is
+      # the case in hand: it re-executes itself under sudo when EUID is not 0,
+      # so `unshare --map-root-user --mount` -- root inside a namespace whose
+      # one mapped uid is still the unprivileged runner -- is the only way to
+      # reach its deployment discovery without handing the suite real root.
+      # ubuntu-24.04 refuses unprivileged user namespaces by default through
+      # AppArmor, so cases written that way skip instead of running and the job
+      # goes green over them. Observed, and explained at length, in issue #182.
+      #
+      # Clearing the sysctl grants this job nothing it did not already have --
+      # the runner user has passwordless sudo -- and leaves the property
+      # docs/ci-cd.md claims for tests/ intact: the suite itself still runs as
+      # an unprivileged user, and every system command the program reaches is a
+      # stub earlier on PATH.
+      #
+      # The check afterwards is the load-bearing half. Relaxing the sysctl and
+      # assuming it worked would reproduce the original failure the next time a
+      # runner image changes: the namespace would be refused, the cases would
+      # skip, and the job would stay green. Failing here says so in one line,
+      # before the suite runs.
+      - name: Allow unprivileged user namespaces
+        run: |
+          set -euo pipefail
+          key="kernel.apparmor_restrict_unprivileged_userns"
+          if [[ -e "/proc/sys/${key//.//}" ]]; then
+            sudo sysctl -w "${key}=0"
+          else
+            echo "${key} does not exist on this kernel; nothing to relax"
+          fi
+          if ! refusal="$(unshare --map-root-user --mount true 2>&1)"; then
+            echo "error: unprivileged user + mount namespaces are still refused:" >&2
+            echo "  ${refusal:-no message}" >&2
+            echo "Tests that run a shipped script as a program would skip, and the" >&2
+            echo "suite below would pass without having covered them." >&2
+            exit 1
+          fi
+          echo "unprivileged user + mount namespaces are available"
+
       # Plain bash, no root, no container runtime, no network -- so this needs
       # nothing beyond the checkout and finishes long before the build would.
+      #
+      # ARCH_BOOTC_NO_SKIPS turns an environmental skip into a failure. Every
+      # prerequisite the suite asks for is present on this runner (block device
+      # nodes in /dev, and the namespaces the step above just proved), so here
+      # a skip is a test that stopped running, not a modest host.
       - name: Run shell tests and enforce coverage floors
+        env:
+          ARCH_BOOTC_NO_SKIPS: "1"
         run: ./tests/check-coverage.sh
 
       # Static assertions over the checked-out tree that the security

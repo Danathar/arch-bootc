@@ -140,6 +140,15 @@ container — that group prints `# SKIP` and the run still reports how many were
 skipped, so a skipped run cannot be mistaken for a full pass. Contrast
 `tests/test-quickstart-baremetal.sh`, which fails outright in that situation.
 
+A skip is honest and a skip is also easy to miss. `tests/run-tests.sh` collects
+every `# SKIP` line the suite prints and repeats them in one block at the end,
+so the summary of a partial run cannot read like a full pass. Set
+`ARCH_BOOTC_NO_SKIPS=1` and any skip fails the run instead. CI sets it, because
+on the runner every prerequisite the suite asks for is present, so a skip there
+means a case stopped running rather than that the host is modest. Leave it unset
+locally, where a container without a block device node in `/dev` is a normal
+place to work.
+
 The group's positive control, `test_fixed_internal_esp_is_genuine`, is not
 optional. Every other case in it ends in the same refusal, and a fixture the
 script could never accept for some unrelated reason would produce those
@@ -192,6 +201,26 @@ and runs `./tests/check-coverage.sh`, and `build_push` needs `[lint, test]`, so 
 image is built or published from a revision whose tests or coverage floors
 fail. The job needs nothing but the checkout and finishes well before the build
 would, so it costs no meaningful wall-clock time.
+
+One step now runs ahead of it, for the tests that run a shipped script as a
+program rather than sourcing its helpers. `ostree-pkg-diff` is the case in
+hand: it re-executes itself under `sudo` when `EUID` is not 0, so the only way
+to reach its deployment discovery without giving the suite real root is
+`unshare --map-root-user --mount` — root inside a namespace whose one mapped uid
+is still the unprivileged runner. `ubuntu-24.04` refuses unprivileged user
+namespaces by default, through AppArmor's
+`kernel.apparmor_restrict_unprivileged_userns`, so cases written that way skip
+rather than run and the job goes green over them. Clearing the sysctl costs the
+job nothing it did not already have — the runner user has passwordless `sudo` —
+and keeps `tests/` root-free, which is the property this document claims for it
+a few paragraphs up.
+
+The step then checks that `unshare --map-root-user --mount` actually works, and
+fails the job if it does not, rather than clearing the sysctl and assuming. That
+check is why this does not quietly come undone: if a future runner image refuses
+the namespace some other way, the job says so in one line instead of going back
+to skipping in silence. With `ARCH_BOOTC_NO_SKIPS` above, that is two
+independent places a silent return to skipping turns red.
 
 Adding a new `tests/test-*.sh` or `tests/e2e/test-*.sh` file picks it up
 automatically in `run-tests.sh`, which globs both locations, but **not** in
