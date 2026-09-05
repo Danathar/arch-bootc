@@ -106,12 +106,29 @@ possible.
 `tests/test-prune-esp.sh` covers `arch-bootc-prune-esp`: argument
 handling, candidate discovery, the keep-set parsed out of BLS entries (including
 CRLF line endings and a final line with no newline), the refuse-to-prune guard
-when no entry references `/EFI/Linux/<id>/`, and `--dry-run`.
+when no entry references `/EFI/Linux/<id>/`, `--dry-run`, and the fail-closed
+rejections in `is_genuine_esp` — the check that stops the script from treating a
+plugged-in bootable USB stick as the ESP.
 
-Those tests always point the script at a throwaway fixture directory via
+Most of those tests point the script at a throwaway fixture directory via
 `BOOTC_PRUNE_ESP_PATH`. That is not optional: with the variable unset the script
 discovers ESPs from the real mount table, and the tests would delete real boot
 artifacts on whatever machine ran them. Keep new tests on the same escape hatch.
+
+The `is_genuine_esp` tests are the one exception, because that check is only
+reached when the escape hatch is unset. They are safe because they replace the
+mount table rather than read it: each runs with a `PATH` holding nothing but a
+fixture `findmnt`/`lsblk` pair and symlinks to the few real tools the script
+needs, so the host's mounts are never consulted, and each passes `--dry-run`, so
+nothing is deletable even if a stub were wrong. A test that unsets
+`BOOTC_PRUNE_ESP_PATH` must keep both properties.
+
+Those tests reach the rejections that need no real block device: `findmnt` or
+`lsblk` missing, a mountpoint lookup that fails, `findmnt` output missing
+`SOURCE=` or `FSTYPE=`, a non-`vfat` filesystem, and a source that is empty or
+not a block device. The three comparisons past that point — the ESP partition
+type GUID, `RM`, and `HOTPLUG` — sit behind `[[ -b "$source" ]]`, so reaching
+them needs a real block device node and they stay untested here.
 
 `tests/test-ostree-pkg-diff.sh` covers `ostree-pkg-diff`'s parsing: the
 `composefs=`/`ostree=` kernel-argument lookups, the `ostree admin status` parse
