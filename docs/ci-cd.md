@@ -90,21 +90,16 @@ towards the `1..N` total, which keeps the "a lower total is a real lost test"
 rule below usable; but a run full of `# SKIP` lines has not earned the
 `ostree-pkg-diff` floor, so read the log before concluding that floor is safe.
 
-**`ubuntu-24.04` runners are one of those hosts today.** The `test` job skips
-every one of these cases with `unshare: write failed /proc/self/uid_map:
-Operation not permitted` — Ubuntu 24.04 restricts unprivileged user namespaces
-through AppArmor, and GitHub's image keeps that restriction. Until the job
-relaxes it with a step such as
-
-```yaml
-- name: Allow unprivileged user namespaces
-  run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-```
-
-the deployment-discovery cases run on developer machines that permit namespaces
-and nowhere else, so do not read a green `test` job as evidence that they
-passed. Whichever remedy is chosen, confirm it by checking that the `SKIPPED:`
-lines are gone from the run.
+**`ubuntu-24.04` runners were one of those hosts, and the `test` job works
+around it.** Ubuntu 24.04 restricts unprivileged user namespaces through
+AppArmor, and GitHub's image keeps that restriction, so every one of these cases
+used to skip with `unshare: write failed /proc/self/uid_map: Operation not
+permitted` while the job stayed green. The job now clears
+`kernel.apparmor_restrict_unprivileged_userns` and then *checks* that the
+namespace can be created, before the suite runs — see the `test` job below for
+why the check, and not the sysctl alone, is the part that keeps this from coming
+undone. A return to skipping now fails twice over: at that check, and at
+`ARCH_BOOTC_NO_SKIPS`, which CI sets.
 
 `tests/check-coverage.sh` runs the suite under Bash xtrace and fails if any
 shipped script drops below its minimum unique traced-line count in
@@ -117,11 +112,12 @@ tests add coverage; do not lower one to make a regression pass.
 
 **Set a floor to the lowest count across supported Bash versions, not the
 highest one CI happens to print.** Bash's xtrace output is not identical between
-releases: the same `ostree-pkg-diff` code, exercised by the same 36 assertions,
-traces 44 lines under bash 5.2.21 (what `ubuntu-24.04` runners ship) and 43
-under 5.3.9. A floor calibrated to CI alone therefore fails on a developer
-machine with a newer Bash while CI stays green — which is exactly what happened
-to the `ostree-pkg-diff` floor of 44. The report prints the Bash version it
+releases: the same `ostree-pkg-diff` code, under a suite whose per-file
+assertion totals are identical in both, traces 117 lines under bash 5.2.21 (what
+`ubuntu-24.04` runners ship) and 116 under 5.3.9. A floor calibrated to CI alone
+therefore fails on a developer machine with a newer Bash while CI stays green —
+which is exactly what happened to the `ostree-pkg-diff` floor the first time it
+was set from a 5.2 host alone. The report prints the Bash version it
 traced with so this is visible in the log rather than mysterious.
 
 That is also the difference to check first when a floor fails by a line or two:

@@ -169,8 +169,8 @@ if ((observations < min_observations)); then
 fi
 
 # Writing a floor from a single interpreter is the exact mistake this script
-# exists to prevent. Bash 5.2 reaches 44 lines of ostree-pkg-diff where 5.3
-# reaches 43; raising the floor to 44 from a 5.2 host alone would leave every
+# exists to prevent. Bash 5.2 reaches 117 lines of ostree-pkg-diff where 5.3
+# reaches 116; raising the floor to 117 from a 5.2 host alone would leave every
 # 5.3 environment failing a gate that nothing is actually wrong with.
 #
 # So --apply is refused unless every supported version has been observed.
