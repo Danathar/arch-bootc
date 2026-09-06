@@ -274,15 +274,21 @@ Stated plainly so nobody mistakes silence for coverage:
   verified only by the manual VM procedure in [CLAUDE.md](../CLAUDE.md).
 - **Coverage floors are line-based, not branch-based**, and bash-version
   sensitive as described above.
-- **`flow_baremetal`'s orchestration is still not exercised.** The four guards
-  it depends on — `validate_baremetal_target`, `running_system_disks`,
+- **`flow_baremetal`'s orchestration is exercised in dry-run only.** The four
+  guards it depends on — `validate_baremetal_target`, `running_system_disks`,
   `block_identity`, `assert_target_identity` — are covered directly by
   `tests/test-quickstart-baremetal.sh`, which sources the script and stubs the
-  commands they consult. The function that *sequences* them is not: the
-  end-to-end dry run answers the target menu with the VM option, and driving
-  the bare-metal path as a process would mean satisfying `[ -b ]` for a device
-  the run then goes on to treat as an install target. What is covered is every
-  refusal; what is not is the order they are applied in.
+  commands they consult. The same file now also drives `flow_baremetal` itself
+  through that sourcing entry point with `DRY_RUN=1`, answering its prompts on
+  stdin, which covers the order the guards are applied in: the target is
+  resolved before it is validated, the image is pulled before the identity is
+  re-read, the re-read happens before the installer is invoked, and the device
+  named to the installer is the resolved one rather than the one that was
+  typed. `sudo`, `mount`, `umount` and `mountpoint` are stubbed to fail loudly,
+  so a dry run that stopped being dry fails a case. What is still not covered
+  is the `DRY_RUN=0` half of the seed step — discovering partition 3, mounting
+  it, and writing the NoCloud seed into the fresh deployment — which needs a
+  real installed disk and root.
 - **`Containerfile` has no unit tests.** Its correctness rests on the build's
   own lint steps, the rationale comments, and review.
 - **Signature verification is tested, but not end to end.** The nightly
