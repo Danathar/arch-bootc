@@ -144,13 +144,18 @@ new_case() {
 # run_quickstart <stub-dir> <home-dir> <input> [argument...] -- run the script
 # as a process and leave its combined output in QS_OUTPUT and its exit status
 # in QS_STATUS. With no arguments it runs --dry-run.
+#
+# Setting QS_PATH for one call replaces the whole PATH rather than prefixing
+# the stub directory to the caller's. Prefixing can only add commands, so it
+# cannot drive a guard that fires on an *absent* one: the host's own copy would
+# still be found further down the PATH.
 run_quickstart() {
   local stub_dir="$1" home_dir="$2" input="$3"
   shift 3
   local -a arguments=("$@")
   ((${#arguments[@]})) || arguments=(--dry-run)
   QS_OUTPUT="$(
-    PATH="${stub_dir}:${PATH}" \
+    PATH="${QS_PATH:-${stub_dir}:${PATH}}" \
     HOME="${home_dir}" \
     USER="fixtureadmin" \
     QUICKSTART_MUTATION_LOG="${MUTATION_LOG}" \
@@ -251,6 +256,47 @@ assert_contains "the xfce local tag carries its flavor suffix" "${QS_OUTPUT}" \
 assert_lacks "a locally built image is never pulled" "${QS_OUTPUT}" \
   'podman pull'
 
+# kde is the flavor the plain `just build-containerfile` recipe produces, so it
+# is the one local tag that carries no flavor suffix. Naming it
+# `localhost/arch-bootc-kde:latest` by symmetry with the other two would send
+# the operator to an image that was never built.
+local_kde="$(new_case local-kde)"
+run_quickstart "${local_kde}/bin" "${local_kde}/home" \
+  "$(printf '\n2\n\nfixtureadmin\nfixture-password\nfixture-password\nqs-local-kde\n\n\n\n%s\ny\n' \
+    "${local_kde}/out")"
+check "the locally built kde image path completes" "${QS_STATUS}" "${QS_OUTPUT}"
+assert_contains "the local kde tag drops the flavor suffix" "${QS_OUTPUT}" \
+  'image: localhost/arch-bootc:latest'
+assert_lacks "the local kde tag is not built by flavor symmetry" "${QS_OUTPUT}" \
+  'localhost/arch-bootc-kde:latest'
+assert_lacks "a locally built kde image is never pulled" "${QS_OUTPUT}" \
+  'podman pull'
+
+# ------------------------------------------------------- host tool probes ---
+
+# find_iso_tool refuses a host with none of the three seed-ISO builders. The
+# refusal is only reachable on a PATH that really lacks all three, so this case
+# replaces the PATH outright instead of prefixing the stub directory: the stubs
+# still answer every `need_cmd` probe ahead of it, and none of them is executed
+# because the script dies before it runs an external command. quickstart's own
+# `#!/usr/bin/env bash` resolves through that PATH too, so the interpreter
+# running this suite has to be reachable on it.
+no_iso="$(new_case no-iso)"
+rm -f -- "${no_iso}/bin/xorriso"
+for probe in realpath mktemp basename; do
+  write_stub "${no_iso}/bin" "${probe}" 'exit 0'
+done
+ln -sf -- "${BASH}" "${no_iso}/bin/bash"
+QS_PATH="${no_iso}/bin" \
+  run_quickstart "${no_iso}/bin" "${no_iso}/home" ''
+assert_refused "a host with no seed-ISO builder is refused" "${QS_STATUS}"
+assert_contains "the three accepted ISO tools are named" "${QS_OUTPUT}" \
+  'need one of xorriso, genisoimage or mkisofs'
+assert_contains "the refusal says how to install one" "${QS_OUTPUT}" \
+  "sudo pacman -S libisoburn"
+assert_lacks "the run stops before asking for an image" "${QS_OUTPUT}" \
+  'Which image?'
+
 # --------------------------------------------------- admin user validation ---
 
 bad_user="$(new_case bad-user)"
@@ -306,6 +352,34 @@ check "a valid ed25519 key is accepted" "${QS_STATUS}" "${QS_OUTPUT}"
 assert_contains "the accepted key is reported against the admin user" "${QS_OUTPUT}" \
   'SSH key will be installed for fixtureadmin'
 
+# The RSA file is the fallback, reached only when no ed25519 key exists. A host
+# whose only key is `id_rsa.pub` would otherwise get a VM with no key in it and
+# nothing said about why.
+rsa_key="$(new_case rsa-key)"
+mkdir -p "${rsa_key}/home/.ssh"
+printf 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABFixtureKeyMaterial fixture@example\n' \
+  >"${rsa_key}/home/.ssh/id_rsa.pub"
+run_quickstart "${rsa_key}/bin" "${rsa_key}/home" \
+  "$(ssh_input qs-rsa-key "${rsa_key}/out")"
+check "an rsa key is found when no ed25519 key exists" "${QS_STATUS}" "${QS_OUTPUT}"
+assert_contains "the accepted rsa key is reported against the admin user" "${QS_OUTPUT}" \
+  'SSH key will be installed for fixtureadmin'
+
+# Which file the fallback picked is not stated on the accepting path -- the
+# prompts themselves are invisible here, because bash prints a `read -p` prompt
+# only to a terminal. A rejected key does name its file, so an unusable
+# `id_rsa.pub` is what pins the fallback to that exact path rather than to some
+# other key the run might have found.
+rsa_key_blob="$(new_case rsa-key-blob)"
+mkdir -p "${rsa_key_blob}/home/.ssh"
+printf 'ssh-rsa not;base64;at;all fixture@example\n' \
+  >"${rsa_key_blob}/home/.ssh/id_rsa.pub"
+run_quickstart "${rsa_key_blob}/bin" "${rsa_key_blob}/home" \
+  "$(ssh_input qs-rsa-key-blob "${rsa_key_blob}/out")"
+assert_refused "an unusable rsa key is refused" "${QS_STATUS}"
+assert_contains "the refusal names the rsa file the fallback selected" "${QS_OUTPUT}" \
+  "${rsa_key_blob}/home/.ssh/id_rsa.pub does not contain a valid public-key payload"
+
 # -------------------------------------------------------- VM name and slot ---
 
 bad_vm_name="$(new_case bad-vm-name)"
@@ -336,6 +410,26 @@ assert_contains "the unreadable connection is named" "${QS_OUTPUT}" \
   'could not inventory VMs on qemu:///session'
 assert_contains "an unreadable connection is not treated as empty" "${QS_OUTPUT}" \
   'Refusing to treat an unreadable connection as empty'
+
+# The pool inventory is a separate `virsh` call from the VM-name one, and it is
+# what the run compares against afterwards to name any storage pool
+# `virt-install` created as a side effect. An unreadable inventory has to stop
+# the run for the same reason an unreadable VM list does: an empty answer and
+# no answer are not the same, and treating them alike would report "no new
+# pool" about a host that was never asked.
+blind_pools="$(new_case blind-pools)"
+# Deliberately keep "$*" unexpanded: the generated stub inspects its own
+# arguments so only the pool inventory fails, leaving the VM-name lookup that
+# runs earlier in the flow answering normally.
+# shellcheck disable=SC2016
+write_stub "${blind_pools}/bin" virsh 'case "$*" in *pool-list*) exit 4 ;; esac; exit 0'
+run_quickstart "${blind_pools}/bin" "${blind_pools}/home" \
+  "$(vm_input fixtureadmin qs-blind-pools '' '' '' "${blind_pools}/out" y)"
+assert_refused "an unreadable storage pool inventory is refused" "${QS_STATUS}"
+assert_contains "the unreadable pool connection is named" "${QS_OUTPUT}" \
+  'could not inventory storage pools on qemu:///session'
+assert_lacks "no pool report is printed for an inventory that never answered" \
+  "${QS_OUTPUT}" 'No new qemu:///session storage pool was detected'
 
 # ------------------------------------------------------ VM sizing validation ---
 
@@ -427,6 +521,41 @@ assert_contains "the late abort states nothing was changed" "${QS_OUTPUT}" \
   'aborted; nothing was changed.'
 assert_present "an abort after consenting to overwrite still keeps the file" \
   "${late_abort}/out/qs-late-abort.raw"
+
+# The other half of that contract: once both answers are yes, the removal has
+# to actually be sequenced -- after the final confirmation, and still only
+# printed while the run is dry. Every existing overwrite case ends in a
+# refusal, so nothing so far executes the loop that removes the replaced
+# outputs at all.
+#
+# The planted files are the qcow2 and the seed ISO rather than the raw image:
+# the run removes the raw one of its own accord after converting it, so a `rm`
+# naming that path would pass whether the replacement loop ran or not.
+accepted="$(new_case accepted-overwrite)"
+accepted_out="$(realpath -m -- "${accepted}/out")"
+printf 'pre-existing\n' >"${accepted}/out/qs-accepted.qcow2"
+printf 'pre-existing\n' >"${accepted}/out/qs-accepted-seed.iso"
+run_quickstart "${accepted}/bin" "${accepted}/home" \
+  "$(vm_input fixtureadmin qs-accepted '' '' '' "${accepted}/out" y y y)"
+check "consenting to the overwrite and proceeding completes" "${QS_STATUS}" "${QS_OUTPUT}"
+assert_contains "the replaced outputs are listed in the summary" "${QS_OUTPUT}" \
+  'the following existing outputs will be replaced only after final confirmation'
+assert_contains "the replaced qcow2 is removed" "${QS_OUTPUT}" \
+  "\$ rm -f -- ${accepted_out}/qs-accepted.qcow2"
+assert_contains "every consented output is removed, not just the first" "${QS_OUTPUT}" \
+  "\$ rm -f -- ${accepted_out}/qs-accepted-seed.iso"
+assert_present "a dry run prints the qcow2 removal instead of performing it" \
+  "${accepted}/out/qs-accepted.qcow2"
+assert_present "a dry run prints the seed removal instead of performing it" \
+  "${accepted}/out/qs-accepted-seed.iso"
+# Ordering, not just presence: consent is collected long before the summary, so
+# a removal printed ahead of it would mean the run acts on an answer while the
+# operator can still abort with everything intact. The summary is the last
+# thing printed before the final confirmation, which is itself invisible here
+# because bash prints a `read -p` prompt only to a terminal.
+assert_contains "the removal is sequenced after the summary" \
+  "${QS_OUTPUT%%\$ rm -f --*}" \
+  'the following existing outputs will be replaced only after final confirmation'
 
 # ---------------------------------------------------------------------------
 
