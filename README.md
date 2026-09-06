@@ -1,8 +1,13 @@
+[![Build container image](https://github.com/Danathar/arch-bootc/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Danathar/arch-bootc/actions/workflows/build.yml)
+[![Nightly compliance](https://github.com/Danathar/arch-bootc/actions/workflows/nightly-compliance.yml/badge.svg?branch=main)](https://github.com/Danathar/arch-bootc/actions/workflows/nightly-compliance.yml)
+[![Lint workflows](https://github.com/Danathar/arch-bootc/actions/workflows/zizmor.yaml/badge.svg?branch=main)](https://github.com/Danathar/arch-bootc/actions/workflows/zizmor.yaml)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Danathar/arch-bootc)
+[![Maintenance assisted by Hivecommons Hive](https://img.shields.io/badge/maintenance%20assisted%20by-Hivecommons%20Hive-1f6feb)](https://github.com/hivecommons/hive)
+[![ACMM L4 Security-Aware](https://img.shields.io/badge/ACMM-L4%20Security--Aware-2da44e)](https://github.com/hivecommons/hive#acmm-levels)
+[![AI assisted](https://img.shields.io/badge/AI-assisted-d29922)](#about-this-project)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+
 # Arch Linux Bootc
-
-[![build](https://github.com/Danathar/arch-bootc/actions/workflows/build.yml/badge.svg)](https://github.com/Danathar/arch-bootc/actions/workflows/build.yml)
-
-> **Note:** This repo was created primarily using directed AI, though its contents have been manually tested and inspected. I believe it's important for anyone using open-source tools on GitHub to have this context before relying on them. Special thanks to the upstream repository [bootcrew/arch-bootc](https://github.com/bootcrew/arch-bootc) for the foundational bootstrapping work.
 
 Reference [Arch Linux](https://archlinux.org/) container image preconfigured for [bootc](https://github.com/bootc-dev/bootc) usage.
 
@@ -69,3 +74,16 @@ tools, and manual alternatives.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to run the checks, what not to
 change casually, and what a pull request needs to say. [AGENTS.md](AGENTS.md)
 is the authoritative policy behind it.
+
+## About this project
+
+> **Note:** This repo was created primarily using directed AI, though its contents have been manually tested and inspected. I believe it's important for anyone using open-source tools on GitHub to have this context before relying on them. Special thanks to the upstream repository [bootcrew/arch-bootc](https://github.com/bootcrew/arch-bootc) for the foundational bootstrapping work.
+
+> [!NOTE]
+> **Maintenance on this repository is assisted by [Hivecommons Hive](https://github.com/hivecommons/hive) at ACMM level 4.**
+>
+> Hive orchestrates a fleet of AI agents that continuously review this codebase and file what they find as issues and pull requests.
+>
+> At **L4 (Security-Aware)** all agents may file issues, and the quality, security and CI agents may additionally open pull requests that carry a `hold` label. The rest stay advisory: they report, they do not act. Every change is still reviewed and merged by a human maintainer.
+>
+> Learn more: [Hive](https://github.com/hivecommons/hive) · [Hive Hub](https://hive.kubestellar.io) · [full ACMM policy matrix](https://github.com/hivecommons/hive/blob/v4/src/docs/acmm-policy-matrix.md)
