@@ -114,8 +114,25 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
   return 0
 fi
 
+# Plain `sudo`, with no `--preserve-env=PATH`. Everything below this line runs
+# as root and reaches every tool it needs by bare name -- `ostree`, `pacman`,
+# `mount`, `umount`, `mountpoint`, `mktemp`, `rmdir`, `find`, `readlink`,
+# `sort`, `awk`, `join`, `tr` -- so whichever PATH survives the re-exec decides
+# which binaries root executes. Asking sudo to carry the caller's PATH across
+# that boundary is asking it to let an unprivileged environment choose them,
+# which is the one thing sudoers' `secure_path` exists to prevent.
+#
+# Nothing here needs the caller's PATH: every command above ships in /usr/bin,
+# which secure_path already covers. The flag bought no reachability and cost
+# the reset -- a tampered entry earlier on a user's PATH (a writable
+# ~/.local/bin, a shell profile edited by something else, an AUR helper's
+# wrapper directory) became root code execution the next time that user ran
+# this tool.
+#
+# If a future caller genuinely needs a tool from outside secure_path, hand that
+# one path in deliberately rather than reinstating a blanket PATH carry-over.
 if [[ "${EUID}" -ne 0 ]]; then
-  exec sudo --preserve-env=PATH bash "$0" "$@"
+  exec sudo bash "$0" "$@"
 fi
 
 # Composefs-native layout (common with modern bootc): use composefs image IDs.

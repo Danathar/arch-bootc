@@ -916,8 +916,15 @@ STUB
   assert_eq "the re-exec keeps sudo's exit status" "0" "${status}"
   assert_contains "an unprivileged run re-executes itself under sudo" \
     "${output}" "SUDO_ARGV"
-  assert_contains "PATH is preserved across the re-exec" \
-    "${output}" "--preserve-env=PATH"
+  # The root half of the program resolves ostree, pacman, mount and a dozen
+  # other tools by bare name, so a re-exec that carries the caller's PATH
+  # across lets an unprivileged environment pick which binaries root runs.
+  # Asserted as an absence rather than left to a reader of the script: this is
+  # the kind of flag that gets added back to make some tool on an unusual PATH
+  # reachable, and the cost of that convenience is not visible at the call
+  # site.
+  assert_not_contains "the caller's PATH is not carried across the re-exec" \
+    "${output}" "--preserve-env"
   assert_contains "the re-exec runs this script again" \
     "${output}" "bash ${PKG_DIFF}"
 }
