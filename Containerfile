@@ -328,7 +328,7 @@ RUN bootc container lint
 # NOT converted to the /usr-based enablement policy used elsewhere in this
 # file (see the network/basic services comment above); this one stays on
 # /etc-based enablement.
-COPY --from=ghcr.io/ublue-os/brew:latest@sha256:bed056871da6edd8c6ee455a274283ae83bf269461dcad758a7729aaad018401 /system_files /
+COPY --from=ghcr.io/ublue-os/brew:latest@sha256:d52b3f578f01623636aff534291b0bd8ff0a0244ef225bf51aecb5fa05a137af /system_files /
 RUN systemctl preset brew-setup.service brew-update.timer brew-upgrade.timer
 
 
