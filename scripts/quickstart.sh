@@ -229,10 +229,69 @@ find_iso_tool() {
     'sudo apt install xorriso') and re-run."
 }
 
+# Verify a just-pulled published image against the key in this checkout, then
+# pin the rest of the run to the digest that verified.
+#
+# Both install flows below hand the image to `podman run --privileged
+# --pid=host --security-opt label=type:unconfined_t -v /dev:/dev`, which is
+# unconfined root on the host with every block device in reach -- so whatever
+# is inside that image executes as root here before the target disk is touched,
+# and it also supplies the policy.json and key that this machine's later `bootc
+# upgrade` will trust. That is worth a signature check on its own, and it does
+# not take a compromised registry to need one: `latest` is a mutable tag, and
+# the registry namespace is a free-text prompt, so a repointed tag or a
+# lookalike namespace typed at that prompt reaches the same privileged run and
+# looks identical on the way through.
+#
+# The digest, not the tag, is what gets verified. Verifying `:latest` and then
+# letting the installer resolve `:latest` again would leave the tag free to
+# move between the two lookups; reading the digest back from the image that was
+# actually pulled and passing that same digest onward closes the window, and
+# costs nothing because --pull=never is already in use.
+#
+# cosign is required only here. The locally built path has nothing this key
+# could verify, so demanding the tool there would refuse runs for no gain.
+verify_published_image() {
+    local repo_ref digest
+
+    if ! command -v cosign >/dev/null 2>&1; then
+        die "cosign is needed to verify ${IMAGE} before it runs with --privileged.
+    Install it (e.g. 'sudo pacman -S cosign', 'sudo apt install cosign') and
+    re-run, or build the image locally and choose the locally built image."
+    fi
+    [ -r "${REPO_ROOT}/cosign.pub" ] \
+        || die "no public key at ${REPO_ROOT}/cosign.pub; cannot verify ${IMAGE}"
+
+    repo_ref="${IMAGE%:*}"
+    digest="$(sudo podman image inspect --format '{{.Digest}}' "${IMAGE}")" \
+        || die "could not read the manifest digest of the pulled image ${IMAGE}"
+    [ -n "${digest}" ] || die "pulled image ${IMAGE} reported an empty manifest digest"
+
+    if ! run cosign verify --key "${REPO_ROOT}/cosign.pub" "${repo_ref}@${digest}"; then
+        die "${repo_ref}@${digest} is not signed by ${REPO_ROOT}/cosign.pub.
+    Refusing to run an unverified image as privileged root. Nothing was
+    installed and no disk was touched."
+    fi
+
+    # Everything downstream installs exactly the bytes that verified.
+    IMAGE="${repo_ref}@${digest}"
+    ok "signature verified: ${IMAGE}"
+}
+
 prepare_image() {
     if [ "${IMAGE_NEEDS_PULL}" -eq 1 ]; then
         step "Pulling the selected image before changing storage"
         run sudo podman pull "${IMAGE}"
+
+        step "Verifying the pulled image against cosign.pub"
+        if [ "${DRY_RUN}" -eq 1 ]; then
+            # No image was pulled, so there is no digest to read back and
+            # nothing to verify. Say what a real run would do instead.
+            info "(dry run) would verify ${IMAGE} against ${REPO_ROOT}/cosign.pub"
+            info "(dry run) would install the verified digest, not the tag"
+        else
+            verify_published_image
+        fi
     fi
 }
 
