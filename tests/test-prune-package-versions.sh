@@ -354,9 +354,14 @@ assert_equal "an unrecognised owner type removes nothing" "" "$(pruned_ids)"
 #
 # --package-type supplies the segment between the owner scope and the package
 # name in every path this script builds, and it is what the summary reports.
-# Getting it wrong is not an error: the list call 404s, a 404 on the version
-# list is indistinguishable from a package that has no versions, and the job
-# reports success having removed nothing.
+#
+# A path that names nothing is already caught: gh exits non-zero on a 404 and
+# the list call turns that into exit 2, which the "failed version listing" case
+# below pins. The danger is a path that names something ELSE. An ignored
+# --package-type leaves the `container` default in place, so
+# `--package-type npm --package foo` prunes the CONTAINER package foo where one
+# exists -- deleting versions nobody asked to delete, and reporting success
+# while doing it.
 #
 # So the flag is asserted in both directions, paired the way the rest of this
 # file pairs its guards. A case that only looked for the requested type would
@@ -373,8 +378,9 @@ assert_absent "the container default is not left in the path" \
 assert_contains "the summary names the type it pruned" "${output}" "(npm)"
 
 # The delete path is built from the same string as the list path, and it is the
-# half with consequences: a DELETE against the wrong type is another 404 the
-# script would report as a removal that did not happen.
+# half with consequences: whatever type the list call reached is the type whose
+# versions get removed, so an ignored flag deletes from the wrong package rather
+# than merely reading from it.
 assert_contains "the removal is issued against the same type" \
   "$(requested_paths)" "DELETE users/Danathar/packages/npm/arch-bootc-base/versions/1"
 assert_equal "the oldest version is still the one that goes" "1" "$(pruned_ids)"
@@ -395,11 +401,13 @@ assert_contains "an omitted type is reported as container" "${output}" "(contain
 # reachable from a case that passes --owner: the fallback has to be consulted
 # when the flag is absent, and the guard has to refuse when neither is there.
 #
-# The guard is the one to be careful with. Without it an unset variable does not
-# stop the run -- it builds `users//packages/container/...` and then issues a
-# DELETE under that empty owner for every version past the retention floor. So
-# what is asserted is not only the status and the message but that the stub was
-# never reached at all.
+# The guard is the one to be careful with. Without it an unset variable builds
+# `users//packages/container/...`; against real GitHub that 404s and the list
+# call exits 2, so the guard is not the thing standing between a typo and a
+# deletion -- it is what turns a confusing 404 naming an empty owner into
+# "pass --owner OWNER" at the point the mistake was made. Asserting that the
+# stub was never reached at all is how that distinction is pinned: the run has
+# to stop BEFORE the request, not merely fail at it.
 
 # run_script with GITHUB_REPOSITORY_OWNER forced to a known state. An empty
 # first argument REMOVES it from the environment rather than setting it empty:
