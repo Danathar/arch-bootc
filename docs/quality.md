@@ -306,6 +306,26 @@ Stated plainly so nobody mistakes silence for coverage:
   root, or a user namespace, which is why both sit *above* that file's
   block-device check rather than after it: nothing about the seed step should
   stop being covered on a host that happens to have no block device node.
+- **The prune script's two path-shaping inputs are covered.** Everything
+  `tests/test-prune-package-versions.sh` asserted about which versions go was
+  reached through one fixed REST path, so the two things that decide what that
+  path *is* were never varied: `--package-type`, which supplies the segment
+  between the owner scope and the package name, and the
+  `GITHUB_REPOSITORY_OWNER` fallback that fills in an omitted `--owner`.
+  A path that names *nothing* was never the risk — `gh` exits non-zero on a 404
+  and the list call turns that into `exit 2`, which this file has always pinned
+  as "a failed version listing is an error, not an empty package". The risk is a
+  path that names *something else*: an ignored `--package-type` leaves the
+  `container` default in place, so `--package-type npm --package foo` prunes the
+  container package `foo` where one exists — versions nobody asked to delete,
+  removed, with the job reporting success. The file now runs `--package-type`
+  against a non-container path and asserts the list path, the delete path and
+  the summary line, paired with a case demanding `container` when the flag is
+  omitted so an ignored flag cannot pass. It runs the owner default with the
+  variable unset, asserting the refusal happens *before any API call*, and pairs
+  that with the variable set and with `--owner` given alongside it, so the guard
+  cannot be satisfied by a script that stopped reading the environment and the
+  flag's precedence over it stays pinned.
 - **`Containerfile` has no unit tests.** Its correctness rests on the build's
   own lint steps, the rationale comments, and review.
 - **Signature verification is tested, but not end to end.** The nightly

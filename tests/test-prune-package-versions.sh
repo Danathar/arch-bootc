@@ -375,7 +375,12 @@ assert_contains "the version list is read from the type that was asked for" \
   "$(requested_paths)" "users/Danathar/packages/npm/arch-bootc-base/versions"
 assert_absent "the container default is not left in the path" \
   "$(requested_paths)" "/packages/container/"
-assert_contains "the summary names the type it pruned" "${output}" "(npm)"
+# The whole rendered line, not just the "(npm)" fragment: the summary is what an
+# operator reads to confirm WHICH package the job just pruned, so the owner, the
+# package, the type and the count are asserted together. (Taken from the hive
+# quality agent's #200, which had the stronger form of this assertion.)
+assert_contains "the summary names the type it pruned" "${output}" \
+  "Danathar/arch-bootc-base (npm) has 5 version(s)"
 
 # The delete path is built from the same string as the list path, and it is the
 # half with consequences: whatever type the list call reached is the type whose
