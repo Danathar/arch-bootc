@@ -194,6 +194,17 @@ assert_contains "both libvirt connections are inventoried" "${output}" \
   "VM name 'acmm-e2e-vm' is free on both libvirt connections"
 assert_contains "image pull is printed" "${output}" \
   '$ sudo podman pull ghcr.io/danathar/arch-bootc-kde:latest'
+# A published image is handed to a privileged installer with /dev bound in, so
+# the run has to say that it checks the signature first and that it installs the
+# digest it checked rather than the tag it asked for. A dry run cannot verify
+# anything -- no image was pulled -- so what is asserted here is that the step
+# exists on this path and names the key it would use.
+assert_contains "signature verification is announced before the install" "${output}" \
+  'Verifying the pulled image against cosign.pub'
+assert_contains "the verification names the key in the checkout" "${output}" \
+  'cosign.pub'
+assert_contains "the dry run states the install would be pinned to the digest" "${output}" \
+  'would install the verified digest, not the tag'
 assert_contains "disk creation is printed" "${output}" \
   '$ truncate -s 100G'
 assert_contains "installer keeps the loopback boundary" "${output}" \
