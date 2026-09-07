@@ -218,6 +218,19 @@ asked for, so the assertions name version ids rather than counting calls. See
 [Pruning old package versions](#pruning-old-package-versions) for what the job
 itself does.
 
+It also covers the two inputs that decide what that REST path *is*, because
+getting either wrong is the quietest failure this script has — a 404 on the
+version list is indistinguishable from a package with no versions, so the job
+reports success and removes nothing. `--package-type` is asserted in both
+directions, the requested type present and the `container` default absent, so a
+flag that were parsed and ignored could not pass. `--owner` is asserted against
+its `GITHUB_REPOSITORY_OWNER` fallback three ways: the guard refuses when
+neither is available *and makes no API call at all*, the fallback is consulted
+when only the variable is set, and the flag wins when both are. The guard's case
+removes the variable from the environment rather than declining to set it —
+GitHub Actions always sets it, so a case that only avoided setting it would stop
+testing the guard the moment it ran in CI.
+
 `tests/e2e/test-quickstart-dry-run.sh` drives the complete VM path through the
 interactive quickstart. It shadows every mutating command with a failing stub,
 supplies deterministic responses for the read-only host probes, and verifies
