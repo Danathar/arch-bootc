@@ -289,6 +289,23 @@ Stated plainly so nobody mistakes silence for coverage:
   is the `DRY_RUN=0` half of the seed step — discovering partition 3, mounting
   it, and writing the NoCloud seed into the fresh deployment — which needs a
   real installed disk and root.
+- **`make_seed_iso`'s `DRY_RUN=0` half is covered without a real install.**
+  Everything else that drives `quickstart.sh` runs it with `--dry-run`, where
+  that function prints one sentence and creates nothing, so the half that
+  writes the admin password hash to disk went unexecuted by any test.
+  `tests/test-quickstart-baremetal.sh` now also sources the script and calls
+  that function directly with `DRY_RUN=0` and a stubbed ISO tool, along with
+  `cleanup_task_resources` — the `EXIT` handler whose guards are evaluated on
+  every run but whose every acting branch was likewise unreached, and which is
+  what deletes the staged hash when the ISO tool fails. The stub matters for a
+  reason worth reusing elsewhere: it runs at the only instant the staging
+  directory still exists, so it is also the probe. A case that inspects the
+  work directory after the call can only ever observe an absence, so the stub
+  records the directory's mode, each staged file's mode, and each staged
+  file's content from inside the run. Neither section needs a block device,
+  root, or a user namespace, which is why both sit *above* that file's
+  block-device check rather than after it: nothing about the seed step should
+  stop being covered on a host that happens to have no block device node.
 - **`Containerfile` has no unit tests.** Its correctness rests on the build's
   own lint steps, the rationale comments, and review.
 - **Signature verification is tested, but not end to end.** The nightly
