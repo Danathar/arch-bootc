@@ -218,6 +218,31 @@ asked for, so the assertions name version ids rather than counting calls. See
 [Pruning old package versions](#pruning-old-package-versions) for what the job
 itself does.
 
+It also covers the two inputs that decide what that REST path *is*.
+
+A path that names *nothing* is already handled: `gh` exits non-zero on a 404 and
+the script turns that into `exit 2` ("could not list versions of …"), which
+`test-prune-package-versions.sh` pins as "a failed version listing is an error,
+not an empty package". The risk is a path that names *something else*. If
+`--package-type` were parsed and ignored, `--package-type npm --package foo`
+would build the `container` path instead — and where a container package of that
+name exists, the job lists and deletes versions of the wrong package while
+reporting success. That is the failure worth a test: not silence, but a
+confident prune of something nobody asked to prune. So the flag is asserted in
+both directions, the requested type present in the list *and* delete paths and
+the `container` default absent, which an ignored flag cannot satisfy.
+
+`--owner` is asserted against its `GITHUB_REPOSITORY_OWNER` fallback three ways:
+the guard refuses when neither is available *and makes no API call at all*, the
+fallback is consulted when only the variable is set, and the flag wins when both
+are. Without the guard an unset variable builds `users//packages/…`, which
+GitHub also answers 404 — so the guard is not what prevents damage, it is what
+turns a confusing 404 naming an empty owner into `pass --owner OWNER` at the
+point the mistake was made. The guard's case removes the variable from the
+environment rather than declining to set it: GitHub Actions always sets it, so a
+case that only avoided setting it would stop testing the guard the moment it ran
+in CI.
+
 `tests/e2e/test-quickstart-dry-run.sh` drives the complete VM path through the
 interactive quickstart. It shadows every mutating command with a failing stub,
 supplies deterministic responses for the read-only host probes, and verifies

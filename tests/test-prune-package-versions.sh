@@ -350,6 +350,119 @@ assert_status "an unrecognised owner type is an error" 2 "$?"
 assert_contains "the unrecognised owner type is named" "${output}" "unknown owner type wombat"
 assert_equal "an unrecognised owner type removes nothing" "" "$(pruned_ids)"
 
+# --- the package type -----------------------------------------------------
+#
+# --package-type supplies the segment between the owner scope and the package
+# name in every path this script builds, and it is what the summary reports.
+#
+# A path that names nothing is already caught: gh exits non-zero on a 404 and
+# the list call turns that into exit 2, which the "failed version listing" case
+# below pins. The danger is a path that names something ELSE. An ignored
+# --package-type leaves the `container` default in place, so
+# `--package-type npm --package foo` prunes the CONTAINER package foo where one
+# exists -- deleting versions nobody asked to delete, and reporting success
+# while doing it.
+#
+# So the flag is asserted in both directions, paired the way the rest of this
+# file pairs its guards. A case that only looked for the requested type would
+# still pass against a script that ignored the flag and left `container` in the
+# path, because `container` is what the default already puts there.
+
+default_fixture
+output="$(run_script "${BASE_ARGS[@]}" --package-type npm --min-versions-to-keep 4)"
+assert_status "a non-default package type exits 0" 0 "$?"
+assert_contains "the version list is read from the type that was asked for" \
+  "$(requested_paths)" "users/Danathar/packages/npm/arch-bootc-base/versions"
+assert_absent "the container default is not left in the path" \
+  "$(requested_paths)" "/packages/container/"
+# The whole rendered line, not just the "(npm)" fragment: the summary is what an
+# operator reads to confirm WHICH package the job just pruned, so the owner, the
+# package, the type and the count are asserted together. (Taken from the hive
+# quality agent's #200, which had the stronger form of this assertion.)
+assert_contains "the summary names the type it pruned" "${output}" \
+  "Danathar/arch-bootc-base (npm) has 5 version(s)"
+
+# The delete path is built from the same string as the list path, and it is the
+# half with consequences: whatever type the list call reached is the type whose
+# versions get removed, so an ignored flag deletes from the wrong package rather
+# than merely reading from it.
+assert_contains "the removal is issued against the same type" \
+  "$(requested_paths)" "DELETE users/Danathar/packages/npm/arch-bootc-base/versions/1"
+assert_equal "the oldest version is still the one that goes" "1" "$(pruned_ids)"
+
+# The other half of the pair: with the flag absent the default has to be
+# `container`, in the path and in the summary both.
+default_fixture
+output="$(run_script "${BASE_ARGS[@]}" --min-versions-to-keep 4)"
+assert_status "an omitted package type exits 0" 0 "$?"
+assert_contains "an omitted type defaults to container in the path" \
+  "$(requested_paths)" "users/Danathar/packages/container/arch-bootc-base/versions"
+assert_contains "an omitted type is reported as container" "${output}" "(container)"
+
+# --- where the owner comes from -------------------------------------------
+#
+# --owner is optional only because the workflow runs with
+# GITHUB_REPOSITORY_OWNER set. Two things therefore have to hold, and neither is
+# reachable from a case that passes --owner: the fallback has to be consulted
+# when the flag is absent, and the guard has to refuse when neither is there.
+#
+# The guard is the one to be careful with. Without it an unset variable builds
+# `users//packages/container/...`; against real GitHub that 404s and the list
+# call exits 2, so the guard is not the thing standing between a typo and a
+# deletion -- it is what turns a confusing 404 naming an empty owner into
+# "pass --owner OWNER" at the point the mistake was made. Asserting that the
+# stub was never reached at all is how that distinction is pinned: the run has
+# to stop BEFORE the request, not merely fail at it.
+
+# run_script with GITHUB_REPOSITORY_OWNER forced to a known state. An empty
+# first argument REMOVES it from the environment rather than setting it empty:
+# the guard is about the variable being unset, and CI is the one environment
+# where it is always set -- a case that merely declined to set it would quietly
+# stop testing the guard the moment it ran there.
+run_script_owner_env() {
+  local owner_env="$1"
+  shift
+  local -a with_env=(env)
+  if [[ -z "${owner_env}" ]]; then
+    with_env+=(-u GITHUB_REPOSITORY_OWNER)
+  else
+    with_env+=("GITHUB_REPOSITORY_OWNER=${owner_env}")
+  fi
+  PATH="${STUB_DIR}:${PATH}" \
+    GH_STUB_VERSIONS="${VERSIONS}" \
+    GH_STUB_DELETED="${DELETED}" \
+    GH_STUB_REQUESTED="${REQUESTED}" \
+    "${with_env[@]}" "${BASH}" "${SCRIPT}" "$@" 2>&1
+}
+
+default_fixture
+output="$(run_script_owner_env "" --owner-type user --package arch-bootc-base --min-versions-to-keep 2)"
+assert_status "no --owner and no GITHUB_REPOSITORY_OWNER is a usage error" 2 "$?"
+assert_contains "the refusal names the variable it looked for" "${output}" "GITHUB_REPOSITORY_OWNER is unset"
+assert_equal "an ownerless run makes no API call at all" "" "$(requested_paths)"
+assert_equal "an ownerless run removes nothing" "" "$(pruned_ids)"
+
+# The paired case: the same command with the variable set has to work, so the
+# guard cannot be satisfied by a script that stopped consulting the environment
+# altogether.
+default_fixture
+output="$(run_script_owner_env env-owner --owner-type user --package arch-bootc-base --min-versions-to-keep 4)"
+assert_status "GITHUB_REPOSITORY_OWNER supplies the owner when --owner is absent" 0 "$?"
+assert_contains "the environment owner reaches the path" \
+  "$(requested_paths)" "users/env-owner/packages/container/arch-bootc-base/versions"
+assert_contains "the environment owner reaches the summary" "${output}" "env-owner/arch-bootc-base"
+
+# And --owner still wins when both are present, which is the precedence the
+# workflow depends on to prune a package owned by anyone other than the account
+# running the job.
+default_fixture
+output="$(run_script_owner_env env-owner "${BASE_ARGS[@]}" --min-versions-to-keep 4)"
+assert_status "--owner alongside the variable exits 0" 0 "$?"
+assert_contains "--owner wins over the environment" \
+  "$(requested_paths)" "users/Danathar/packages/container/arch-bootc-base/versions"
+assert_absent "the environment owner is not consulted when --owner is given" \
+  "$(requested_paths)" "env-owner"
+
 # --- API failures ---------------------------------------------------------
 #
 # Each of these is a way for the job to end up believing the package is empty.
