@@ -306,6 +306,21 @@ Stated plainly so nobody mistakes silence for coverage:
   root, or a user namespace, which is why both sit *above* that file's
   block-device check rather than after it: nothing about the seed step should
   stop being covered on a host that happens to have no block device node.
+- **The prune script's two path-shaping inputs are covered.** Everything
+  `tests/test-prune-package-versions.sh` asserted about which versions go was
+  reached through one fixed REST path, so the two things that decide what that
+  path *is* were never varied: `--package-type`, which supplies the segment
+  between the owner scope and the package name, and the
+  `GITHUB_REPOSITORY_OWNER` fallback that fills in an omitted `--owner`. Both
+  fail the same way when wrong, and it is the quietest failure this script has:
+  a 404 on the version list is indistinguishable from a package with no
+  versions, so the job reports success and prunes nothing forever. The file now
+  runs `--package-type` against a non-container path and asserts both the path
+  queried and the type the summary names; it runs the owner default with the
+  variable unset, asserting the refusal happens before any API call, and pairs
+  that with the variable set so the guard cannot be satisfied by a script that
+  stopped reading the environment at all. Without the guard, that first case
+  issues `DELETE users//packages/...` for three versions.
 - **`Containerfile` has no unit tests.** Its correctness rests on the build's
   own lint steps, the rationale comments, and review.
 - **Signature verification is tested, but not end to end.** The nightly

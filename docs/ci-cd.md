@@ -537,7 +537,12 @@ the least-maintained state. The replacement makes the same REST calls through
 `gh`, which is already on every GitHub-hosted runner, and
 `tests/test-prune-package-versions.sh` covers the selection logic — the
 retention boundary, the `latest` guard, tie-breaking, and every API failure that
-would otherwise look like an empty package — without touching the network.
+would otherwise look like an empty package — without touching the network. It
+also covers the two inputs that shape the REST path the selection is read from:
+`--package-type` and the `GITHUB_REPOSITORY_OWNER` fallback for an omitted
+`--owner`. Both matter for the same reason as the owner scope above — the wrong
+path is a 404, and a 404 on the version list reads as an empty package — so the
+run with no owner available has to refuse before it asks for anything.
 
 ## Keeping pinned versions up to date
 

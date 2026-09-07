@@ -350,6 +350,62 @@ assert_status "an unrecognised owner type is an error" 2 "$?"
 assert_contains "the unrecognised owner type is named" "${output}" "unknown owner type wombat"
 assert_equal "an unrecognised owner type removes nothing" "" "$(pruned_ids)"
 
+# --- the owner default ----------------------------------------------------
+#
+# `--owner` is optional only because the workflow runs with
+# GITHUB_REPOSITORY_OWNER already set. Invoked by hand, or by a workflow that
+# stopped exporting it, the variable is absent and the path would be built as
+# `users//packages/...` -- which 404s, and a 404 on the version list is
+# indistinguishable from a package that has no versions. So the run has to stop
+# before it asks for anything, not carry an empty owner into the API.
+
+default_fixture
+output="$(env -u GITHUB_REPOSITORY_OWNER \
+  PATH="${STUB_DIR}:${PATH}" \
+  GH_STUB_VERSIONS="${VERSIONS}" \
+  GH_STUB_DELETED="${DELETED}" \
+  GH_STUB_REQUESTED="${REQUESTED}" \
+  "${BASH}" "${SCRIPT}" --package arch-bootc-base --min-versions-to-keep 2 2>&1)"
+assert_status "no --owner and no GITHUB_REPOSITORY_OWNER is a usage error" 2 "$?"
+assert_contains "the missing owner names the variable it looked in" "${output}" \
+  "GITHUB_REPOSITORY_OWNER is unset"
+assert_equal "a run with no owner reaches no API call at all" "" "$(requested_paths)"
+
+# The paired case, and the one that makes the refusal above discriminating: with
+# the variable set the same command must succeed *and* read the owner it names.
+# Without this, a script that had stopped consulting the environment entirely
+# would still pass the case above.
+default_fixture
+output="$(env GITHUB_REPOSITORY_OWNER=Danathar \
+  PATH="${STUB_DIR}:${PATH}" \
+  GH_STUB_VERSIONS="${VERSIONS}" \
+  GH_STUB_DELETED="${DELETED}" \
+  GH_STUB_REQUESTED="${REQUESTED}" \
+  "${BASH}" "${SCRIPT}" --owner-type user --package arch-bootc-base \
+  --min-versions-to-keep 4 2>&1)"
+assert_status "GITHUB_REPOSITORY_OWNER supplies an omitted owner" 0 "$?"
+assert_contains "the owner from the environment is the one queried" "$(requested_paths)" \
+  "users/Danathar/packages/container/arch-bootc-base/versions"
+
+# --- the package type -----------------------------------------------------
+#
+# `--package-type` is the path segment between the owner scope and the package
+# name, and `container` is a default rather than the only value. Getting it
+# wrong fails the same way a wrong owner scope does -- a 404 that reads as an
+# empty package -- so an override has to reach the other registry's path and
+# has to be what the summary reports.
+
+default_fixture
+output="$(run_script --owner Danathar --owner-type user --package arch-bootc-base \
+  --package-type npm --min-versions-to-keep 4)"
+assert_status "an overridden package type exits 0" 0 "$?"
+assert_contains "the overridden package type is the path segment queried" \
+  "$(requested_paths)" "users/Danathar/packages/npm/arch-bootc-base/versions"
+assert_absent "the default package type is abandoned once it is overridden" \
+  "$(requested_paths)" "/packages/container/"
+assert_contains "the summary reports the package type it actually used" "${output}" \
+  "Danathar/arch-bootc-base (npm) has 5 version(s)"
+
 # --- API failures ---------------------------------------------------------
 #
 # Each of these is a way for the job to end up believing the package is empty.
