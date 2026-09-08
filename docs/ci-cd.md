@@ -564,6 +564,21 @@ the least-maintained state. The replacement makes the same REST calls through
 retention boundary, the `latest` guard, tie-breaking, and every API failure that
 would otherwise look like an empty package — without touching the network.
 
+That covers what the script decides once it is called correctly. What calls it
+is two `run:` bodies in `cleanup_packages`, and those are covered by the same
+file: it lifts both bodies out of `build.yml` by job and step name and runs them
+against the same stubbed `gh`, with the real script in between. The step names
+have to be qualified by job — `build_push` has a `Prepare environment` step of
+its own — and an extraction that comes back empty fails the case, so renaming or
+reindenting either step is a test failure rather than a test that quietly stops
+covering anything. What that pins is the wiring rather than the arithmetic: the
+repository name is lowercased into `IMAGE_NAME` before the package name is built
+from it, the flavor is appended, the owner type from the event payload is
+forwarded instead of leaving the script to look it up, and the retention floor
+the job passes is 30. A dropped `,,` or a changed floor is not a loud failure in
+production — the first prunes a package that 404s, the second succeeds while
+deleting versions nobody asked to delete — so both are asserted here.
+
 ## Keeping pinned versions up to date
 
 `bootc`, the base images, the GitHub Actions and the cosign/chunkah/zizmor versions are all

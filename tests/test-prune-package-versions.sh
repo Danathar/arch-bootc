@@ -545,6 +545,199 @@ output="$(PATH="${STUB_DIR}" "${BASH}" "${SCRIPT}" "${BASE_ARGS[@]}" --min-versi
 assert_status "a missing jq is a clear error" 2 "$?"
 assert_contains "the missing jq error points somewhere useful" "${output}" "jqlang.github.io"
 
+# --- the workflow step that drives this script ----------------------------
+#
+# Everything above proves the script deletes the right versions when it is
+# called with the right arguments. Nothing above proves CI calls it with those
+# arguments, and the only caller is `build.yml`'s `cleanup_packages` job: two
+# `run:` bodies that no test executed. A prune job that names the wrong package
+# is not a loud failure -- `gh` 404s, the script turns that into "could not
+# list versions", and the job fails in a way that reads like the missing Admin
+# grant documented in docs/ci-cd.md. A prune job that passes the wrong
+# retention is worse: it succeeds, and removes versions nobody asked to remove.
+#
+# So the bodies are lifted out of the workflow and run here, against the same
+# stubbed `gh` the cases above use, with the real script in between. The lift
+# is by step name and refuses to proceed on an empty extraction, so renaming or
+# reindenting a step fails these cases rather than silently covering nothing.
+#
+# The step bodies are also asserted to contain no `${{ }}` expression. A body
+# that grows one stops being runnable as plain shell, and this file has to be
+# taught how to resolve it rather than quietly testing something the runner
+# would never execute.
+#
+# The tests live in this file because the ShellCheck lists in build.yml and the
+# Justfile name every shell file explicitly, so a new test file is a workflow
+# edit as well; tests/check-invariants.sh asserts both lists. The subject is
+# the same either way: which versions of which package stop existing.
+#
+# These cases add nothing to the coverage floors. The workflow reaches the
+# script by a relative path, so xtrace records those lines under
+# `./scripts/...` and tests/check-coverage.sh only counts lines whose recorded
+# path is under the repository root. The floor for the script is unchanged
+# because the lines it counts were already reached by the cases above.
+
+BUILD_WORKFLOW="${REPO_ROOT}/.github/workflows/build.yml"
+PRUNE_JOB="cleanup_packages"
+PREPARE_STEP="Prepare environment"
+# Single-quoted: the step name carries a workflow expression verbatim.
+# shellcheck disable=SC2016
+DELETE_STEP='Delete old ${{ matrix.flavor }} package versions'
+
+# Print the `run:` block of the named step of the named job, dedented to
+# column 0. Jobs sit at two columns, steps at six, `run: |` at eight and its
+# body at ten, which is the layout the whole file uses; anything shallower ends
+# the block. The job has to be named because step names repeat across jobs:
+# `build_push` has a `Prepare environment` step of its own, and matching on the
+# step name alone silently concatenates both bodies.
+workflow_step_run() {
+  local workflow="$1" job="$2" step="$3"
+  awk -v want_job="${job}" -v want="${step}" '
+    /^jobs:$/ { in_jobs = 1; next }
+    in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ {
+      current_job = substr($0, 3, length($0) - 3)
+      in_run = 0
+    }
+    /^      - name: / { current = substr($0, 15); in_run = 0; next }
+    current_job == want_job && current == want && /^        run: \|/ { in_run = 1; next }
+    in_run {
+      if ($0 == "") { print ""; next }
+      if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
+      in_run = 0
+    }
+  ' "${workflow}"
+}
+
+# Print one key from the named step's `env:` block, unexpanded. What a step
+# hands its command through the environment decides as much as the body does.
+workflow_step_env() {
+  local workflow="$1" job="$2" step="$3" key="$4"
+  awk -v want_job="${job}" -v want="${step}" -v key="${key}" '
+    /^jobs:$/ { in_jobs = 1; next }
+    in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ {
+      current_job = substr($0, 3, length($0) - 3)
+      in_env = 0
+    }
+    /^      - name: / { current = substr($0, 15); in_env = 0; next }
+    current_job == want_job && current == want && /^        env:$/ { in_env = 1; next }
+    in_env && substr($0, 1, 10) != "          " { in_env = 0 }
+    in_env && $0 ~ ("^          " key ": ") { print substr($0, length(key) + 13); exit }
+  ' "${workflow}"
+}
+
+assert_extracted() {
+  local description="$1" value="$2"
+  if [[ -n "${value}" ]]; then
+    check "${description}" 0
+  else
+    check "${description}" 1 "nothing was extracted; the step was renamed, moved or reindented"
+  fi
+}
+
+prepare_run="$(workflow_step_run "${BUILD_WORKFLOW}" "${PRUNE_JOB}" "${PREPARE_STEP}")"
+assert_extracted "the prepare step's body is still where this file looks for it" "${prepare_run}"
+# shellcheck disable=SC2016
+assert_absent "the prepare step's body is plain shell" "${prepare_run}" '${{'
+
+delete_run="$(workflow_step_run "${BUILD_WORKFLOW}" "${PRUNE_JOB}" "${DELETE_STEP}")"
+assert_extracted "the prune step's body is still where this file looks for it" "${delete_run}"
+# shellcheck disable=SC2016
+assert_absent "the prune step's body is plain shell" "${delete_run}" '${{'
+
+# The package name is composed in the step's environment, not in its body, so
+# it is pinned where it is written. `env.IMAGE_NAME` is what the prepare step
+# below produces, which is what ties the two steps together.
+# shellcheck disable=SC2016
+assert_equal "the pruned package is the lowercased image name plus the flavor" \
+  '${{ env.IMAGE_NAME }}-${{ matrix.flavor }}' \
+  "$(workflow_step_env "${BUILD_WORKFLOW}" "${PRUNE_JOB}" "${DELETE_STEP}" PACKAGE_NAME)"
+
+# `Arch-BootC` rather than the repository's real spelling: GHCR package names
+# are lowercase, so a body that stopped lowercasing would still pass against an
+# already-lowercase name while pointing the prune at a package that 404s.
+GITHUB_ENV_FILE="${WORK_DIR}/github-env"
+: >"${GITHUB_ENV_FILE}"
+output="$(REPO_NAME="Arch-BootC" GITHUB_ENV="${GITHUB_ENV_FILE}" "${BASH}" -c "${prepare_run}" 2>&1)"
+assert_status "the prepare step exits 0" 0 "$?"
+assert_equal "the prepare step lowercases the repository name into IMAGE_NAME" \
+  "IMAGE_NAME=arch-bootc" "$(cat "${GITHUB_ENV_FILE}")"
+
+# 31 versions against the retention floor the workflow passes: exactly one
+# version is outside it, so a changed or dropped `--min-versions-to-keep 30`
+# cannot pass here. The newest carries `latest`, as every published package
+# does.
+workflow_fixture() {
+  local -a entries=()
+  local id
+  for ((id = 1; id <= 31; id++)); do
+    if ((id == 31)); then
+      entries+=("$(make_version "${id}" "$(printf '2026-01-01T00:%02d:00Z' "${id}")" latest)")
+    else
+      entries+=("$(make_version "${id}" "$(printf '2026-01-01T00:%02d:00Z' "${id}")")")
+    fi
+  done
+  write_versions "${entries[@]}"
+}
+
+# The workflow runs the step from the checkout root and reaches the script by a
+# relative path, so the body is run from there too rather than from wherever
+# this file happened to be invoked.
+run_prune_step() {
+  local owner="$1" owner_type="$2" package="$3"
+  (
+    cd -- "${REPO_ROOT}" || exit 99
+    PATH="${STUB_DIR}:${PATH}" \
+      GH_STUB_VERSIONS="${VERSIONS}" \
+      GH_STUB_DELETED="${DELETED}" \
+      GH_STUB_REQUESTED="${REQUESTED}" \
+      GH_TOKEN=stub-token \
+      OWNER="${owner}" \
+      OWNER_TYPE="${owner_type}" \
+      PACKAGE_NAME="${package}" \
+      "${BASH}" -c "${delete_run}" 2>&1
+  )
+}
+
+# Composed the way the workflow composes it, from what the prepare step just
+# wrote plus the matrix flavor, so the two steps are exercised as one seam.
+image_name="$(sed -n 's/^IMAGE_NAME=//p' "${GITHUB_ENV_FILE}")"
+
+workflow_fixture
+output="$(run_prune_step Danathar User "${image_name}-kde")"
+assert_status "the prune step exits 0 for a user-owned package" 0 "$?"
+assert_contains "the step prunes the flavor's package under the user scope" \
+  "$(requested_paths)" "GET users/Danathar/packages/container/arch-bootc-kde/versions?per_page=100"
+assert_contains "the step keeps the newest 30 versions" \
+  "${output}" "has 31 version(s); keeping the newest 30"
+assert_equal "only the version outside the retention floor is removed" "1" "$(pruned_ids)"
+
+# `--owner-type` is forwarded from the event payload rather than left to the
+# script's own lookup. Dropping the flag is not a visible failure -- the script
+# resolves the type itself and reaches the same path -- so the discriminating
+# assertion is the absence of that extra call.
+assert_absent "the owner type comes from the event, not an extra API call" \
+  "$(requested_paths)" "GET users/Danathar|"
+
+# The same step against an organization-owned package. The REST path differs by
+# owner scope and a wrong scope is a 404, which this script reports as a failed
+# listing rather than an empty package.
+workflow_fixture
+output="$(run_prune_step Danathar Organization "${image_name}-xfce")"
+assert_status "the prune step exits 0 for an organization-owned package" 0 "$?"
+assert_contains "an organization-owned package is pruned under the org scope" \
+  "$(requested_paths)" "GET orgs/Danathar/packages/container/arch-bootc-xfce/versions?per_page=100"
+assert_equal "the retention floor is the same under the org scope" "1" "$(pruned_ids)"
+
+# A package already inside its retention budget: the step must not delete
+# anything, and must still exit 0 so the job does not fail on a quiet day.
+write_versions \
+  "$(make_version 1 2026-01-01T00:01:00Z)" \
+  "$(make_version 2 2026-01-01T00:02:00Z latest)"
+output="$(run_prune_step Danathar User "${image_name}-base")"
+assert_status "a package within the retention floor exits 0" 0 "$?"
+assert_contains "a package within the retention floor prunes nothing" "${output}" "nothing to prune"
+assert_equal "no version is removed" "" "$(pruned_ids)"
+
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
   printf 'FAILED %d of %d assertion(s)\n' "${failures}" "${tests_run}" >&2
