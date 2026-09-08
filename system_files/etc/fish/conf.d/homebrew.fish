@@ -12,28 +12,73 @@
 # any root-owned executable on the system.
 function __arch_bootc_brew_trusted --argument-names base
     set --local brew "$base/linuxbrew/.linuxbrew/bin/brew"
-    # Resolve once, so the owner check and the -f/-x tests describe one file.
-    set --local real (readlink -f -- "$brew" 2>/dev/null)
-    or return 1
-    test -n "$real"
-    or return 1
-    # `stat` without `-L` reports a link's own owner. The directories are
-    # checked too: a directory an untrusted user owns is a directory whose
-    # contents they choose, whoever owns the file sitting in it right now.
-    set --local uids (stat -c %u -- \
-        "$base/linuxbrew" \
-        "$base/linuxbrew/.linuxbrew" \
-        "$base/linuxbrew/.linuxbrew/bin" \
-        "$brew" \
-        "$real" 2>/dev/null)
-    or return 1
     set --local self (id -u)
-    for uid in $uids
+    or return 1
+    # The two literal base paths are system trust anchors. Begin below the
+    # anchor; an absolute or `..` link target is still walked from its new path.
+    set --local path "$base"
+    set --local rest linuxbrew/.linuxbrew/bin/brew
+    set --local hops 0
+
+    # Resolve one component at a time so symlinks and directories traversed on
+    # the way to the canonical target are not lost. `stat` has no `-L` because
+    # the current entry must be judged before a symlink is followed.
+    while test -n "$rest"
+        set --local pieces (string split -m 1 / -- "$rest")
+        set --local part "$pieces[1]"
+        if test (count $pieces) -gt 1
+            set rest "$pieces[2]"
+        else
+            set rest ""
+        end
+
+        switch "$part"
+            case '' .
+                continue
+            case ..
+                if test "$path" != /
+                    set path (string replace -r '/[^/]*$' '' -- "$path")
+                    test -n "$path"; or set path /
+                end
+                set --local parent_uid (stat -c %u -- "$path" 2>/dev/null)
+                or return 1
+                if test "$parent_uid" != 0; and test "$parent_uid" != "$self"
+                    return 1
+                end
+                continue
+        end
+
+        set --local next
+        if test "$path" = /
+            set next "/$part"
+        else
+            set next "$path/$part"
+        end
+        set --local uid (stat -c %u -- "$next" 2>/dev/null)
+        or return 1
         if test "$uid" != 0; and test "$uid" != "$self"
             return 1
         end
+
+        if test -L "$next"
+            set hops (math "$hops + 1")
+            test "$hops" -le 40; or return 1
+            set --local link (readlink -- "$next" 2>/dev/null)
+            or return 1
+            if string match -q '/*' -- "$link"
+                set path /
+                set link (string replace -r '^/' '' -- "$link")
+            end
+            if test -n "$rest"
+                set rest "$link/$rest"
+            else
+                set rest "$link"
+            end
+        else
+            set path "$next"
+        end
     end
-    test -f "$real"; and test -x "$real"
+    test -f "$path"; and test -x "$path"
 end
 
 # The documented prefix path is what runs, not the resolved one -- Homebrew

@@ -29,34 +29,79 @@
 #
 # Links are not rejected outright, which is the obvious fix and the wrong one:
 # a stock Homebrew prefix ships bin/brew as a link into ../Homebrew/bin/brew,
-# so refusing links would disable Homebrew rather than protect it. A link owned
-# by root or by you is a link only root or you could have aimed, which is
-# exactly the question being asked -- and what it resolves to is checked too,
-# because a trusted link into an untrusted file is not a trusted brew.
+# so refusing links would disable Homebrew rather than protect it. Instead,
+# every entry traversed while resolving the link is checked. That includes the
+# link itself, its resolved target, and all directories on both sides: leaving
+# out a resolved parent would let its owner replace the checked target before
+# the documented path below is invoked.
 __arch_bootc_brew_trusted() {
   __ab_brew="$1/linuxbrew/.linuxbrew/bin/brew"
-  # Resolve once. `readlink -f` leaves no link behind, so the owner check below
-  # and the `-f`/`-x` tests after it all describe the same real file.
-  __ab_real=$(readlink -f -- "${__ab_brew}" 2>/dev/null) || return 1
-  [ -n "${__ab_real}" ] || return 1
-  # One `stat` for every component of the prefix plus the resolved target. It
-  # exits non-zero when any of them is missing, which is also how a machine
-  # that never ran brew-setup.service arrives here. The directories are
-  # included because a directory an untrusted user owns is a directory whose
-  # contents they choose, whoever owns the file sitting in it right now.
-  __ab_uids=$(
-    stat -c %u -- \
-      "$1/linuxbrew" \
-      "$1/linuxbrew/.linuxbrew" \
-      "$1/linuxbrew/.linuxbrew/bin" \
-      "${__ab_brew}" \
-      "${__ab_real}" 2>/dev/null
-  ) || return 1
-  __ab_self=$(id -u)
-  # shellcheck disable=SC2086 # one uid per line; splitting is the point
-  for __ab_uid in ${__ab_uids}; do
+  __ab_self=$(id -u) || return 1
+  # /var/home and /home are system trust anchors supplied by this file, not by
+  # the prefix owner. Start below that anchor; if a link escapes it, absolute
+  # and `..` targets are still walked and checked from the point they enter.
+  __ab_path=$1
+  __ab_rest=linuxbrew/.linuxbrew/bin/brew
+  __ab_hops=0
+
+  # Resolve component by component rather than calling `readlink -f`, because
+  # the canonical result alone has forgotten the symlinks and directories used
+  # to reach it. Each `stat` deliberately does not pass `-L`: it judges the
+  # current entry itself before a link is followed. Following absolute and
+  # relative targets through this same loop then judges their parents too.
+  while [ -n "${__ab_rest}" ]; do
+    case ${__ab_rest} in
+      */*)
+        __ab_part=${__ab_rest%%/*}
+        __ab_rest=${__ab_rest#*/}
+        ;;
+      *)
+        __ab_part=${__ab_rest}
+        __ab_rest=
+        ;;
+    esac
+
+    case ${__ab_part} in
+      '' | .) continue ;;
+      ..)
+        if [ "${__ab_path}" != / ]; then
+          __ab_path=${__ab_path%/*}
+          [ -n "${__ab_path}" ] || __ab_path=/
+        fi
+        __ab_uid=$(stat -c %u -- "${__ab_path}" 2>/dev/null) || return 1
+        [ "${__ab_uid}" = 0 ] || [ "${__ab_uid}" = "${__ab_self}" ] || return 1
+        continue
+        ;;
+    esac
+
+    if [ "${__ab_path}" = / ]; then
+      __ab_next="/${__ab_part}"
+    else
+      __ab_next="${__ab_path}/${__ab_part}"
+    fi
+    __ab_uid=$(stat -c %u -- "${__ab_next}" 2>/dev/null) || return 1
     [ "${__ab_uid}" = 0 ] || [ "${__ab_uid}" = "${__ab_self}" ] || return 1
+
+    if [ -L "${__ab_next}" ]; then
+      __ab_hops=$((__ab_hops + 1))
+      [ "${__ab_hops}" -le 40 ] || return 1
+      __ab_link=$(readlink -- "${__ab_next}" 2>/dev/null) || return 1
+      case ${__ab_link} in
+        /*)
+          __ab_path=/
+          __ab_link=${__ab_link#/}
+          ;;
+      esac
+      if [ -n "${__ab_rest}" ]; then
+        __ab_rest="${__ab_link}/${__ab_rest}"
+      else
+        __ab_rest=${__ab_link}
+      fi
+    else
+      __ab_path=${__ab_next}
+    fi
   done
+  __ab_real=${__ab_path}
   [ -f "${__ab_real}" ] && [ -x "${__ab_real}" ]
 }
 
@@ -65,9 +110,8 @@ __arch_bootc_brew_trusted() {
 # invoking the link's target would have it answer .../Homebrew instead of
 # .../.linuxbrew. That leaves the check and the use as two lookups of one path,
 # which is a race in principle (CWE-367). The directory checks above are what
-# make it uninteresting: swapping the file between the two lookups means being
-# able to write `bin`, and a `bin` an untrusted user can write is one this
-# guard has already refused.
+# make it uninteresting: swapping any path entry between the check and use
+# means controlling one of the directories the walk has already refused.
 if __arch_bootc_brew_trusted /var/home; then
   eval "$(/var/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
 elif __arch_bootc_brew_trusted /home; then
@@ -76,4 +120,5 @@ fi
 
 # This file is sourced, so anything left defined here stays in the login shell.
 unset -f __arch_bootc_brew_trusted
-unset __ab_brew __ab_real __ab_uids __ab_self __ab_uid
+unset __ab_brew __ab_self __ab_path __ab_rest __ab_hops __ab_part __ab_next
+unset __ab_uid __ab_link __ab_real

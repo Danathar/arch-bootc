@@ -198,7 +198,7 @@ make_prefix() {
 # real stat, real id, the real caller. Prints the guard's exit status.
 run_sh_guard() {
   local base="$1"
-  "${BASH}" -c "$(extract_sh_guard)
+  "${BASH}" --noprofile --norc -c "$(extract_sh_guard)
 ${GUARD_FN} \"\$1\" >/dev/null 2>&1
 printf '%s' \"\$?\"" bash "${base}"
 }
@@ -223,7 +223,6 @@ for path in "$@"; do
   while read -r owner_path owner_uid; do
     [ "${owner_path}" = "${path}" ] || continue
     uid="${owner_uid}"
-    break
   done <"${STUB_STAT_OWNERS}"
   if [ -z "${uid}" ]; then
     printf "stub stat: no owner recorded for %s\n" "${path}" >&2
@@ -261,8 +260,9 @@ make_stub_bin() {
   ln -s "${real_readlink}" "${bindir}/readlink"
 }
 
-# Record `path uid` for each of the five paths the guard asks about. Written by
-# the caller a line at a time; see the cases below.
+# Record `path uid` for every entry the guard walks. Written by the caller a
+# line at a time; later records override earlier ones so a case can make one
+# component untrusted after declaring the whole chain trusted.
 owners_file() {
   printf '%s\n' "${WORK_DIR}/owners.$1"
 }
@@ -279,7 +279,7 @@ run_sh_guard_stubbed() {
     STUB_STAT_OWNERS="$(owners_file "${tag}")" \
     STUB_STAT_CALLS="${WORK_DIR}/stat-calls.${tag}" \
     STUB_ID_UID="${caller_uid}" \
-    "${BASH}" -c "$(extract_sh_guard)
+    "${BASH}" --noprofile --norc -c "$(extract_sh_guard)
 ${GUARD_FN} \"\$1\" >/dev/null 2>&1
 printf '%s' \"\$?\"" bash "${base}"
 }
@@ -292,6 +292,33 @@ prefix_paths() {
     "${base}/linuxbrew/.linuxbrew" \
     "${base}/linuxbrew/.linuxbrew/bin" \
     "${base}/linuxbrew/.linuxbrew/bin/brew"
+}
+
+# Print each absolute path component from the filesystem root down. The guard
+# resolves in exactly this direction, checking the entry before following a
+# symlink, so stub tables must account for ancestors as well as the final file.
+path_components() {
+  local rest="${1#/}" path="" part
+  while [[ -n "${rest}" ]]; do
+    if [[ "${rest}" == */* ]]; then
+      part="${rest%%/*}"
+      rest="${rest#*/}"
+    else
+      part="${rest}"
+      rest=""
+    fi
+    [[ -n "${part}" ]] || continue
+    path="${path}/${part}"
+    printf '%s\n' "${path}"
+  done
+}
+
+# Entries reached first through the documented brew path, then through the
+# symlink target when a case has one. Duplicates are harmless to the stub.
+walked_paths() {
+  local base="$1" target="${2:-}"
+  path_components "${base}/linuxbrew/.linuxbrew/bin/brew"
+  [[ -n "${target}" ]] && path_components "${target}"
 }
 
 # --- group 1: real files, no stubs -------------------------------------------
@@ -355,7 +382,8 @@ test_root_refuses_a_link_owned_by_the_prefix_owner() {
   make_prefix "${base}" elsewhere "${outside}"
 
   {
-    prefix_paths "${base}" | while read -r path; do printf '%s 1000\n' "${path}"; done
+    walked_paths "${base}" "${outside}" \
+      | while read -r path; do printf '%s 1000\n' "${path}"; done
     printf '%s 0\n' "${outside}"
   } >"$(owners_file attack)"
 
@@ -375,8 +403,8 @@ test_the_guard_asks_about_the_link_itself_and_never_dereferences() {
   make_prefix "${base}" elsewhere "${outside}"
 
   {
-    prefix_paths "${base}" | while read -r path; do printf '%s 4242\n' "${path}"; done
-    printf '%s 4242\n' "${outside}"
+    walked_paths "${base}" "${outside}" \
+      | while read -r path; do printf '%s 4242\n' "${path}"; done
   } >"$(owners_file argv)"
 
   run_sh_guard_stubbed "${base}" argv 4242 >/dev/null
@@ -388,7 +416,9 @@ test_the_guard_asks_about_the_link_itself_and_never_dereferences() {
   assert_contains "the guard asks stat about what bin/brew resolves to" \
     "${calls}" "${outside}"
   assert_contains "the guard asks stat about the prefix's bin directory" \
-    "${calls}" "${base}/linuxbrew/.linuxbrew/bin "
+    "${calls}" "${base}/linuxbrew/.linuxbrew/bin"
+  assert_contains "the guard asks stat about the resolved target's parent" \
+    "${calls}" "${outside%/*}"
   assert_not_contains "the guard never asks stat to dereference" "${calls}" "-L"
   assert_not_contains "the guard never asks stat to dereference" \
     "${calls}" "--dereference"
@@ -402,10 +432,8 @@ test_root_refuses_a_root_owned_file_in_a_directory_someone_else_owns() {
   make_prefix "${base}" regular
 
   {
-    printf '%s 0\n' "${base}/linuxbrew"
-    printf '%s 0\n' "${base}/linuxbrew/.linuxbrew"
+    walked_paths "${base}" | while read -r path; do printf '%s 0\n' "${path}"; done
     printf '%s 1000\n' "${base}/linuxbrew/.linuxbrew/bin"
-    printf '%s 0\n' "${base}/linuxbrew/.linuxbrew/bin/brew"
   } >"$(owners_file dir-owner)"
 
   assert_refused "root refuses a root-owned brew inside a bin directory UID 1000 owns" \
@@ -420,11 +448,9 @@ test_root_refuses_a_root_owned_file_in_a_directory_someone_else_owns() {
 write_link_owner_case() {
   local base="$1" tag="$2" outside="$3"
   {
-    printf '%s 0\n' "${base}/linuxbrew"
-    printf '%s 0\n' "${base}/linuxbrew/.linuxbrew"
-    printf '%s 0\n' "${base}/linuxbrew/.linuxbrew/bin"
+    walked_paths "${base}" "${outside}" \
+      | while read -r path; do printf '%s 0\n' "${path}"; done
     printf '%s 1000\n' "${base}/linuxbrew/.linuxbrew/bin/brew"
-    printf '%s 0\n' "${outside}"
   } >"$(owners_file "${tag}")"
 }
 
@@ -450,12 +476,50 @@ test_root_refuses_a_trusted_link_into_an_untrusted_file() {
   make_prefix "${base}" elsewhere "${outside}"
 
   {
-    prefix_paths "${base}" | while read -r path; do printf '%s 0\n' "${path}"; done
+    walked_paths "${base}" "${outside}" \
+      | while read -r path; do printf '%s 0\n' "${path}"; done
     printf '%s 1000\n' "${outside}"
   } >"$(owners_file trusted-link)"
 
   assert_refused "root refuses a root-owned link that lands on a file UID 1000 owns" \
     "$(run_sh_guard_stubbed "${base}" trusted-link 0)"
+}
+
+test_root_refuses_an_untrusted_directory_in_the_resolved_chain() {
+  # The review regression: checking the link and final file is insufficient
+  # when another account owns a directory used to reach that file. They can
+  # replace it after resolution and before the documented link is invoked.
+  local base="${WORK_DIR}/resolved-dir"
+  local outside_dir="${WORK_DIR}/resolved-dir-target"
+  local outside="${outside_dir}/brew"
+  mkdir -p "${outside_dir}"
+  printf '#!/bin/sh\nexit 0\n' >"${outside}"
+  chmod 755 "${outside}"
+  make_prefix "${base}" elsewhere "${outside}"
+  {
+    walked_paths "${base}" "${outside}" \
+      | while read -r path; do printf '%s 0\n' "${path}"; done
+    printf '%s 1000\n' "${outside_dir}"
+  } >"$(owners_file resolved-dir)"
+
+  assert_refused "root refuses a trusted link through a directory UID 1000 owns" \
+    "$(run_sh_guard_stubbed "${base}" resolved-dir 0)"
+}
+
+test_root_refuses_an_untrusted_homebrew_directory() {
+  # Exercise the relative link shape Homebrew actually ships, so a walk that
+  # checks external absolute targets but skips ../Homebrew/bin is caught too.
+  local base="${WORK_DIR}/homebrew-dir"
+  local target="${base}/linuxbrew/.linuxbrew/Homebrew/bin/brew"
+  make_prefix "${base}" symlink
+  {
+    walked_paths "${base}" "${target}" \
+      | while read -r path; do printf '%s 0\n' "${path}"; done
+    printf '%s 1000\n' "${target%/*}"
+  } >"$(owners_file homebrew-dir)"
+
+  assert_refused "root refuses a stock brew link whose Homebrew/bin is owned by UID 1000" \
+    "$(run_sh_guard_stubbed "${base}" homebrew-dir 0)"
 }
 
 test_root_refuses_a_prefix_directory_someone_else_owns() {
@@ -470,13 +534,10 @@ test_root_refuses_a_prefix_directory_someone_else_owns() {
     n=$((n + 1))
     local tag="outer-dir-${n}"
     local path
-    prefix_paths "${base}" | while read -r path; do
-      if [[ "${path}" == "${untrusted}" ]]; then
-        printf '%s 1000\n' "${path}"
-      else
-        printf '%s 0\n' "${path}"
-      fi
-    done >"$(owners_file "${tag}")"
+    {
+      walked_paths "${base}" | while read -r path; do printf '%s 0\n' "${path}"; done
+      printf '%s 1000\n' "${untrusted}"
+    } >"$(owners_file "${tag}")"
     assert_refused "root refuses a prefix whose ${untrusted#"${base}/"} is owned by UID 1000" \
       "$(run_sh_guard_stubbed "${base}" "${tag}" 0)"
   done < <(prefix_paths "${base}")
@@ -485,7 +546,7 @@ test_root_refuses_a_prefix_directory_someone_else_owns() {
 test_root_trusts_a_wholly_root_owned_prefix() {
   local base="${WORK_DIR}/root-prefix"
   make_prefix "${base}" regular
-  prefix_paths "${base}" | while read -r path; do printf '%s 0\n' "${path}"; done \
+  walked_paths "${base}" | while read -r path; do printf '%s 0\n' "${path}"; done \
     >"$(owners_file root-prefix)"
   assert_trusted "root trusts a prefix owned entirely by root" \
     "$(run_sh_guard_stubbed "${base}" root-prefix 0)"
@@ -496,7 +557,7 @@ test_a_user_trusts_a_root_owned_prefix() {
   # docs/first-boot.md promises.
   local base="${WORK_DIR}/root-prefix-user"
   make_prefix "${base}" regular
-  prefix_paths "${base}" | while read -r path; do printf '%s 0\n' "${path}"; done \
+  walked_paths "${base}" | while read -r path; do printf '%s 0\n' "${path}"; done \
     >"$(owners_file root-prefix-user)"
   assert_trusted "an ordinary user trusts a prefix owned entirely by root" \
     "$(run_sh_guard_stubbed "${base}" root-prefix-user 1000)"
@@ -507,7 +568,7 @@ test_a_user_refuses_another_users_prefix() {
   # human on the machine does not inherit the first one's brew.
   local base="${WORK_DIR}/other-user"
   make_prefix "${base}" regular
-  prefix_paths "${base}" | while read -r path; do printf '%s 1000\n' "${path}"; done \
+  walked_paths "${base}" | while read -r path; do printf '%s 1000\n' "${path}"; done \
     >"$(owners_file other-user)"
   assert_refused "UID 1001 refuses a prefix owned by UID 1000" \
     "$(run_sh_guard_stubbed "${base}" other-user 1001)"
@@ -516,7 +577,7 @@ test_a_user_refuses_another_users_prefix() {
 test_the_prefix_owner_trusts_their_own_prefix() {
   local base="${WORK_DIR}/self"
   make_prefix "${base}" regular
-  prefix_paths "${base}" | while read -r path; do printf '%s 1000\n' "${path}"; done \
+  walked_paths "${base}" | while read -r path; do printf '%s 1000\n' "${path}"; done \
     >"$(owners_file self)"
   assert_trusted "UID 1000 trusts the prefix brew-setup.service extracted for it" \
     "$(run_sh_guard_stubbed "${base}" self 1000)"
@@ -575,6 +636,10 @@ test_fish_guard_matches_the_posix_one() {
       "fish is not installed"
     skip "root refuses a bin/brew whose own owner is UID 1000 (fish)" \
       "fish is not installed"
+    skip "root refuses a link through a directory UID 1000 owns (fish)" \
+      "fish is not installed"
+    skip "root refuses a stock link through Homebrew/bin owned by UID 1000 (fish)" \
+      "fish is not installed"
     skip "UID 1001 refuses a prefix owned by UID 1000 (fish)" "fish is not installed"
     return
   fi
@@ -596,7 +661,8 @@ test_fish_guard_matches_the_posix_one() {
   chmod 755 "${outside}"
   make_prefix "${base}" elsewhere "${outside}"
   {
-    prefix_paths "${base}" | while read -r path; do printf '%s 1000\n' "${path}"; done
+    walked_paths "${base}" "${outside}" \
+      | while read -r path; do printf '%s 1000\n' "${path}"; done
     printf '%s 0\n' "${outside}"
   } >"$(owners_file fish-attack)"
   assert_refused "root refuses a bin/brew link owned by the prefix owner (fish)" \
@@ -611,9 +677,35 @@ test_fish_guard_matches_the_posix_one() {
   assert_refused "root refuses a bin/brew whose own owner is UID 1000 (fish)" \
     "$(run_fish_guard_stubbed "${owner}" fish-link-owner 0)"
 
+  local resolved="${WORK_DIR}/fish-resolved-dir"
+  local resolved_target_dir="${WORK_DIR}/fish-resolved-dir-target"
+  local resolved_target="${resolved_target_dir}/brew"
+  mkdir -p "${resolved_target_dir}"
+  printf '#!/bin/sh\nexit 0\n' >"${resolved_target}"
+  chmod 755 "${resolved_target}"
+  make_prefix "${resolved}" elsewhere "${resolved_target}"
+  {
+    walked_paths "${resolved}" "${resolved_target}" \
+      | while read -r path; do printf '%s 0\n' "${path}"; done
+    printf '%s 1000\n' "${resolved_target_dir}"
+  } >"$(owners_file fish-resolved-dir)"
+  assert_refused "root refuses a link through a directory UID 1000 owns (fish)" \
+    "$(run_fish_guard_stubbed "${resolved}" fish-resolved-dir 0)"
+
+  local stock="${WORK_DIR}/fish-homebrew-dir"
+  local stock_target="${stock}/linuxbrew/.linuxbrew/Homebrew/bin/brew"
+  make_prefix "${stock}" symlink
+  {
+    walked_paths "${stock}" "${stock_target}" \
+      | while read -r path; do printf '%s 0\n' "${path}"; done
+    printf '%s 1000\n' "${stock_target%/*}"
+  } >"$(owners_file fish-homebrew-dir)"
+  assert_refused "root refuses a stock link through Homebrew/bin owned by UID 1000 (fish)" \
+    "$(run_fish_guard_stubbed "${stock}" fish-homebrew-dir 0)"
+
   local other="${WORK_DIR}/fish-other-user"
   make_prefix "${other}" regular
-  prefix_paths "${other}" | while read -r path; do printf '%s 1000\n' "${path}"; done \
+  walked_paths "${other}" | while read -r path; do printf '%s 1000\n' "${path}"; done \
     >"$(owners_file fish-other)"
   assert_refused "UID 1001 refuses a prefix owned by UID 1000 (fish)" \
     "$(run_fish_guard_stubbed "${other}" fish-other 1001)"
@@ -669,6 +761,8 @@ main() {
     test_root_refuses_a_root_owned_file_in_a_directory_someone_else_owns \
     test_root_consults_the_entry_points_own_owner \
     test_root_refuses_a_trusted_link_into_an_untrusted_file \
+    test_root_refuses_an_untrusted_directory_in_the_resolved_chain \
+    test_root_refuses_an_untrusted_homebrew_directory \
     test_root_refuses_a_prefix_directory_someone_else_owns \
     test_root_trusts_a_wholly_root_owned_prefix \
     test_a_user_trusts_a_root_owned_prefix \
