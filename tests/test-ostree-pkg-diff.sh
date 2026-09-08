@@ -609,15 +609,21 @@ ostree_db_listing() {
 
 # Run ostree-pkg-diff as a program with ${cmdline} bound over /proc/cmdline and
 # ${stub_bin} first on PATH. When ${mnt_source} is non-empty its contents are
-# copied onto a namespace-local tmpfs at /mnt, and /sysroot and /ostree are
-# masked with empty tmpfs mounts, so the sysroot probe resolves to /mnt no
-# matter what the host has at those paths. Remaining arguments are NAME=value
+# copied to ${mnt_target} on a namespace-local tmpfs at /mnt, and /sysroot and
+# /ostree are masked with empty tmpfs mounts, so the sysroot probe sees only
+# what the case put there no matter what the host has at those paths.
+# ${mnt_target} defaults to /mnt, which is the probe the program checks by
+# name; a deeper target under /mnt is how a case reaches the last-resort
+# `find` instead, and an empty directory as ${mnt_source} masks all three
+# paths while putting no layout behind any of them, which is how a case
+# reaches the refusal at the end. Remaining arguments are NAME=value
 # pairs put into the program's environment. Prints the program's combined
 # output and returns its exit status -- a global would not survive, because
 # every caller runs this inside a command substitution.
 run_program() {
-  local cmdline="$1" stub_bin="$2" tmp_dir="$3" mnt_source="$4"
-  shift 4
+  local cmdline="$1" stub_bin="$2" tmp_dir="$3" mnt_source="$4" mnt_target="$5"
+  shift 5
+  [[ -n "${mnt_target}" ]] || mnt_target="/mnt"
   mkdir -p "${tmp_dir}"
   local output
   # The bash -c body is a program for the shell inside the namespace, and its
@@ -637,14 +643,16 @@ run_program() {
             fi
           done
           mount -t tmpfs none /mnt || exit 98
-          cp -a "$4/." /mnt/ || exit 98
+          mkdir -p "$6" || exit 98
+          cp -a "$4/." "$6/" || exit 98
         fi
         PATH="$2:${PATH}"
         # "$5", not a bare `bash`: run-tests.sh hands every test file the one
         # interpreter the run is reporting on, and the program under test has
         # to be run by it too.
         exec "$5" "$3"
-      ' _ "${cmdline}" "${stub_bin}" "${PKG_DIFF}" "${mnt_source}" "${BASH}" 2>&1
+      ' _ "${cmdline}" "${stub_bin}" "${PKG_DIFF}" "${mnt_source}" "${BASH}" \
+        "${mnt_target}" 2>&1
   )"
   local status=$?
   printf '%s\n' "${output}"
@@ -665,7 +673,7 @@ test_program_composefs_diffs_previous_against_booted() {
   cmdline="$(write_cmdline composefs-happy-cmdline \
     'root=UUID=1234 composefs=new222 rw quiet')"
 
-  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" \
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
     "OSTREE_SYSROOT=${root}")"
   status=$?
 
@@ -702,7 +710,7 @@ test_program_composefs_rejects_an_unknown_booted_image() {
   cmdline="$(write_cmdline composefs-unknown-cmdline \
     'root=UUID=1234 composefs=missing999 rw')"
 
-  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" \
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
     "OSTREE_SYSROOT=${root}")"
   status=$?
 
@@ -721,7 +729,7 @@ test_program_composefs_rejects_a_sole_deployment() {
   cmdline="$(write_cmdline composefs-sole-cmdline \
     'root=UUID=1234 composefs=new222 rw')"
 
-  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" \
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
     "OSTREE_SYSROOT=${root}")"
   status=$?
 
@@ -744,7 +752,7 @@ test_program_composefs_rejects_a_previous_without_an_image() {
   cmdline="$(write_cmdline composefs-orphan-cmdline \
     'root=UUID=1234 composefs=new222 rw')"
 
-  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" \
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
     "OSTREE_SYSROOT=${root}")"
   status=$?
 
@@ -767,7 +775,7 @@ test_program_composefs_rejects_an_image_that_is_not_a_file() {
   cmdline="$(write_cmdline composefs-unresolvable-cmdline \
     'root=UUID=1234 composefs=new222 rw')"
 
-  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" \
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
     "OSTREE_SYSROOT=${root}")"
   status=$?
 
@@ -792,7 +800,7 @@ test_program_ostree_layout_diffs_the_rollback_deployment() {
     'kept 1.0' 'added 3.0'
   cmdline="$(write_cmdline ostree-rollback-cmdline 'root=UUID=1234 rw quiet')"
 
-  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" \
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
     "OSTREE_SYSROOT=${root}")"
   status=$?
 
@@ -823,7 +831,7 @@ test_program_ostree_layout_falls_back_to_the_kernel_argument() {
   cmdline="$(write_cmdline ostree-karg-cmdline \
     'BOOT_IMAGE=/vmlinuz ostree=/ostree/boot.1/arch/abc123/0 rw')"
 
-  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" \
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
     "OSTREE_SYSROOT=${root}")"
   status=$?
 
@@ -843,7 +851,7 @@ test_program_ostree_layout_rejects_an_undeterminable_deployment() {
   write_ostree_layout "${root}" arch abc123.0
   cmdline="$(write_cmdline ostree-no-booted-cmdline 'root=UUID=1234 rw quiet')"
 
-  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" \
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
     "OSTREE_SYSROOT=${root}")"
   status=$?
 
@@ -862,7 +870,7 @@ test_program_ostree_layout_rejects_a_sole_deployment() {
   write_ostree_layout "${root}" arch e4f2c1a0b3d5.0
   cmdline="$(write_cmdline ostree-sole-cmdline 'root=UUID=1234 rw quiet')"
 
-  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" \
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
     "OSTREE_SYSROOT=${root}")"
   status=$?
 
@@ -888,7 +896,7 @@ test_program_discovers_the_sysroot_at_mnt() {
   # OSTREE_SYSROOT is deliberately not set: this is the probe that finds a
   # deployment mounted at /mnt, which is where the documented recovery workflow
   # mounts one from a live environment.
-  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "${root}")"
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "${root}" "/mnt")"
   status=$?
 
   assert_eq "a sysroot found at /mnt exits 0" "0" "${status}"
@@ -896,6 +904,116 @@ test_program_discovers_the_sysroot_at_mnt() {
     "$(cat "${bin}/ostree.argv")" "admin --sysroot=/mnt status"
   assert_contains "the deployments under /mnt are the ones compared" \
     "${output}" "+ added 3.0"
+}
+
+test_program_discovers_a_sysroot_the_named_probes_miss() {
+  # The last resort after the four named probes: a filesystem-wide search for
+  # any */ostree/repo within five levels of /. The layout goes to /mnt/state,
+  # which no named probe checks -- /mnt is checked, /mnt/state is not -- so the
+  # only way the program can reach it is that search, and the sysroot it
+  # reports is the search hit with /ostree/repo trimmed off it.
+  local dir bin root output status
+  dir="$(case_dir ostree-searched-sysroot)"
+  bin="${dir}/bin"
+  root="${dir}/sysroot"
+  write_program_stubs "${bin}"
+  printf '%s\n' "${STATUS_TYPICAL}" >"${bin}/ostree.status"
+  write_ostree_layout "${root}" arch e4f2c1a0b3d5.0 9a8b7c6d5e4f.1
+  write_db_listing "$(ostree_db_listing "${root}" arch 9a8b7c6d5e4f.1)" 'gone 2.0'
+  write_db_listing "$(ostree_db_listing "${root}" arch e4f2c1a0b3d5.0)" 'added 3.0'
+  local cmdline
+  cmdline="$(write_cmdline ostree-searched-cmdline 'root=UUID=1234 rw quiet')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "${root}" /mnt/state)"
+  status=$?
+
+  assert_eq "a sysroot only the search can find exits 0" "0" "${status}"
+  assert_contains "the search hit becomes the sysroot, without its repo suffix" \
+    "$(cat "${bin}/ostree.argv")" "admin --sysroot=/mnt/state status"
+  assert_contains "the deployments under the searched sysroot are compared" \
+    "${output}" "+ added 3.0"
+}
+
+test_program_refuses_when_no_layout_is_found() {
+  # An empty source directory, so /sysroot, /ostree and /mnt are all masked
+  # with empty tmpfs and nothing is put behind them: no composefs layout, none
+  # of the four named repo probes, and nothing for the filesystem search to
+  # find within five levels of / either. The fixtures of the other cases live
+  # under a mktemp directory well past that depth, so they cannot answer the
+  # search for this one.
+  #
+  # This is the refusal a user hits on a host that is not an ostree system at
+  # all, and the second line is the whole remedy the program offers -- an
+  # exit 1 that did not name OSTREE_SYSROOT would leave them nothing to try.
+  local dir bin empty cmdline output status
+  dir="$(case_dir ostree-no-layout)"
+  bin="${dir}/bin"
+  empty="${dir}/empty"
+  mkdir -p "${empty}"
+  write_program_stubs "${bin}"
+  cmdline="$(write_cmdline ostree-no-layout-cmdline 'root=UUID=1234 rw quiet')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "${empty}" "")"
+  status=$?
+
+  assert_eq "a host with no deployment layout exits 1" "1" "${status}"
+  assert_contains "the refusal says neither layout was found" \
+    "${output}" "No composefs deployment layout or ostree repo found."
+  assert_contains "the refusal points at the override that would fix it" \
+    "${output}" "Set OSTREE_SYSROOT=/path if your repo lives elsewhere."
+  assert_missing "no deployment status is queried" "${bin}/ostree.argv"
+  assert_missing "no package database is queried" "${bin}/pacman.argv"
+}
+
+test_program_ostree_layout_picks_the_newest_other_deployment() {
+  # `ostree admin status` lists only the booted deployment -- what a host with
+  # no rollback recorded reports -- so status_previous yields nothing and the
+  # comparison falls back to the deploy directory's modification times. Three
+  # deployments are on disk and the newest one that is not the booted one has
+  # to win: picking the booted one would diff a deployment against itself, and
+  # picking the oldest would report every change since two updates ago as if it
+  # came from the last one.
+  local dir bin root base cmdline output status
+  dir="$(case_dir ostree-newest-other)"
+  bin="${dir}/bin"
+  root="${dir}/sysroot"
+  write_program_stubs "${bin}"
+  printf '* arch e4f2c1a0b3d5.0\n    Version: 20260903.0\n' >"${bin}/ostree.status"
+  write_ostree_layout "${root}" arch \
+    e4f2c1a0b3d5.0 1111aaaa2222.0 9a8b7c6d5e4f.1
+  base="${root}/ostree/deploy/arch/deploy"
+  touch -d '2026-09-01T00:00:00' "${base}/1111aaaa2222.0"
+  touch -d '2026-09-02T00:00:00' "${base}/9a8b7c6d5e4f.1"
+  touch -d '2026-09-03T00:00:00' "${base}/e4f2c1a0b3d5.0"
+  write_db_listing "$(ostree_db_listing "${root}" arch 1111aaaa2222.0)" \
+    'stale 0.9'
+  write_db_listing "$(ostree_db_listing "${root}" arch 9a8b7c6d5e4f.1)" \
+    'gone 2.0'
+  write_db_listing "$(ostree_db_listing "${root}" arch e4f2c1a0b3d5.0)" \
+    'added 3.0'
+  cmdline="$(write_cmdline ostree-newest-other-cmdline 'root=UUID=1234 rw quiet')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
+    "OSTREE_SYSROOT=${root}")"
+  status=$?
+
+  assert_eq "a status without a rollback still diffs, exiting 0" "0" "${status}"
+  assert_contains "the newest non-booted deployment is the old side" \
+    "${output}" "- gone 2.0"
+  assert_contains "the booted deployment is the new side" \
+    "${output}" "+ added 3.0"
+  assert_not_contains "the older deployment is not the one compared" \
+    "${output}" "stale"
+
+  local old_query new_query
+  old_query="$(sed -n 1p "${bin}/pacman.argv")"
+  new_query="$(sed -n 2p "${bin}/pacman.argv")"
+  assert_contains "the newest non-booted deployment's database is read first" \
+    "${old_query}" "${base}/9a8b7c6d5e4f.1/usr/lib/sysimage/lib/pacman"
+  assert_contains "the booted deployment's database is read second" \
+    "${new_query}" "${base}/e4f2c1a0b3d5.0/usr/lib/sysimage/lib/pacman"
+  assert_eq "exactly two package databases are queried" \
+    "2" "$(wc -l <"${bin}/pacman.argv")"
 }
 
 test_program_reexecutes_itself_under_sudo_when_not_root() {
@@ -1001,7 +1119,10 @@ main() {
     test_program_ostree_layout_falls_back_to_the_kernel_argument
     test_program_ostree_layout_rejects_an_undeterminable_deployment
     test_program_ostree_layout_rejects_a_sole_deployment
+    test_program_ostree_layout_picks_the_newest_other_deployment
     test_program_discovers_the_sysroot_at_mnt
+    test_program_discovers_a_sysroot_the_named_probes_miss
+    test_program_refuses_when_no_layout_is_found
   )
   if namespaces_available; then
     for test_fn in "${program_tests[@]}"; do
