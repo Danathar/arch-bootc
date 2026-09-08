@@ -124,13 +124,21 @@ Homebrew is extracted by `brew-setup.service` on first boot to:
 /var/home/linuxbrew/.linuxbrew
 ```
 
-The image installs system-wide shell integration so future users and new
-terminal sessions automatically get `brew` on `PATH`:
+The image installs system-wide shell integration so new terminal sessions
+automatically get `brew` on `PATH`:
 
 - `/etc/profile.d/homebrew.sh` for POSIX shells and Bash
 - `/etc/fish/conf.d/homebrew.fish` for Fish
 - Zsh login shells are covered automatically: `/etc/zsh/zprofile` sources
   `/etc/profile`, which runs `/etc/profile.d/homebrew.sh`
+
+Both fragments only use a prefix owned by root or by the user whose shell it
+is, so the UID 1000 install above puts `brew` on that user's `PATH` and on
+nobody else's. Homebrew needs its prefix writable by whoever runs it — `brew`
+refuses to run as root — so an unguarded fragment would have every other
+account, root included, executing a binary one unprivileged user can rewrite.
+Upstream Homebrew does not support a shared multi-user prefix either; a second
+user who wants `brew` should install their own.
 
 If you need to use Homebrew in an already-open shell before logging out/in or
 opening a new terminal, run:
