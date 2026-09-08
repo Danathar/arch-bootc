@@ -20,7 +20,10 @@ WORKFLOW="${REPO_ROOT}/.github/workflows/nightly-compliance.yml"
 failures=0
 tests_run=0
 
-WORK_DIR="$(mktemp -d)"
+if ! WORK_DIR="$(mktemp -d)"; then
+  printf 'failed to create temporary work directory\n' >&2
+  exit 1
+fi
 cleanup() {
   [[ -n "${WORK_DIR:-}" && -d "${WORK_DIR}" ]] && rm -rf -- "${WORK_DIR}"
 }
