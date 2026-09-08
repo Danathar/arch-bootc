@@ -167,6 +167,57 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Homebrew shell integration (the fourth path to root, alongside the three above)"
+# /etc/profile.d and /etc/fish/conf.d run in every login shell on the machine,
+# root's included. The Homebrew prefix those fragments put on PATH is extracted
+# for UID 1000, and Homebrew requires its prefix to be writable by the user
+# running it, so the ownership guard in both fragments is the only thing
+# stopping whoever owns that prefix from executing code in every other
+# account's shell -- the same console-only argument the root password rests on,
+# reached from a local session instead of a keyboard.
+#
+# It is asserted here because it has already been weakened once by accident.
+# The first version tested the prefix with `[ -O ]`, which dereferences, so a
+# symlink planted by the prefix owner answered for whatever root-owned target
+# it pointed at. Nothing failed; the guard simply stopped guarding.
+
+BREW_SH="system_files/etc/profile.d/homebrew.sh"
+BREW_FISH="system_files/etc/fish/conf.d/homebrew.fish"
+
+for fragment in "${BREW_SH}" "${BREW_FISH}"; do
+  assert_present "${fragment} reads each path entry's own owner" \
+    "${fragment}" 'stat -c %u -- ' \
+    "ownership is no longer read with a non-dereferencing stat"
+
+  # `-O` and `-x` answer for a symlink's target, and `stat -L` asks the same
+  # question the same way. Which target that is, is the prefix owner's choice.
+  assert_absent "${fragment} makes no dereferencing ownership test" \
+    "${fragment}" '(\[|test)[[:space:]]+-O[[:space:]]|stat[[:space:]]+[^|;&]*-L' \
+    "a dereferencing test decides trust from a path the untrusted owner picked"
+
+  # Removing a guard call and leaving the invocation behind is a one-line edit
+  # that restores the original hole, and changes neither fragment's shape
+  # enough for anything else in CI to notice. Neither fragment can carry a
+  # coverage floor to catch it: .coverage-thresholds.json covers the shebanged
+  # entry points under scripts/ and system_files/usr, and the cases that do
+  # exercise these two source a copy of the fragment inside a mount namespace,
+  # so the traced lines are not attributed to the checked-out path.
+  fragment_active="$(grep -Ev '^[[:space:]]*#' "${fragment}")"
+  guarded="$(grep -Ec -- '__arch_bootc_brew_trusted[[:space:]]+/' <<<"${fragment_active}")"
+  invoked="$(grep -Ec -- 'brew shellenv' <<<"${fragment_active}")"
+  assert_equal "${fragment} runs brew only behind the ownership guard" \
+    "${guarded}" "${invoked}"
+done
+
+# Both fragments are executed by a test rather than only read by one. A test
+# file that stops naming the fragment it covers, or stops existing, fails here.
+assert_present "the POSIX fragment is executed by a test" \
+  "tests/test-homebrew-profile.sh" 'system_files/etc/profile\.d/homebrew\.sh'
+
+assert_present "the fish fragment is executed by a test" \
+  "tests/test-homebrew-shell-integration.sh" 'system_files/etc/fish/conf\.d/homebrew\.fish'
+
+# ---------------------------------------------------------------------------
 group "Signature chain (docs/ci-cd.md, docs/security/SECURITY-AI.md)"
 
 assert_present "the published namespace requires a sigstore signature" \
