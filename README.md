@@ -5,7 +5,7 @@
 [![Maintenance assisted by Hivecommons Hive](https://img.shields.io/badge/maintenance%20assisted%20by-Hivecommons%20Hive-1f6feb)](https://github.com/hivecommons/hive)
 [![ACMM L4 Security-Aware](https://img.shields.io/badge/ACMM-L4%20Security--Aware-2da44e)](https://github.com/hivecommons/hive#acmm-levels)
 [![AI assisted](https://img.shields.io/badge/AI-assisted-d29922)](#about-this-project)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
 # Arch Linux Bootc
 
@@ -87,3 +87,11 @@ is the authoritative policy behind it.
 > At **L4 (Security-Aware)** all agents may file issues, and the quality, security and CI agents may additionally open pull requests that carry a `hold` label. The rest stay advisory: they report, they do not act. Every change is still reviewed and merged by a human maintainer.
 >
 > Learn more: [Hive](https://github.com/hivecommons/hive) · [Hive Hub](https://hive.kubestellar.io) · [full ACMM policy matrix](https://github.com/hivecommons/hive/blob/v4/src/docs/acmm-policy-matrix.md)
+
+## License
+
+This fork is distributed under the [GNU General Public License v3.0](LICENSE).
+
+It incorporates foundational material from [`bootcrew/arch-bootc`](https://github.com/bootcrew/arch-bootc), Copyright 2025 tulilirockz, originally released under the Apache License 2.0. That upstream material remains available under Apache-2.0, and its copyright and license notices are preserved in [LICENSE.APACHE-2.0](LICENSE.APACHE-2.0).
+
+The combined derivative work — upstream Apache-2.0 material together with this fork's GPL-3.0 modifications and additions — is distributed under GPL-3.0. Third-party software (Arch Linux, bootc, the packages installed into the built image, and other dependencies) is not affected and retains its own licenses.
