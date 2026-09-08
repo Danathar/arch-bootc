@@ -13,6 +13,9 @@ set -uo pipefail
 # UID 1000 and Homebrew requires it writable by whoever runs brew, so the
 # ownership guard in front of that `eval` is a privilege boundary, and the
 # `if`/`elif` around it decides which prefix the boundary is even applied to.
+# The positive case enters a nested user namespace as UID 1000 after the mount
+# fixtures are built. Its prefix therefore satisfies caller ownership but not
+# the separate root-owner fallback; deleting `-O` must make that case fail.
 #
 # tests/check-coverage.sh cannot report the gap: its production roots are
 # scripts, system_files/usr/bin and system_files/usr/libexec, and it skips
@@ -154,6 +157,11 @@ namespaces_available() {
     NAMESPACE_ERROR="mount namespace refused: ${message:-no message}"
     return 1
   fi
+  if ! message="$(unshare --map-root-user \
+    unshare --user --map-user=1000 true 2>&1)"; then
+    NAMESPACE_ERROR="nested UID 1000 namespace refused: ${message:-no message}"
+    return 1
+  fi
   if [[ ! -x "${DONOR}" ]]; then
     NAMESPACE_ERROR="${DONOR} is missing, so there is no root-owned binary to borrow"
     return 1
@@ -196,6 +204,66 @@ printf "export HOMEBREW_PREFIX=\"%s\"\n" "${prefix}"
 printf "export PATH=\"%s/bin:\$PATH\"\n" "${prefix}"
 '
 
+# Source the fragment and report what it changed. This runs either as outer
+# namespace root or as UID 1000 in a nested user namespace; keeping one program
+# for both means the positive ownership case differs only in caller identity.
+# shellcheck disable=SC2016
+FRAGMENT_PROGRAM='
+  set -u
+  fragment="$1"; work="$2"; var_home_kind="$3"; home_kind="$4"
+  cd "${work}/cwd" || exit 98
+  unset HOMEBREW_PREFIX HOMEBREW_CELLAR HOMEBREW_REPOSITORY
+  status=
+  path_before=
+  funcs_before=
+  vars_before=
+  path_before="${PATH}"
+  funcs_before="$(declare -F | sort)"
+  vars_before="$(compgen -v | sort)"
+
+  # Sourced with stdin closed: the borrowed `tee` would otherwise sit reading
+  # from the terminal rather than returning and leaving its evidence.
+  . "${fragment}" </dev/null 2>"${work}/stderr"
+  status=$?
+
+  printf "status=%s\n" "${status}"
+  printf "caller_uid=%s\n" "$(id -u)"
+  if [ "${var_home_kind}" = trusted ]; then
+    printf "brew_uid=%s\n" "$(stat -c %u /var/home/linuxbrew/.linuxbrew/bin/brew)"
+  elif [ "${home_kind}" = trusted ]; then
+    printf "brew_uid=%s\n" "$(stat -c %u /home/linuxbrew/.linuxbrew/bin/brew)"
+  fi
+  printf "prefix=%s\n" "${HOMEBREW_PREFIX:-}"
+  if [ "${PATH}" = "${path_before}" ]; then
+    printf "path_changed=no\n"
+  else
+    printf "path_changed=yes\n"
+  fi
+  if [ -s "${work}/brew-calls" ]; then
+    printf "brew_ran=yes\n"
+  else
+    printf "brew_ran=no\n"
+  fi
+  # `tee shellenv` in this directory is the only thing that creates this file.
+  if [ -e "${work}/cwd/shellenv" ]; then
+    printf "donor_ran=yes\n"
+  else
+    printf "donor_ran=no\n"
+  fi
+  if [ "${var_home_kind}" = untrusted ]; then
+    printf "bound_uid=%s\n" "$(stat -c %u /var/home/linuxbrew/.linuxbrew/bin/brew)"
+  elif [ "${home_kind}" = untrusted ]; then
+    printf "bound_uid=%s\n" "$(stat -c %u /home/linuxbrew/.linuxbrew/bin/brew)"
+  fi
+  if [ -s "${work}/stderr" ]; then
+    printf "stderr=yes\n"
+  else
+    printf "stderr=no\n"
+  fi
+  printf "new_funcs=%s\n" "$(comm -13 <(printf "%s\n" "${funcs_before}") <(declare -F | sort) | tr "\n" " ")"
+  printf "new_vars=%s\n" "$(comm -13 <(printf "%s\n" "${vars_before}") <(compgen -v | sort) | tr "\n" " ")"
+'
+
 # The program that runs inside the namespace. It builds the fixtures, sources
 # the fragment, and prints a key=value report. Kept as one string so the
 # quoting is in one place; it reaches the inner shell unexpanded.
@@ -203,7 +271,7 @@ printf "export PATH=\"%s/bin:\$PATH\"\n" "${prefix}"
 NS_PROGRAM='
   set -u
   fragment="$1"; work="$2"; var_home_kind="$3"; home_kind="$4"; donor="$5"
-  home_mountable="$6"
+  home_mountable="$6"; caller_uid="$7"; fragment_program="$8"
 
   mask() {
     # A tmpfs over the directory the fragment reads, so the fixture is at the
@@ -236,51 +304,17 @@ NS_PROGRAM='
   build /var/home "${var_home_kind}"
   build /home "${home_kind}"
 
-  cd "${work}/cwd" || exit 98
-  unset HOMEBREW_PREFIX HOMEBREW_CELLAR HOMEBREW_REPOSITORY
-  status=
-  path_before=
-  funcs_before=
-  vars_before=
-  path_before="${PATH}"
-  funcs_before="$(declare -F | sort)"
-  vars_before="$(compgen -v | sort)"
-
-  # Sourced with stdin closed: the borrowed `tee` would otherwise sit reading
-  # from the terminal rather than returning and leaving its evidence.
-  . "${fragment}" </dev/null 2>"${work}/stderr"
-  status=$?
-
-  printf "status=%s\n" "${status}"
-  printf "prefix=%s\n" "${HOMEBREW_PREFIX:-}"
-  if [ "${PATH}" = "${path_before}" ]; then
-    printf "path_changed=no\n"
+  if [ "${caller_uid}" = 0 ]; then
+    exec "${BASH}" --noprofile --norc -c "${fragment_program}" bash \
+      "${fragment}" "${work}" "${var_home_kind}" "${home_kind}"
   else
-    printf "path_changed=yes\n"
+    # Outer namespace root owns the fixture. Mapping that uid to 1000 in a
+    # nested namespace makes both the caller and the fixture UID 1000, while
+    # leaving 0 distinct so the root-owner fallback cannot satisfy the guard.
+    exec unshare --user --map-user="${caller_uid}" \
+      "${BASH}" --noprofile --norc -c "${fragment_program}" bash \
+      "${fragment}" "${work}" "${var_home_kind}" "${home_kind}"
   fi
-  if [ -s "${work}/brew-calls" ]; then
-    printf "brew_ran=yes\n"
-  else
-    printf "brew_ran=no\n"
-  fi
-  # `tee shellenv` in this directory is the only thing that creates this file.
-  if [ -e "${work}/cwd/shellenv" ]; then
-    printf "donor_ran=yes\n"
-  else
-    printf "donor_ran=no\n"
-  fi
-  if [ "${var_home_kind}" = untrusted ]; then
-    printf "bound_uid=%s\n" "$(stat -c %u /var/home/linuxbrew/.linuxbrew/bin/brew)"
-  elif [ "${home_kind}" = untrusted ]; then
-    printf "bound_uid=%s\n" "$(stat -c %u /home/linuxbrew/.linuxbrew/bin/brew)"
-  fi
-  if [ -s "${work}/stderr" ]; then
-    printf "stderr=yes\n"
-  else
-    printf "stderr=no\n"
-  fi
-  printf "new_funcs=%s\n" "$(comm -13 <(printf "%s\n" "${funcs_before}") <(declare -F | sort) | tr "\n" " ")"
-  printf "new_vars=%s\n" "$(comm -13 <(printf "%s\n" "${vars_before}") <(compgen -v | sort) | tr "\n" " ")"
 '
 
 # Source the fragment inside a namespace with the named fixtures in place, and
@@ -290,7 +324,7 @@ NS_PROGRAM='
 # trees are masked either way, so a Homebrew install belonging to whoever runs
 # the suite can never be what a case is measuring.
 run_fragment() {
-  local var_home_kind="$1" home_kind="$2"
+  local var_home_kind="$1" home_kind="$2" caller_uid="${3:-0}"
   local work
   work="$(mktemp -d -p "${WORK_DIR}")"
   mkdir -p "${work}/cwd"
@@ -307,7 +341,8 @@ run_fragment() {
     env "BREW_CALLS=${work}/brew-calls" \
     "${BASH}" -c "${NS_PROGRAM}" bash \
     "${work}/homebrew.sh" "${work}" "${var_home_kind}" "${home_kind}" "${DONOR}" \
-    "$(home_is_mountable && printf yes || printf no)" 2>&1
+    "$(home_is_mountable && printf yes || printf no)" "${caller_uid}" \
+    "${FRAGMENT_PROGRAM}" 2>&1
 }
 
 # Pull one key out of a report. An absent key prints nothing, which no
@@ -326,7 +361,11 @@ test_a_prefix_we_own_is_put_on_path() {
     return
   fi
   local out
-  out="$(run_fragment trusted none)"
+  out="$(run_fragment trusted none 1000)"
+  assert_eq "the positive fixture runs as a non-root caller" \
+    "1000" "$(report "${out}" caller_uid)"
+  assert_eq "the trusted prefix is caller-owned rather than root-owned" \
+    "1000" "$(report "${out}" brew_uid)"
   assert_eq "the fragment sources cleanly for a trusted prefix" "0" "$(report "${out}" status)"
   assert_eq "brew is asked for its shellenv" "yes" "$(report "${out}" brew_ran)"
   assert_eq "what brew printed is evaluated" \
