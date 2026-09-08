@@ -505,6 +505,14 @@ git ls-remote --tags https://github.com/bootc-dev/bootc.git "refs/tags/${version
 The `^{}` row is the one that matters: these are annotated tags, so the plain
 row is the tag object and `BOOTC_COMMIT` is the commit it peels to.
 
+`tests/test-nightly-compliance.sh` executes this job's actual `run:` body with
+fixture `Containerfile` pins and a stubbed `git ls-remote`. Its annotated-tag
+cases arrive in both row orders, and the discriminating failure makes the plain
+tag object match while the peeled commit differs. Lightweight tags, a deleted
+tag, either missing `ARG`, and the exact pair of refs sent to upstream are
+covered alongside it. The stub makes this test deterministic and network-free;
+the scheduled job remains the check against the live upstream repository.
+
 **`signatures`.** Runs `cosign verify --key cosign.pub` against the published
 `latest` of each flavor, deliberately **without registry credentials**. A pass
 therefore means the signature verifies for anyone pulling the published image,
