@@ -64,6 +64,7 @@ jobs:
             /mnt/tests/tune-coverage.sh \
             /mnt/tests/test-prune-esp.sh \
             /mnt/tests/test-homebrew-profile.sh \
+            /mnt/tests/test-homebrew-shell-integration.sh \
             /mnt/tests/test-ostree-pkg-diff.sh \
             /mnt/tests/test-ostree-pkg-diff-db.sh \
             /mnt/tests/test-pr-review-state.sh \
@@ -128,6 +129,19 @@ jobs:
             exit 1
           fi
           echo "unprivileged user + mount namespaces are available"
+
+      # tests/test-homebrew-shell-integration.sh executes the fish half of the
+      # Homebrew ownership guard as fish, because a fix applied to the POSIX
+      # fragment and not the fish one leaves the hole open for whoever uses the
+      # other shell. Without fish those cases report SKIP, and ARCH_BOOTC_NO_SKIPS
+      # below turns that into a failure -- which is the intended outcome if this
+      # step ever stops working, rather than a green run over untested shell.
+      - name: Install fish
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fish
+          fish --version
 
       # Plain bash, no root, no container runtime, no network -- so this needs
       # nothing beyond the checkout and finishes long before the build would.
