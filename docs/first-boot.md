@@ -140,6 +140,13 @@ account, root included, executing a binary one unprivileged user can rewrite.
 Upstream Homebrew does not support a shared multi-user prefix either; a second
 user who wants `brew` should install their own.
 
+Ownership is read off each path itself, never off whatever a symlink points
+at. `bin/brew` is allowed to be a link — a stock Homebrew prefix ships it as
+one — but the link, every directory above it, and the file it resolves to must
+all belong to root or to you. Reading the target's ownership instead would let
+whoever owns the prefix nominate a file they do not own and have someone else
+run it.
+
 If you need to use Homebrew in an already-open shell before logging out/in or
 opening a new terminal, run:
 
