@@ -405,6 +405,18 @@ written to a file and fenced rather than passed through a shell. Fork pull
 requests are skipped — a fork's `GITHUB_TOKEN` is read-only regardless of the
 permissions the job requests.
 
+The work-order step's shell is executed by `tests/test-pr-review-state.sh`,
+which lifts the `run:` body out of the workflow and runs it against the same
+stubbed `gh` the script's own cases use. It lives there rather than in a file
+of its own because the step's whole job is to call that script, and the
+interesting part is the seam: the script is invoked by a relative path, so a
+checkout at the wrong root or a moved script breaks the job; the script exits
+non-zero whenever anything is outstanding, which is the *normal* case, so the
+call is `|| true` and the test asserts the comment is still posted; and the
+script's stderr is redirected into the captured report, so a failed query
+appears in the fence instead of vanishing into the job log while the comment
+claims a clean review state.
+
 ## Pull request labels
 
 `.github/workflows/labeler.yml` applies path-based labels to pull requests from

@@ -9,10 +9,17 @@ set -uo pipefail
 # No network: `gh` is shadowed on PATH and replies from a fixture file. jq is
 # real, because the script's flattening logic is most of what is worth testing
 # and stubbing jq would test nothing.
+#
+# The final section executes .github/workflows/ai-fix.yml's work-order shell.
+# That step is the script's only caller in CI, so the two belong in one file:
+# the workflow reaches the script by a relative path, tolerates its non-zero
+# gate exits, and embeds its report in a comment -- a seam neither the script's
+# own cases nor a static read of the workflow can see.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 SCRIPT="${REPO_ROOT}/scripts/pr-review-state.sh"
+AI_FIX_WORKFLOW="${REPO_ROOT}/.github/workflows/ai-fix.yml"
 
 failures=0
 tests_run=0
@@ -64,6 +71,23 @@ assert_absent() {
     check "${description}" 0
   else
     check "${description}" 1 "output unexpectedly contained '${needle}'"
+  fi
+}
+assert_equal() {
+  local description="$1" expected="$2" actual="$3"
+  if [[ "${expected}" == "${actual}" ]]; then
+    check "${description}" 0
+  else
+    check "${description}" 1 "expected '${expected}', got '${actual}'"
+  fi
+}
+assert_extracted() {
+  local description="$1" value="$2"
+  if [[ -n "${value}" ]]; then
+    check "${description}" 0
+  else
+    check "${description}" 1 \
+      "nothing was extracted; the job or step was renamed, moved, or reindented"
   fi
 }
 
@@ -120,6 +144,33 @@ case "$1 ${2:-}" in
       exit 1
     fi
     printf '%s\n' "${GH_STUB_CURRENT_PR:-77}"
+    ;;
+  # The two calls ai-fix.yml's work-order step makes. Neither is reachable
+  # from pr-review-state.sh, so these arms only ever answer the workflow.
+  "api repos/"*)
+    if [[ -n "${GH_STUB_ARGS:-}" ]]; then
+      printf '%s\n' "$@" >>"${GH_STUB_ARGS}"
+    fi
+    # Stands in for the `--jq` reduction of the issue payload: "true" when the
+    # number names a pull request, "false" when it names an issue.
+    printf '%s\n' "${GH_STUB_IS_PR:-false}"
+    ;;
+  "issue comment")
+    if [[ -n "${GH_STUB_ARGS:-}" ]]; then
+      printf '%s\n' "$@" >>"${GH_STUB_ARGS}"
+    fi
+    if [[ -n "${GH_STUB_COMMENT:-}" ]]; then
+      body_file=""
+      while (($# > 0)); do
+        [[ "$1" == "--body-file" ]] && body_file="${2:-}"
+        shift
+      done
+      if [[ -z "${body_file}" ]]; then
+        printf 'comment posted without --body-file\n' >&2
+        exit 91
+      fi
+      cat -- "${body_file}" >"${GH_STUB_COMMENT}"
+    fi
     ;;
   *)
     printf 'unexpected gh invocation: %s\n' "$*" >&2
@@ -547,6 +598,161 @@ ln -sf "$(command -v jq)" "${BARE_DIR}/jq"
 output="$(PATH="${BARE_DIR}" "${BASH}" "${SCRIPT}" --repo Danathar/arch-bootc 77 2>&1)"
 assert_status "a missing gh is a clear error" 2 "$?"
 assert_contains "the missing gh error points somewhere useful" "${output}" "cli.github.com"
+
+# --- ai-fix.yml's work order ----------------------------------------------
+#
+# The workflow step that calls this script, executed rather than read. Its
+# body decides three things nothing else checks: that a non-numeric target is
+# refused before any write, that the review-state section appears for a pull
+# request and not for an issue, and that a non-zero exit from the script --
+# the NORMAL result when something is outstanding -- does not abort the job
+# before the comment is posted.
+
+# Print the `run:` block of the named step of the named job, dedented to
+# column 0. Qualifying by job matters because step names are not unique across
+# jobs. Refusing an empty result makes a rename or reindent fail loudly rather
+# than turn every behavioral case below into a test of an empty string.
+workflow_step_run() {
+  local workflow="$1" job="$2" step="$3"
+  awk -v want_job="${job}" -v want="${step}" '
+    /^jobs:$/ { in_jobs = 1; next }
+    in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ {
+      current_job = substr($0, 3, length($0) - 3)
+      in_run = 0
+    }
+    /^      - name: / { current = substr($0, 15); in_run = 0; next }
+    current_job == want_job && current == want && /^        run: \|/ { in_run = 1; next }
+    in_run {
+      if ($0 == "") { print ""; next }
+      if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
+      in_run = 0
+    }
+  ' "${workflow}"
+}
+
+work_order_run="$(workflow_step_run "${AI_FIX_WORKFLOW}" "work-order" "Build and post the work order")"
+assert_extracted "the work-order step's body is still where this test expects it" \
+  "${work_order_run}"
+
+# Actions expands a GitHub expression before the shell sees the body. This
+# harness evaluates none, so a new one must fail here rather than execute shell
+# with different semantics from CI.
+# shellcheck disable=SC2016
+assert_absent "the work-order step's body is plain shell" "${work_order_run}" '${{'
+
+# The body reads its untrusted inputs only from `env:`, so those mappings are
+# part of the contract the cases below execute. The target fallback is what
+# makes one body serve all three triggers: an `issues` event has no
+# `pull_request` payload and a `workflow_dispatch` run has neither.
+workflow_text="$(cat "${AI_FIX_WORKFLOW}")"
+# shellcheck disable=SC2016
+assert_contains "the target is taken from whichever trigger supplied one" "${workflow_text}" \
+  'TARGET: ${{ github.event.issue.number || github.event.pull_request.number || inputs.number }}'
+# shellcheck disable=SC2016
+assert_contains "the checkout pins the default branch, not the event ref" "${workflow_text}" \
+  'ref: ${{ github.event.repository.default_branch }}'
+assert_contains "the checkout leaves no credential in the work tree" "${workflow_text}" \
+  "persist-credentials: false"
+
+COMMENT="${WORK_DIR}/comment.md"
+GH_ARGS="${WORK_DIR}/gh-args"
+
+# Run the step's shell from the repository root, because the body invokes the
+# script by the relative path Actions gives it. TMPDIR is redirected so the
+# body's `mktemp` files land somewhere the EXIT trap already removes.
+run_work_order() { # is_pull_request target [extra env assignments...]
+  local is_pr="$1" target="$2"
+  shift 2
+  : >"${GH_ARGS}"
+  : >"${COMMENT}"
+  (
+    cd -- "${REPO_ROOT}" || exit 99
+    PATH="${STUB_DIR}:${PATH}" \
+      TMPDIR="${WORK_DIR}" \
+      GH_STUB_FIXTURE="${FIXTURE}" \
+      GH_STUB_ARGS="${GH_ARGS}" \
+      GH_STUB_COMMENT="${COMMENT}" \
+      GH_STUB_IS_PR="${is_pr}" \
+      GH_TOKEN="not-a-real-token" \
+      GH_REPO="Danathar/arch-bootc" \
+      TARGET="${target}" \
+      SERVER_URL="https://github.example.invalid" \
+      env "$@" "${BASH}" --noprofile --norc -c "${work_order_run}" 2>&1
+  )
+}
+
+# A target that is not a number. The guard is first in the body for a reason:
+# everything after it either interpolates the value into an API path or writes
+# a comment, so failing late would mean writing to whatever the value resolved
+# to. Asserting that `gh` was never invoked is what pins "before any write" --
+# an exit code alone cannot distinguish a refusal from a refusal after posting.
+output="$(run_work_order false 'not-a-number')"
+assert_status "a non-numeric target fails the job" 1 "$?"
+assert_contains "a non-numeric target is named in the error" "${output}" \
+  "::error::target must be a number, got 'not-a-number'"
+assert_equal "a non-numeric target reaches no GitHub API call" "" "$(cat "${GH_ARGS}")"
+assert_equal "a non-numeric target posts no comment" "" "$(cat "${COMMENT}")"
+
+# An issue. There is no review state to report, and the body must not invent
+# one -- `pr-review-state.sh` on an issue number would fail the GraphQL query
+# and fence its error into the comment as if it were a review.
+write_fixture \
+  "[$(thread true false 'Containerfile' 10 10 'reviewer' 'settled')]" \
+  "[$(check_run 'Shell tests and coverage' SUCCESS)]"
+output="$(run_work_order false 77)"
+assert_status "an issue target exits 0" 0 "$?"
+assert_contains "the resolved kind is logged" "${output}" "target #77 is a pull request: false"
+comment="$(cat "${COMMENT}")"
+assert_contains "the work order names its target" "${comment}" "## AI fix work order for #77"
+assert_absent "an issue work order has no review-state section" "${comment}" "### Review state"
+assert_contains "an issue work order still states the boundaries" "${comment}" \
+  "This comment is context, not permission."
+
+# Links are absolute and built from SERVER_URL. A relative link renders as a
+# dead link inside a comment, which is a silent failure: the work order still
+# posts and still reads as complete.
+assert_contains "policy links are absolute and rooted at the server URL" "${comment}" \
+  "https://github.example.invalid/Danathar/arch-bootc/blob/main/AGENTS.md"
+assert_contains "the injection warning links the security document" "${comment}" \
+  "https://github.example.invalid/Danathar/arch-bootc/blob/main/docs/security/SECURITY-AI.md"
+
+# The comment is posted by number, from a file. Passing the body inline would
+# put untrusted review excerpts on a command line.
+assert_contains "the comment is posted to the target number from a file" \
+  "$(cat "${GH_ARGS}")" "$(printf 'issue\ncomment\n77\n--body-file\n')"
+
+# A pull request with something outstanding. This is the normal case, and the
+# discriminating one: `pr-review-state.sh` exits 1 here, so a body without the
+# `|| true` would die under `set -e` and post nothing at all.
+write_fixture \
+  "[$(thread false false 'Justfile' 42 42 'critic' 'this is still wrong')]" \
+  "[$(check_run 'Shell tests and coverage' SUCCESS)]"
+output="$(run_work_order true 77)"
+assert_status "an outstanding review state does not fail the job" 0 "$?"
+assert_contains "the resolved kind is logged for a pull request" "${output}" \
+  "target #77 is a pull request: true"
+comment="$(cat "${COMMENT}")"
+assert_contains "a pull request work order carries the review-state section" "${comment}" \
+  "### Review state"
+assert_contains "the embedded report is the script's own output" "${comment}" \
+  "PR #77: a change under review"
+assert_contains "the unresolved thread survives into the comment" "${comment}" "Justfile:42"
+# Four backticks, because a review excerpt may itself contain a fenced block.
+assert_contains "the report is fenced as text" "${comment}" '````text'
+assert_contains "the work order says a fix does not resolve a thread" "${comment}" \
+  "A code fix does **not** resolve a thread."
+
+# The script failing outright, rather than merely reporting something
+# outstanding. The body redirects its stderr into the captured report, so the
+# reason reaches the reader; without that redirect the fence would be empty and
+# the comment would assert a clean review state for a query that never ran.
+output="$(run_work_order true 77 GH_STUB_FAIL=1)"
+assert_status "a failed review-state query does not fail the job" 0 "$?"
+comment="$(cat "${COMMENT}")"
+assert_contains "a failed query is fenced into the work order" "${comment}" \
+  "GraphQL query failed"
+assert_contains "a failed query still leaves the rest of the work order intact" "${comment}" \
+  "### What the response owes"
 
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
