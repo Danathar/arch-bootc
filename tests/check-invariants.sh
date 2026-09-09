@@ -157,13 +157,56 @@ assert_present "the root password is expired on first use" \
 # The default password must never be extended to a non-root account: Arch's
 # sshd ships PasswordAuthentication yes, so a default *user* password would be
 # remotely exploitable on every published image.
-non_root_chpasswd="$(grep -En 'chpasswd' "${CONTAINERFILE}" |
-  grep -v '^[0-9]*:[[:space:]]*#' | grep -v "root:")"
-if [[ -z "${non_root_chpasswd}" ]]; then
+#
+# `chpasswd` is how the Containerfile sets the root password today, but it is
+# not the only spelling: `useradd -p` and `usermod -p` take a crypt hash
+# directly and would set one without the word appearing anywhere. Both are
+# matched too, so the assertion covers the property rather than one command.
+#
+# The root exclusion is anchored on a non-word character (or start of line)
+# because a bare `root:` also matches an account named `svcroot`, `nonroot` or
+# anything else ending in those four letters -- exactly the account this is
+# supposed to refuse.
+default_password_set="$(grep -En 'chpasswd|(useradd|usermod)[^|;&]*[[:space:]]-p[[:space:]]' "${CONTAINERFILE}" |
+  grep -v '^[0-9]*:[[:space:]]*#' | grep -vE "(^|[^[:alnum:]_])root:")"
+if [[ -z "${default_password_set}" ]]; then
   pass "no default password is set for a non-root account"
 else
   fail "no default password is set for a non-root account" \
-    "chpasswd targets something other than root: ${non_root_chpasswd//$'\n'/ | }"
+    "a password is set for something other than root: ${default_password_set//$'\n'/ | }"
+fi
+
+# Every assertion above reads the Containerfile, and the Containerfile is not
+# the only way these files reach the image. `COPY system_files/ /` lands in
+# base-core *before* the sshd drop-in and the pam_wheel sed below it, so a file
+# committed under system_files/ can contradict each control without a single
+# suspicious line appearing in the Containerfile -- the same blind spot the
+# package-source group further down already reasons about, applied to the four
+# closures the root password rests on:
+#
+#   - an sshd drop-in sorting ahead of 10-no-root-password.conf wins, because
+#     sshd uses the first obtained value for a keyword and Arch's stock
+#     sshd_config leaves PermitRootLogin commented;
+#   - an /etc/pam.d/su with no pam_wheel line at all leaves the sed with
+#     nothing to uncomment, and sed exits 0 having changed nothing;
+#   - an /etc/shadow (or passwd/group) carries a credential directly, which the
+#     check above cannot see because it reads the Containerfile.
+#
+# None of these exists today. Introducing one is a change to the root-login
+# model whatever it contains, so it should be a decision rather than a diff
+# nobody looked at -- the same standard the pacman configuration check holds.
+shipped_login_config="$(find system_files \
+  \( -path '*/etc/ssh*' \
+  -o -path '*/etc/pam.d*' \
+  -o -path '*/etc/security*' \
+  -o -path '*/etc/sudoers*' \
+  -o -name 'shadow' -o -name 'gshadow' -o -name 'passwd' -o -name 'group' \) \
+  2>/dev/null)"
+if [[ -z "${shipped_login_config}" ]]; then
+  pass "no sshd, PAM, sudoers or account-database file is shipped through system_files/"
+else
+  fail "no sshd, PAM, sudoers or account-database file is shipped through system_files/" \
+    "found: ${shipped_login_config//$'\n'/ | }"
 fi
 
 # ---------------------------------------------------------------------------

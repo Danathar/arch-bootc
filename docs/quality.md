@@ -173,7 +173,15 @@ Two design points are worth knowing, because both were mistakes first:
   Likewise, enablement under `/etc` is matched by the state (any `.wants`
   directory under `/etc/systemd/system`, `systemctl enable`, or a symlink
   committed under `system_files/etc/systemd`) rather than by one spelling of
-  `ln -s`.
+  `ln -s`. The root-login group is held to the same rule: its four assertions
+  read the `Containerfile`, but `COPY system_files/ /` lands *before* the sshd
+  drop-in and the `pam_wheel` sed, so an sshd drop-in sorting ahead of
+  `10-no-root-password.conf`, an `/etc/pam.d/su` with no `pam_wheel` line for
+  the sed to uncomment, or a committed `/etc/shadow` would each defeat a
+  control while its assertion still passed. Any sshd, PAM, `/etc/security`,
+  sudoers or account-database file arriving through `system_files/` therefore
+  fails the group outright: none exists today, and introducing one is a change
+  to the root-login model whatever it contains.
 
 It reads the `Containerfile` as text, so a step with the right shape and the
 wrong effect passes it; only a VM boot test settles that. It cannot see that
