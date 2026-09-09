@@ -117,27 +117,55 @@ The same generation of `containers-common` also left `containers.conf`,
 on affected machines. Only `storage.conf` breaks podman outright, but the others
 are equally stale and equally unowned; `pacman -Qo` identifies them the same way.
 
-**Fix — remove the orphan.** Podman's built-in defaults are what the file was
-pinning for the rootful case anyway, so nothing is lost:
+**Check the values before removing anything.** `pacman -Qo` cannot tell a stale
+orphan from a file an administrator wrote on purpose — neither is owned by a
+package, and the `grep` above only shows that the keys are set, not what they
+are set to. The content is what distinguishes them: the stale template pins
+podman's *own built-in rootful defaults*, so removing it changes nothing, while
+a hand-written file usually points somewhere else and removing it would pull a
+custom driver or storage location out from under existing rootful containers —
+which then appear to have vanished.
+
+Safe to remove only if all three values match these exactly, i.e. the file is
+redundant with podman's defaults:
+
+```text
+driver = "overlay"
+runroot = "/run/containers/storage"
+graphroot = "/var/lib/containers/storage"
+```
+
+Any other `graphroot` or `runroot` means someone chose it deliberately. Leave
+that file alone and use the per-user override below, which fixes rootless
+podman without touching `/etc` at all.
+
+**Fix — move the orphan aside.** Prefer `mv` over `rm`, so the change is
+reversible if something on the machine did depend on it after all:
 
 ```bash
-sudo rm /etc/containers/storage.conf
+sudo mv /etc/containers/storage.conf /etc/containers/storage.conf.orphan-bak
 podman info --format '{{.Store.GraphRoot}} {{.Store.RunRoot}}'
 # /var/home/<user>/.local/share/containers/storage /run/user/<uid>/containers
 ```
 
-If you would rather not touch `/etc`, a per-user override achieves the same
-thing without removing anything:
+If you would rather not touch `/etc` — or the file turned out to be
+intentional — a per-user override fixes rootless podman without removing
+anything:
 
 ```bash
 mkdir -p ~/.config/containers
-cat > ~/.config/containers/storage.conf <<'EOF'
+cat > ~/.config/containers/storage.conf <<EOF
 [storage]
 driver = "overlay"
-runroot = "/run/user/1000/containers"
-graphroot = "/var/home/<user>/.local/share/containers/storage"
+runroot = "/run/user/$(id -u)/containers"
+graphroot = "$HOME/.local/share/containers/storage"
 EOF
 ```
+
+The heredoc delimiter is deliberately unquoted so `$(id -u)` and `$HOME` expand
+as you run it. Do not hardcode `1000`: on an account with any other UID that
+path is another user's runtime directory, which is inaccessible and reproduces
+the same permission-denied failure this section is about.
 
 Either way, verify with a real container rather than `podman info` alone:
 
