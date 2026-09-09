@@ -326,17 +326,25 @@ Stated plainly so nobody mistakes silence for coverage:
   that with the variable set and with `--owner` given alongside it, so the guard
   cannot be satisfied by a script that stopped reading the environment and the
   flag's precedence over it stays pinned.
-- **The job that drives the prune script is covered; the other workflow `run:`
-  bodies are not.** Shell inside a workflow is shipped code that nothing else
-  executes: the shell suite runs scripts, and CI runs the workflow only against
-  real infrastructure, where a wrong argument shows up as a job that failed for
-  a plausible-looking reason. `tests/test-prune-package-versions.sh` now lifts
-  `cleanup_packages`'s two bodies out of `build.yml` and runs them against the
-  stubbed `gh`, so the package name, the owner scope and the retention floor the
-  job passes are pinned. Every other `run:` body is still executed by nothing —
-  most notably `nightly-compliance.yml`'s `bootc-pin` job, which peels an
-  annotated tag with `awk` and decides whether an upstream tag was re-pointed,
-  and the `signatures` job's verification step.
+- **Three workflow `run:` bodies are executed by tests; the rest are not.**
+  Shell inside a workflow is shipped code that nothing else executes: the shell
+  suite runs scripts, and CI runs the workflow only against real
+  infrastructure, where a wrong argument shows up as a job that failed for a
+  plausible-looking reason. Each covered body is hosted by the test file for
+  the script that body drives, so the two stay next to each other:
+  `tests/test-prune-package-versions.sh` lifts `cleanup_packages`'s two bodies
+  out of `build.yml` and pins the package name, owner scope and retention floor
+  the job passes; `tests/test-nightly-compliance.sh` runs `bootc-pin`'s tag
+  peel; and `tests/test-pr-review-state.sh` runs `ai-fix.yml`'s work-order
+  body, which is that script's only caller in CI. The work-order case covers
+  what neither side can see alone — that the script is reached by the relative
+  path Actions gives it, that its **non-zero exit is the normal result** and
+  does not abort the job before the comment is posted, that its stderr is
+  captured into the fenced report rather than lost to the job log, and that
+  the review-state section appears for a pull request and not for an issue.
+  The remaining bodies are executed by nothing: `labeler.yml`'s label-catalog
+  drift check, the `signatures` job's verification step, and `build.yml`'s
+  `build_push` steps.
 - **`Containerfile` has no unit tests.** Its correctness rests on the build's
   own lint steps, the rationale comments, and review.
 - **Signature verification is tested, but not end to end.** The nightly
