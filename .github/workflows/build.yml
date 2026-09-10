@@ -264,7 +264,8 @@ jobs:
         # $XDG_RUNTIME_DIR/containers/auth.json, ~/.config/containers/auth.json,
         # then ~/.docker/config.json (containers-auth.json(5)) -- so writing this
         # file makes credentials available to the --cache-from/--cache-to flags
-        # used by the Build Image step below, and later to cosign when signing.
+        # used by the Build Image step below, to skopeo when pushing, and later
+        # to cosign when signing.
         # `docker login` itself times out talking to ghcr.io on this runner, so
         # the file is written directly instead of shelling out to it.
         #
@@ -434,14 +435,33 @@ jobs:
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         id: push
         env:
-          REGISTRY_USER: ${{ github.actor }}
-          REGISTRY_PASSWORD: ${{ github.token }}
           METADATA_TAGS: ${{ steps.metadata.outputs.tags }}
         run: |
           set -euo pipefail
           command -v skopeo
           IMAGE_FULL="${IMAGE_REGISTRY}/${IMAGE_NAME}"
           SRC="oci:${CHUNKAH_OCI_DIR}:${IMAGE_NAME}:chunked"
+
+          # The credential reaches skopeo through the 0600 file the login step
+          # above wrote, not through --dest-creds. /proc/<pid>/cmdline is mode
+          # 0444, so a token on this command line is readable by every uid on
+          # the runner for as long as the push runs -- once per tag, per
+          # flavor, on every publish. The file narrows that to the uid that
+          # wrote it, and it is the same credential path --cache-to and
+          # `cosign sign` in this job already rely on.
+          #
+          # Named explicitly rather than left to skopeo's default resolution
+          # order, which consults ${XDG_RUNTIME_DIR}/containers/auth.json
+          # first: first-found wins, so an unrelated auth file without a
+          # ghcr.io entry would silently turn this push anonymous.
+          AUTH_FILE="${HOME}/.docker/config.json"
+          if [[ ! -r "${AUTH_FILE}" ]]; then
+            echo "error: ${AUTH_FILE} is missing or unreadable." >&2
+            echo "The 'Log in to GHCR' step writes it; if that step was renamed," >&2
+            echo "moved after this one, or changed its path, fix it there rather" >&2
+            echo "than putting the credential back on skopeo's command line." >&2
+            exit 1
+          fi
 
           # GHCR's secondary rate limit ("wait a few minutes") outlasts
           # skopeo's own --retry-times backoff, so retry failed pushes with
@@ -453,7 +473,7 @@ jobs:
 
             for ((i = 0; i <= ${#delays[@]}; i++)); do
               if skopeo copy --retry-times 3 \
-                --dest-creds "${REGISTRY_USER}:${REGISTRY_PASSWORD}" \
+                --dest-authfile "${AUTH_FILE}" \
                 --digestfile "${RUNNER_TEMP}/push-digest" \
                 "${SRC}" \
                 "docker://${IMAGE_FULL}:${tag}"; then

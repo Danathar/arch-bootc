@@ -559,6 +559,19 @@ PUSHED_DIGEST="sha256:1111111111111111111111111111111111111111111111111111111111
 PUSH_ACTOR="octocat"
 PUSH_SECRET="ghs-fixture-not-a-real-token"
 
+# The body reads the credential out of ${HOME}/.docker/config.json rather than
+# taking it as an argument, so the fixture has to provide one: a private HOME
+# holding the same file the login step writes, with the secret inside it. It is
+# reachable to the body exactly the way the real one is, and to the assertions
+# below as a value that must not turn up in skopeo's argv.
+PUSH_HOME="${PUSH_DIR}/home"
+PUSH_AUTH_FILE="${PUSH_HOME}/.docker/config.json"
+mkdir -p "${PUSH_HOME}/.docker"
+printf '{"auths":{"ghcr.io":{"auth":"%s"}}}\n' \
+  "$(printf '%s:%s' "${PUSH_ACTOR}" "${PUSH_SECRET}" | base64 -w0)" \
+  >"${PUSH_AUTH_FILE}"
+chmod 600 "${PUSH_AUTH_FILE}"
+
 # skopeo succeeds by writing the digest file the body reads, and fails the
 # first SKOPEO_FAIL_FIRST attempts of the process so the backoff loop can be
 # driven from the outside. The attempt counter is per-process, not per-tag.
@@ -619,8 +632,7 @@ run_push() {
       CHUNKAH_OCI_DIR="${PUSH_OCI_DIR}" \
       RUNNER_TEMP="${PUSH_RUNNER_TEMP}" \
       GITHUB_OUTPUT="${PUSH_OUTPUT}" \
-      REGISTRY_USER="${PUSH_ACTOR}" \
-      REGISTRY_PASSWORD="${PUSH_SECRET}" \
+      HOME="${PUSH_HOME}" \
       METADATA_TAGS="${tags}" \
       "${BASH}" --noprofile --norc -c "${push_run}"
   )
@@ -634,21 +646,62 @@ output="$(run_push "latest 20260910" 2>&1)"
 status=$?
 assert_status "a clean push of two tags exits 0" 0 "${status}"
 printf -v expected_push_calls '%s\n' \
-  "copy --retry-times 3 --dest-creds ${PUSH_ACTOR}:${PUSH_SECRET} --digestfile ${PUSH_RUNNER_TEMP}/push-digest oci:${PUSH_OCI_DIR}:${PUSH_IMAGE_NAME}:chunked docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:latest" \
-  "copy --retry-times 3 --dest-creds ${PUSH_ACTOR}:${PUSH_SECRET} --digestfile ${PUSH_RUNNER_TEMP}/push-digest oci:${PUSH_OCI_DIR}:${PUSH_IMAGE_NAME}:chunked docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:20260910"
+  "copy --retry-times 3 --dest-authfile ${PUSH_AUTH_FILE} --digestfile ${PUSH_RUNNER_TEMP}/push-digest oci:${PUSH_OCI_DIR}:${PUSH_IMAGE_NAME}:chunked docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:latest" \
+  "copy --retry-times 3 --dest-authfile ${PUSH_AUTH_FILE} --digestfile ${PUSH_RUNNER_TEMP}/push-digest oci:${PUSH_OCI_DIR}:${PUSH_IMAGE_NAME}:chunked docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:20260910"
 assert_equal "every metadata tag is pushed from the rechunked OCI layout" \
   "${expected_push_calls%$'\n'}" "$(cat "${SKOPEO_CALL_LOG}")"
 assert_equal "a clean push never sleeps" "" "$(cat "${SLEEP_LOG}")"
+
+# The whole-argv assertion above already pins the flag, but it would still pass
+# if a future edit added the credential back alongside the auth file. This is
+# the property stated on its own: /proc/<pid>/cmdline is mode 0444, so a token
+# on this command line is readable by every uid on the runner for as long as
+# the push runs. It reached skopeo through a 0600 file instead, and the whole
+# recorded command line is searched for it.
+assert_absent "the registry password never reaches skopeo's command line" \
+  "$(cat "${SKOPEO_CALL_LOG}")" "${PUSH_SECRET}"
+assert_absent "the auth file is named rather than its contents inlined" \
+  "$(cat "${SKOPEO_CALL_LOG}")" "--dest-creds"
 
 # The output half of the seam, executed. The key has to be `digest`, and the
 # value has to be what skopeo reported rather than a tag or an empty line.
 assert_equal "the pushed digest is reported on the step output named in the expression" \
   "digest=${PUSHED_DIGEST}" "$(cat "${PUSH_OUTPUT}")"
 
-# The token is on skopeo's command line by construction, which is why it must
-# not also be on the job log: a log is readable by anyone who can read the run,
-# and these runs are public.
+# Argv is no longer a route, so the log is the remaining one: it is readable by
+# anyone who can read the run, and these runs are public.
 assert_absent "the registry password is never printed" "${output}" "${PUSH_SECRET}"
+
+# The auth file is now load-bearing, and the login step that writes it is 170
+# lines away under an `if:` of its own. If it is ever renamed, moved after this
+# step, or changed to a different path, this step has to say so by name --
+# otherwise skopeo would fall through to an anonymous push and the failure
+# would first appear as a registry 401 forty minutes into a build, which reads
+# like a GHCR problem rather than a workflow edit.
+missing_home="${PUSH_DIR}/home-without-auth"
+mkdir -p "${missing_home}"
+: >"${SKOPEO_CALL_LOG}"
+output="$(
+  PATH="${PUSH_STUBS}:${PATH}" \
+    SKOPEO_CALL_LOG="${SKOPEO_CALL_LOG}" \
+    SKOPEO_ATTEMPT_FILE="${SKOPEO_ATTEMPT_FILE}" \
+    SKOPEO_DIGEST="${PUSHED_DIGEST}" \
+    SLEEP_LOG="${SLEEP_LOG}" \
+    IMAGE_REGISTRY="${PUSH_REGISTRY}" \
+    IMAGE_NAME="${PUSH_IMAGE_NAME}" \
+    CHUNKAH_OCI_DIR="${PUSH_OCI_DIR}" \
+    RUNNER_TEMP="${PUSH_RUNNER_TEMP}" \
+    GITHUB_OUTPUT="${PUSH_OUTPUT}" \
+    HOME="${missing_home}" \
+    METADATA_TAGS="latest" \
+    "${BASH}" --noprofile --norc -c "${push_run}" 2>&1
+)"
+status=$?
+assert_status "a missing auth file fails the step" 1 "${status}"
+assert_contains "the missing auth file is named" "${output}" \
+  "${missing_home}/.docker/config.json"
+assert_equal "no anonymous push is attempted without the auth file" "" \
+  "$(cat "${SKOPEO_CALL_LOG}")"
 
 # GHCR's secondary rate limit is the reason the loop exists. The delays must be
 # taken in ascending order: an index off by one would sleep 240 seconds first,
