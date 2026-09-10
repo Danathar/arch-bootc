@@ -12,6 +12,14 @@ set -uo pipefail
 # records its argv. The Containerfile is also a fixture in a temporary working
 # directory, so these cases neither inspect the live bootc tag nor modify the
 # repository's real pin.
+#
+# The file also covers the `signatures` job, and then the two steps of
+# build.yml that produce what `signatures` verifies -- `Push To GHCR` and
+# `Sign container image`. Those two live here rather than in a file of their
+# own because a signature is one property split across two workflows: the pins
+# and formats the sign step chooses are only correct relative to what this
+# job's verify step can still read, and the assertions tying the two together
+# were already here before either body was executed.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -469,6 +477,310 @@ output="$(
 status=$?
 assert_status "an unset IMAGE fails instead of verifying an empty reference" 1 "${status}"
 assert_absent "an unset IMAGE never reaches cosign" "${output}" "verifying"
+
+# --- the producing side: build.yml pushes and signs what this job verifies --
+#
+# The `signatures` cases above are only as meaningful as the signature they
+# find. Two steps in build.yml's build_push job put it there -- `Push To GHCR`
+# publishes the tags, and `Sign container image` signs the digest that push
+# reported -- and neither body was executed by any test: the assertions above
+# read build.yml only for its cosign pin and its flavor matrix.
+#
+# The two are tested together because the seam between them is the failure this
+# section exists to catch. Push writes `digest=` to GITHUB_OUTPUT; sign reads it
+# back as `${{ steps.push.outputs.digest }}`. A rename on either side of that
+# name resolves to the empty string in the expression, with no error anywhere,
+# and the sign step is then handed an image reference with nothing after its
+# `@`. So the name is asserted on both sides statically, and the bodies are
+# executed against stubs that behave the way the real tools behave when the
+# seam is broken.
+#
+# No network and no registry: `skopeo`, `sleep` and `cosign` are shadowed on
+# PATH, record their arguments, and answer from fixtures.
+
+PUSH_STEP="Push To GHCR"
+SIGN_STEP="Sign container image"
+
+push_run="$(workflow_step_run "${BUILD_WORKFLOW}" build_push "${PUSH_STEP}")"
+assert_extracted "the push step's body is still where this test expects it" \
+  "${push_run}"
+# shellcheck disable=SC2016
+assert_absent "the push step's body is plain shell" "${push_run}" '${{'
+
+sign_run="$(workflow_step_run "${BUILD_WORKFLOW}" build_push "${SIGN_STEP}")"
+assert_extracted "the sign step's body is still where this test expects it" \
+  "${sign_run}"
+# shellcheck disable=SC2016
+assert_absent "the sign step's body is plain shell" "${sign_run}" '${{'
+
+# Print one step-level key (`id:`, `if:`) of the named step, unexpanded. The
+# step's own `id:` is half of the output seam and lives here rather than in the
+# body or the `env:` block.
+workflow_step_field() {
+  local workflow="$1" job="$2" step="$3" key="$4"
+  awk -v want_job="${job}" -v want="${step}" -v key="${key}" '
+    /^jobs:$/ { in_jobs = 1; next }
+    in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ {
+      current_job = substr($0, 3, length($0) - 3)
+    }
+    /^      - name: / { current = substr($0, 15); next }
+    current_job == want_job && current == want && $0 ~ ("^        " key ": ") {
+      print substr($0, length(key) + 11)
+      exit
+    }
+  ' "${workflow}"
+}
+
+# The static half of the seam: the id the expression names, and the expression
+# itself. Either one edited alone still parses, still runs, and signs nothing.
+assert_equal "the push step still declares the id the sign step's expression reads" \
+  "push" "$(workflow_step_field "${BUILD_WORKFLOW}" build_push "${PUSH_STEP}" id)"
+# shellcheck disable=SC2016
+assert_equal "the sign step is handed the digest the push step reported" \
+  '${{ steps.push.outputs.digest }}' \
+  "$(workflow_step_env "${BUILD_WORKFLOW}" build_push "${SIGN_STEP}" PUSH_DIGEST)"
+
+PUSH_DIR="${WORK_DIR}/push"
+PUSH_STUBS="${PUSH_DIR}/bin"
+PUSH_RUNNER_TEMP="${PUSH_DIR}/runner-temp"
+SKOPEO_CALL_LOG="${PUSH_DIR}/skopeo-calls"
+SKOPEO_ATTEMPT_FILE="${PUSH_DIR}/skopeo-attempts"
+SLEEP_LOG="${PUSH_DIR}/sleeps"
+PUSH_OUTPUT="${PUSH_DIR}/github-output"
+mkdir -p "${PUSH_STUBS}" "${PUSH_RUNNER_TEMP}"
+
+PUSH_REGISTRY="ghcr.io/danathar"
+PUSH_IMAGE_NAME="arch-bootc-base"
+PUSH_OCI_DIR="${PUSH_DIR}/chunkah-oci"
+PUSHED_DIGEST="sha256:1111111111111111111111111111111111111111111111111111111111111111"
+# Not a real credential: the value only has to be distinctive enough that the
+# leak assertions below can look for it. The variable is deliberately not named
+# with any prefix the body or the stubs grep for.
+PUSH_ACTOR="octocat"
+PUSH_SECRET="ghs-fixture-not-a-real-token"
+
+# skopeo succeeds by writing the digest file the body reads, and fails the
+# first SKOPEO_FAIL_FIRST attempts of the process so the backoff loop can be
+# driven from the outside. The attempt counter is per-process, not per-tag.
+cat >"${PUSH_STUBS}/skopeo" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >>"${SKOPEO_CALL_LOG}"
+
+attempt=$(($(cat "${SKOPEO_ATTEMPT_FILE}") + 1))
+printf '%s' "${attempt}" >"${SKOPEO_ATTEMPT_FILE}"
+
+if ((attempt <= ${SKOPEO_FAIL_FIRST:-0})); then
+  printf 'simulated GHCR secondary rate limit\n' >&2
+  exit 1
+fi
+
+digestfile=""
+for ((i = 1; i <= $#; i++)); do
+  if [[ "${!i}" == "--digestfile" ]]; then
+    j=$((i + 1))
+    digestfile="${!j:-}"
+  fi
+done
+if [[ -z "${digestfile}" ]]; then
+  printf 'skopeo copy was not asked for a digest file\n' >&2
+  exit 92
+fi
+printf '%s' "${SKOPEO_DIGEST}" >"${digestfile}"
+STUB
+chmod +x "${PUSH_STUBS}/skopeo"
+
+# The delays are 60, 120 and 240 seconds. A test that let them elapse would
+# take seven minutes to reach one assertion, so `sleep` records instead.
+cat >"${PUSH_STUBS}/sleep" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "${1:-}" >>"${SLEEP_LOG}"
+STUB
+chmod +x "${PUSH_STUBS}/sleep"
+
+run_push() {
+  local tags="$1" fail_first="${2:-0}"
+  : >"${SKOPEO_CALL_LOG}"
+  : >"${SLEEP_LOG}"
+  : >"${PUSH_OUTPUT}"
+  printf '0' >"${SKOPEO_ATTEMPT_FILE}"
+  rm -f -- "${PUSH_RUNNER_TEMP}/push-digest"
+  (
+    PATH="${PUSH_STUBS}:${PATH}" \
+      SKOPEO_CALL_LOG="${SKOPEO_CALL_LOG}" \
+      SKOPEO_ATTEMPT_FILE="${SKOPEO_ATTEMPT_FILE}" \
+      SKOPEO_FAIL_FIRST="${fail_first}" \
+      SKOPEO_DIGEST="${PUSHED_DIGEST}" \
+      SLEEP_LOG="${SLEEP_LOG}" \
+      IMAGE_REGISTRY="${PUSH_REGISTRY}" \
+      IMAGE_NAME="${PUSH_IMAGE_NAME}" \
+      CHUNKAH_OCI_DIR="${PUSH_OCI_DIR}" \
+      RUNNER_TEMP="${PUSH_RUNNER_TEMP}" \
+      GITHUB_OUTPUT="${PUSH_OUTPUT}" \
+      REGISTRY_USER="${PUSH_ACTOR}" \
+      REGISTRY_PASSWORD="${PUSH_SECRET}" \
+      METADATA_TAGS="${tags}" \
+      "${BASH}" --noprofile --norc -c "${push_run}"
+  )
+}
+
+# The metadata action emits its tags newline- or space-separated in one string,
+# and the body expands it unquoted on purpose. Two tags therefore have to
+# become two pushes: a quoted expansion would ask the registry for a single tag
+# with a space in it, which GHCR rejects only at the end of a 40-minute build.
+output="$(run_push "latest 20260910" 2>&1)"
+status=$?
+assert_status "a clean push of two tags exits 0" 0 "${status}"
+printf -v expected_push_calls '%s\n' \
+  "copy --retry-times 3 --dest-creds ${PUSH_ACTOR}:${PUSH_SECRET} --digestfile ${PUSH_RUNNER_TEMP}/push-digest oci:${PUSH_OCI_DIR}:${PUSH_IMAGE_NAME}:chunked docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:latest" \
+  "copy --retry-times 3 --dest-creds ${PUSH_ACTOR}:${PUSH_SECRET} --digestfile ${PUSH_RUNNER_TEMP}/push-digest oci:${PUSH_OCI_DIR}:${PUSH_IMAGE_NAME}:chunked docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:20260910"
+assert_equal "every metadata tag is pushed from the rechunked OCI layout" \
+  "${expected_push_calls%$'\n'}" "$(cat "${SKOPEO_CALL_LOG}")"
+assert_equal "a clean push never sleeps" "" "$(cat "${SLEEP_LOG}")"
+
+# The output half of the seam, executed. The key has to be `digest`, and the
+# value has to be what skopeo reported rather than a tag or an empty line.
+assert_equal "the pushed digest is reported on the step output named in the expression" \
+  "digest=${PUSHED_DIGEST}" "$(cat "${PUSH_OUTPUT}")"
+
+# The token is on skopeo's command line by construction, which is why it must
+# not also be on the job log: a log is readable by anyone who can read the run,
+# and these runs are public.
+assert_absent "the registry password is never printed" "${output}" "${PUSH_SECRET}"
+
+# GHCR's secondary rate limit is the reason the loop exists. The delays must be
+# taken in ascending order: an index off by one would sleep 240 seconds first,
+# or skip the short first wait that recovers most of these failures.
+output="$(run_push "latest" 2 2>&1)"
+status=$?
+assert_status "a push that succeeds on the third attempt exits 0" 0 "${status}"
+assert_equal "a retried push is attempted until it succeeds" "3" \
+  "$(wc -l <"${SKOPEO_CALL_LOG}" | tr -d ' ')"
+printf -v expected_sleeps '%s\n' 60 120
+assert_equal "the backoff waits 60 then 120 seconds" \
+  "${expected_sleeps%$'\n'}" "$(cat "${SLEEP_LOG}")"
+assert_equal "a push that eventually succeeded still reports its digest" \
+  "digest=${PUSHED_DIGEST}" "$(cat "${PUSH_OUTPUT}")"
+
+# The loop has to give up. It also has to give up *before* writing an output:
+# reporting a digest for an image that was never published would hand the sign
+# step below a reference to nothing, and the failure would first be visible to
+# whoever pulled the image.
+output="$(run_push "latest" 99 2>&1)"
+status=$?
+assert_status "a push that never succeeds fails the step" 1 "${status}"
+assert_equal "the push is attempted exactly four times" "4" \
+  "$(wc -l <"${SKOPEO_CALL_LOG}" | tr -d ' ')"
+printf -v expected_sleeps '%s\n' 60 120 240
+assert_equal "every configured delay is used before giving up" \
+  "${expected_sleeps%$'\n'}" "$(cat "${SLEEP_LOG}")"
+assert_absent "a failed push reports no digest" "$(cat "${PUSH_OUTPUT}")" "digest="
+assert_absent "the registry password is never printed on failure" \
+  "${output}" "${PUSH_SECRET}"
+
+SIGN_DIR="${WORK_DIR}/sign"
+SIGN_STUBS="${SIGN_DIR}/bin"
+SIGN_ARGS="${SIGN_DIR}/cosign-args"
+SIGN_KEY_SEEN="${SIGN_DIR}/cosign-key"
+mkdir -p "${SIGN_STUBS}"
+
+# A second cosign stub rather than the verify one above: this step signs with
+# `--key env://`, so a stub that insists on a readable key *file* would reject
+# the correct invocation. What it does insist on is a resolvable reference,
+# because that is what real cosign does with `image@` and nothing after it, and
+# an empty digest is the exact outcome of a broken output seam.
+cat >"${SIGN_STUBS}/cosign" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$@" >"${SIGN_ARGS_FILE}"
+printf '%s' "${COSIGN_PRIVATE_KEY:-}" >"${SIGN_KEY_FILE}"
+
+ref="${!#}"
+if [[ "${ref}" != *"@sha256:"?* ]]; then
+  printf 'invalid reference: %s\n' "${ref}" >&2
+  exit 1
+fi
+exit "${SIGN_EXIT_CODE:-0}"
+STUB
+chmod +x "${SIGN_STUBS}/cosign"
+
+# Multi-line, because the real value is a PEM block and the assertion below is
+# what would catch it arriving flattened or truncated. No trailing newline: the
+# comparison reads it back through a command substitution, which strips one.
+SIGNING_KEY=$'-----BEGIN ENCRYPTED SIGSTORE PRIVATE KEY-----\nfixture'
+
+run_sign() {
+  local digest="$1" exit_code="${2:-0}"
+  : >"${SIGN_ARGS}"
+  : >"${SIGN_KEY_SEEN}"
+  (
+    PATH="${SIGN_STUBS}:${PATH}" \
+      SIGN_ARGS_FILE="${SIGN_ARGS}" \
+      SIGN_KEY_FILE="${SIGN_KEY_SEEN}" \
+      SIGN_EXIT_CODE="${exit_code}" \
+      IMAGE_REGISTRY="${PUSH_REGISTRY}" \
+      IMAGE_NAME="${PUSH_IMAGE_NAME}" \
+      COSIGN_PRIVATE_KEY="${SIGNING_KEY}" \
+      PUSH_DIGEST="${digest}" \
+      "${BASH}" --noprofile --norc -c "${sign_run}"
+  )
+}
+
+# Asserted as whole argv rather than by substring. Both compatibility flags are
+# load-bearing and neither has any local effect: dropping one produces a
+# signature stored as an OCI 1.1 referrer, which the `signatures` job above --
+# and every pre-v3 client verifying this image -- cannot see. The run stays
+# green on both sides until someone with an older cosign tries to verify.
+output="$(run_sign "${PUSHED_DIGEST}" 2>&1)"
+status=$?
+assert_status "signing a pushed digest exits 0" 0 "${status}"
+printf -v expected_sign_args '%s\n' \
+  "sign" "-y" "--key" "env://COSIGN_PRIVATE_KEY" \
+  "--new-bundle-format=false" "--use-signing-config=false" \
+  "${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}@${PUSHED_DIGEST}"
+assert_equal "cosign signs the pushed digest in the v2 bundle format older clients can verify" \
+  "${expected_sign_args%$'\n'}" "$(cat "${SIGN_ARGS}")"
+
+# The key travels in the environment and must arrive intact -- `--key env://`
+# names the variable, so a rename or a truncating rewrite is a signing failure
+# rather than a wrong signature -- and must not travel through the log.
+assert_equal "the signing key reaches cosign through the environment" \
+  "${SIGNING_KEY}" "$(cat "${SIGN_KEY_SEEN}")"
+assert_absent "the signing key is never printed" "${output}" "fixture"
+
+# The seam, executed from the sign side. Actions expands a renamed or missing
+# step output to the empty string, so this is what a broken seam looks like
+# from inside the step: it must fail, and it must not quietly fall back to
+# signing a mutable tag, which would leave `:latest` signed at whatever it
+# happens to point at later.
+output="$(run_sign "" 2>&1)"
+status=$?
+assert_status "an empty digest fails instead of signing" 1 "${status}"
+assert_absent "an empty digest never becomes a tag reference" \
+  "$(cat "${SIGN_ARGS}")" "${PUSH_IMAGE_NAME}:"
+
+output="$(
+  PATH="${SIGN_STUBS}:${PATH}" \
+    SIGN_ARGS_FILE="${SIGN_ARGS}" \
+    SIGN_KEY_FILE="${SIGN_KEY_SEEN}" \
+    IMAGE_REGISTRY="${PUSH_REGISTRY}" \
+    IMAGE_NAME="${PUSH_IMAGE_NAME}" \
+    COSIGN_PRIVATE_KEY="${SIGNING_KEY}" \
+    env -u PUSH_DIGEST "${BASH}" --noprofile --norc -c "${sign_run}" 2>&1
+)"
+status=$?
+assert_status "an unset digest fails instead of signing" 1 "${status}"
+assert_absent "an unset digest never reaches cosign" "${output}" "invalid reference"
+
+# `set -euo pipefail` is what makes a refused signature a red run. Without it
+# the job would end green having signed nothing, and the nightly `signatures`
+# job would be the first thing to notice -- a day later, if at all.
+output="$(run_sign "${PUSHED_DIGEST}" 1 2>&1)"
+status=$?
+assert_status "a cosign failure fails the step" 1 "${status}"
 
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
