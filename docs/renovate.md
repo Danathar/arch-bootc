@@ -228,22 +228,72 @@ tag re-point check passes and the build gets as far as `cargo`.
 [bootc-dev/bootc#2431](https://github.com/bootc-dev/bootc/issues/2431) tracks it — open and
 labelled `triaged`, with the maintainer replying *"Yes sorry, we can make selinux a build-time
 option."* That turns this from an indefinite wait into one with a known endpoint, which is what
-makes leaving the PR red the right call rather than merely the easy one. There is no later
-release to move to either: v1.16.11 is still the newest.
+makes leaving the PR red the right call rather than merely the easy one.
 
-Two records track it here, deliberately: PR #143 is the *mechanism* — it self-clears, as
-described above — and issue #168 is the CI-side record, labelled `hold`. Both stay open. Closing
-#168 would assert the blocker is dealt with while it is still live, and the CI agent would
-re-file it on the next failed run anyway. It should be closed by the change that unblocks it.
+**Rechecked 2026-09-10 against v1.16.12: still blocked, and the gate is not in yet.**
+`crates/lib/Cargo.toml` still reads `selinux = { workspace = true }` with no `optional = true`,
+`[features]` is still `default = ["install-to-disk"]`, and the tag contains no
+`cfg(feature = "selinux")` anywhere. `main` is identical, so it is not merged-but-unreleased
+either, and #2431 is still open with no linked PR. Renovate moved PR #143 on to v1.16.12 by
+itself, which is the self-clearing mechanism above working exactly as described — a newer
+version appeared, the same branch was refreshed, the build failed again, nothing merged.
 
-To check whether upstream has resolved it:
+Two things have moved since the report, and both make the eventual fix *larger* than the patch
+proposed on the issue. Neither changes the decision to wait; they change what "fixed" will
+look like when it arrives.
 
-```bash
-curl -sfL https://raw.githubusercontent.com/bootc-dev/bootc/main/Cargo.toml | grep -n '^selinux'
+First, v1.16.12 deepened the coupling rather than loosening it. Commit `31e21e5e` ("lsm: Use
+libselinux for process availability", closing bootc#2444) turned `selinux_enabled()` from a
+pure filesystem probe into a libselinux call:
+
+```diff
+-    Path::new("/proc/1/root/sys/fs/selinux/enforce").try_exists()
++    selinux::kernel_support() != selinux::KernelSupport::Unsupported
 ```
 
-No output, or a line that moves the dependency behind a feature, means the blocker is gone and
-the next Renovate PR should go green by itself.
+That was a legitimate fix — under osbuild, `/sys/fs/selinux` is mounted read-only and the old
+probe misread it as absent — but it is one more call site to gate, so the diff on the issue is
+now incomplete.
+
+Second, the maintainer has since asked for the feature to default **on**
+([#2431 comment](https://github.com/bootc-dev/bootc/issues/2431#issuecomment-5542409552)),
+because a pending PR (bootc#2290) would need work for the distros that *do* use SELinux.
+Disabling it therefore means `--no-default-features` — and bootc's `Makefile` cannot express
+that today. Its line 33 claims `CARGO_FEATURES` "override[s] all cargo features, including the
+defaults", but `make bin` only ever passes `--features "$(CARGO_FEATURES)"`; nothing anywhere
+on the build path passes `--no-default-features`. (`make validate` does run
+`cargo check --no-default-features` against `crates/lib`, so the shape is at least tested
+upstream — just not on the path this repo builds through.) Note also that `[features]` reads
+`default = ["install-to-disk"]`, so a bare `--no-default-features` would drop
+`bootc install to-disk` as well unless `--features install-to-disk` is added back.
+
+**So this one probably will not self-clear.** If the gate lands defaulted-on, the Renovate PR
+stays red until something changes *here* — either upstream also wires `--no-default-features`
+into `make bin`, or the `Containerfile` stops calling `make -C /tmp/bootc bin` and drives cargo
+directly. That puts it in the "fix made here" category flagged above, which per
+`rebaseWhen: "conflicted"` also means the open PR will need a manual rebase onto `main` before
+it can go green.
+
+Two records track it here, deliberately: PR #143 is the *mechanism* — it tracks the version and
+rebuilds, as described above, subject to the caveat on self-clearing — and issue #168 is the
+CI-side record, labelled `hold`. Both stay open. Closing #168 would assert the blocker is dealt
+with while it is still live, and the CI agent would re-file it on the next failed run anyway.
+It should be closed by the change that unblocks it.
+
+To check whether upstream has resolved it, read `crates/lib/Cargo.toml`, **not** the workspace
+root. The root's `selinux = "=0.5.0"` is only the version declaration and survives the fix
+untouched — grepping it can report "still blocked" forever. The gate lands in the consuming
+crate:
+
+```bash
+curl -sfL https://raw.githubusercontent.com/bootc-dev/bootc/main/crates/lib/Cargo.toml \
+  | grep -n 'selinux\|^default'
+```
+
+`selinux = { workspace = true }` on its own means still blocked. An added `optional = true`,
+plus a `selinux` entry under `[features]`, means the gate exists — then check whether it is in
+the `default` list, because that decides whether this repo has to pass
+`--no-default-features` (see above) or gets the fix for free.
 
 Reported upstream as [bootc-dev/bootc#2431](https://github.com/bootc-dev/bootc/issues/2431),
 which proposes gating the dependency behind a cargo feature. Watching that issue is the other
