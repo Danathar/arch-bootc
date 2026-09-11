@@ -783,6 +783,389 @@ for missing in REGISTRY_PASSWORD IMAGE_REGISTRY; do
   fi
 done
 
+# --- the step that produces the layout the push step reads -----------------
+#
+# The push cases below take `CHUNKAH_OCI_DIR` as a fixture. Nothing produces
+# it: the directory is invented here, handed to the body, and every assertion
+# downstream is true of a path this test made up. The step that really creates
+# it -- `Rechunk image with chunkah` -- runs immediately before the push in the
+# same job, writes that variable into GITHUB_ENV, and was executed by no test.
+#
+# That is the same output-seam failure the push/sign pair above exists to
+# catch, one step earlier and with no error anywhere along it. `GITHUB_ENV` is
+# a name written on one side and read on the other; rename it, move the write
+# under a condition the push does not share, or fail out of the step before the
+# write, and the push step is handed an unset variable. What follows is a
+# 40-minute build that ends with skopeo reading `oci::name:chunked`, or -- if
+# a stale layout from a previous run survived in RUNNER_TEMP -- a publish of
+# yesterday's image under today's tags.
+#
+# So the body is executed here, and the OCI directory the push cases consume is
+# the one this step reports rather than a hand-written path.
+#
+# No container runtime and no network: `buildah`, `podman`, `skopeo` and `df`
+# are shadowed on PATH, record their argv, and answer from fixtures.
+
+RECHUNK_STEP="Rechunk image with chunkah"
+
+rechunk_run_raw="$(workflow_step_run "${BUILD_WORKFLOW}" build_push "${RECHUNK_STEP}")"
+assert_extracted "the rechunk step's body is still where this test expects it" \
+  "${rechunk_run_raw}"
+
+# Unlike every other body in this file, this one is not plain shell: the work
+# directory is flavor-scoped and the matrix value is pasted in as text. The
+# step's own comment explains why every *other* expansion there travels through
+# `env:` -- a `${{ }}` inside a `run:` block is substituted before the shell
+# sees it, so a value carrying a quote or a semicolon would execute as code.
+# What makes this one safe is that `matrix.flavor` can only ever be one of the
+# literals in the job's own matrix. Pinning the exact set of expressions is
+# therefore a security assertion, not a bookkeeping one: an expression added
+# here that reads a tag, a branch, a title or any other externally supplied
+# value is a shell injection into a job holding `packages: write`.
+# shellcheck disable=SC2016 # the literal expression, not its expansion
+flavor_expr='${{ matrix.flavor }}'
+# shellcheck disable=SC2016 # ditto: this is the pattern that finds them
+rechunk_expressions="$(printf '%s\n' "${rechunk_run_raw}" | grep -o '\${{[^}]*}}' | sort -u)"
+assert_equal "the matrix flavor is the only expression pasted into the rechunk body" \
+  "${flavor_expr}" "${rechunk_expressions}"
+
+RECHUNK_FLAVOR="kde"
+assert_contains "the flavor these cases substitute is one build.yml actually builds" \
+  "${build_flavors}" "${RECHUNK_FLAVOR}"
+rechunk_run="${rechunk_run_raw//"${flavor_expr}"/${RECHUNK_FLAVOR}}"
+# shellcheck disable=SC2016
+assert_absent "substituting the flavor leaves plain shell behind" "${rechunk_run}" '${{'
+
+# The tags arrive the same way they reach the push step, and by the same route
+# for the same reason. They are the only input the step takes from an
+# expression, and the first of them names the image chunkah reads.
+# shellcheck disable=SC2016
+assert_equal "the rechunk step is handed the tags the metadata action computed" \
+  '${{ steps.metadata.outputs.tags }}' \
+  "$(workflow_step_env "${BUILD_WORKFLOW}" build_push "${RECHUNK_STEP}" METADATA_TAGS)"
+assert_equal "the tags reach the body through that variable and no others" \
+  "METADATA_TAGS" \
+  "$(workflow_step_env_keys "${BUILD_WORKFLOW}" build_push "${RECHUNK_STEP}")"
+
+# The static half of the seam. `CHUNKAH_OCI_DIR` is set by this step alone, so
+# the push step runs on exactly the runs this one did. A condition that let the
+# push run without the rechunk -- a PR build, a branch build -- would reach
+# skopeo with the variable unset. Asserting the two conditions are the same
+# string is stronger than asserting either one: they have to move together.
+assert_equal "the rechunk runs on exactly the runs that push" \
+  "$(workflow_step_field "${BUILD_WORKFLOW}" build_push "${PUSH_STEP}" if)" \
+  "$(workflow_step_field "${BUILD_WORKFLOW}" build_push "${RECHUNK_STEP}" if)"
+assert_extracted "the rechunk step still carries a condition at all" \
+  "$(workflow_step_field "${BUILD_WORKFLOW}" build_push "${RECHUNK_STEP}" if)"
+assert_before "the layout is produced before the push that reads it" \
+  "${RECHUNK_STEP}" "${PUSH_STEP}"
+assert_before "the credential is written before the cache pulls this step prune around" \
+  "${LOGIN_STEP}" "${RECHUNK_STEP}"
+
+RECHUNK_DIR="${WORK_DIR}/rechunk"
+RECHUNK_STUBS="${RECHUNK_DIR}/bin"
+RECHUNK_RUNNER_TEMP="${RECHUNK_DIR}/runner-temp"
+RECHUNK_CALL_LOG="${RECHUNK_DIR}/calls"
+RECHUNK_ENV_FILE="${RECHUNK_DIR}/github-env"
+RECHUNK_CONFIG_SEEN="${RECHUNK_DIR}/chunkah-config"
+RECHUNK_INSPECT_JSON="${RECHUNK_DIR}/inspect.json"
+RECHUNK_MANIFEST_JSON="${RECHUNK_DIR}/manifest.json"
+mkdir -p "${RECHUNK_STUBS}" "${RECHUNK_RUNNER_TEMP}"
+
+RECHUNK_IMAGE_NAME="arch-bootc-base"
+RECHUNK_CHUNKAH_IMAGE="quay.io/coreos/chunkah:v0.6.0"
+
+# Stands in for the source image's config. chunkah rebuilds the rechunked
+# image's config from this string, so it is the carrier for the labels and the
+# entrypoint that make the result bootable -- an image that arrives without
+# them pushes and signs exactly like a good one.
+printf '%s\n' '[{"Config":{"Labels":{"containers.bootc":"1"}}}]' \
+  >"${RECHUNK_INSPECT_JSON}"
+printf '%s\n' '{"layers":[{"size":1},{"size":2},{"size":3}]}' \
+  >"${RECHUNK_MANIFEST_JSON}"
+
+cat >"${RECHUNK_STUBS}/podman" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+
+printf '%s %s\n' "$(basename -- "$0")" "$*" >>"${RECHUNK_CALL_LOG}"
+
+case "${1:-}" in
+  inspect)
+    if [[ "${RECHUNK_PODMAN_INSPECT_EXIT:-0}" != 0 ]]; then
+      printf 'no such object\n' >&2
+      exit "${RECHUNK_PODMAN_INSPECT_EXIT}"
+    fi
+    cat -- "${RECHUNK_INSPECT_JSON}"
+    ;;
+  pull | rmi | image) ;;
+  run)
+    # Recorded from the environment rather than from argv: `-e NAME` passes no
+    # value, so an unexported variable reaches the container empty and chunkah
+    # is the only thing that would notice.
+    printf '%s' "${CHUNKAH_CONFIG_STR-}" >"${RECHUNK_CONFIG_SEEN}"
+    out=""
+    for arg in "$@"; do
+      case "${arg}" in
+        --mount=type=bind,src=*,dst=/out)
+          out="${arg#--mount=type=bind,src=}"
+          out="${out%,dst=/out}"
+          ;;
+      esac
+    done
+    if [[ -z "${out}" ]]; then
+      printf 'chunkah was given no output bind mount\n' >&2
+      exit 93
+    fi
+    if [[ "${RECHUNK_PODMAN_RUN_EXIT:-0}" != 0 ]]; then
+      printf 'simulated chunkah failure\n' >&2
+      exit "${RECHUNK_PODMAN_RUN_EXIT}"
+    fi
+    mkdir -p "${out}/oci"
+    ;;
+  *)
+    printf 'unexpected podman subcommand: %s\n' "${1:-}" >&2
+    exit 91
+    ;;
+esac
+STUB
+chmod +x "${RECHUNK_STUBS}/podman"
+
+# A fresh runner has no build containers and no dangling layers, and `buildah
+# rm --all` reports that as a failure. Every call site tolerates it; the
+# tolerated exit code is configurable so a case below can prove that.
+cat >"${RECHUNK_STUBS}/buildah" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s %s\n' "$(basename -- "$0")" "$*" >>"${RECHUNK_CALL_LOG}"
+exit "${RECHUNK_BUILDAH_EXIT:-0}"
+STUB
+chmod +x "${RECHUNK_STUBS}/buildah"
+
+cat >"${RECHUNK_STUBS}/skopeo" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s %s\n' "$(basename -- "$0")" "$*" >>"${RECHUNK_CALL_LOG}"
+cat -- "${RECHUNK_MANIFEST_JSON}"
+STUB
+chmod +x "${RECHUNK_STUBS}/skopeo"
+
+# Recorded, not run: the real output is four screens of runner filesystems and
+# says nothing this test can assert on.
+cat >"${RECHUNK_STUBS}/df" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s %s\n' "$(basename -- "$0")" "$*" >>"${RECHUNK_CALL_LOG}"
+STUB
+chmod +x "${RECHUNK_STUBS}/df"
+
+run_rechunk() {
+  local body="$1" tags="$2"
+  : >"${RECHUNK_CALL_LOG}"
+  : >"${RECHUNK_ENV_FILE}"
+  : >"${RECHUNK_CONFIG_SEEN}"
+  (
+    PATH="${RECHUNK_STUBS}:${PATH}" \
+      RECHUNK_CALL_LOG="${RECHUNK_CALL_LOG}" \
+      RECHUNK_CONFIG_SEEN="${RECHUNK_CONFIG_SEEN}" \
+      RECHUNK_INSPECT_JSON="${RECHUNK_INSPECT_JSON}" \
+      RECHUNK_MANIFEST_JSON="${RECHUNK_MANIFEST_JSON}" \
+      RECHUNK_BUILDAH_EXIT="${RECHUNK_BUILDAH_EXIT:-0}" \
+      RECHUNK_PODMAN_RUN_EXIT="${RECHUNK_PODMAN_RUN_EXIT:-0}" \
+      RECHUNK_PODMAN_INSPECT_EXIT="${RECHUNK_PODMAN_INSPECT_EXIT:-0}" \
+      IMAGE_NAME="${RECHUNK_IMAGE_NAME}" \
+      CHUNKAH_IMAGE="${RECHUNK_CHUNKAH_IMAGE}" \
+      RUNNER_TEMP="${RECHUNK_RUNNER_TEMP}" \
+      GITHUB_ENV="${RECHUNK_ENV_FILE}" \
+      METADATA_TAGS="${tags}" \
+      "${BASH}" --noprofile --norc -c "${body}"
+  )
+}
+
+# Line number of the first recorded call matching the pattern, or 0.
+call_index() {
+  local pattern="$1" index
+  index="$(grep -n -m 1 -- "${pattern}" "${RECHUNK_CALL_LOG}" | cut -d: -f1)"
+  printf '%s' "${index:-0}"
+}
+assert_call_order() {
+  local description="$1" earlier="$2" later="$3" a b
+  a="$(call_index "${earlier}")"
+  b="$(call_index "${later}")"
+  if ((a > 0 && b > 0 && a < b)); then
+    check "${description}" 0
+  else
+    check "${description}" 1 "call position ${a} is not before call position ${b}"
+  fi
+}
+
+# The stale layout this run has to overwrite. A rechunk that reused it would
+# publish a previous build's rootfs under this build's tags and this build's
+# signature, and nothing downstream can tell the difference: the digest push
+# reports is the digest of whatever was in the directory.
+RECHUNK_WORK_DIR="${RECHUNK_RUNNER_TEMP}/chunkah-${RECHUNK_FLAVOR}"
+mkdir -p "${RECHUNK_WORK_DIR}/oci"
+printf 'from an earlier run\n' >"${RECHUNK_WORK_DIR}/oci/index.json"
+
+RECHUNK_TAGS="latest 20260910"
+output="$(run_rechunk "${rechunk_run}" "${RECHUNK_TAGS}" 2>&1)"
+status=$?
+assert_status "a clean rechunk exits 0" 0 "${status}"
+
+# The output half of the seam, executed. The name has to be the one the push
+# body reads, and the value has to be the directory chunkah actually wrote to.
+assert_equal "the rechunked layout is reported under the name the push step reads" \
+  "CHUNKAH_OCI_DIR=${RECHUNK_WORK_DIR}/oci" "$(cat "${RECHUNK_ENV_FILE}")"
+rechunk_oci_dir="$(sed -n 's/^CHUNKAH_OCI_DIR=//p' <"${RECHUNK_ENV_FILE}")"
+assert_extracted "the reported layout directory has a value" "${rechunk_oci_dir}"
+if [[ -d "${rechunk_oci_dir}" ]]; then
+  check "the reported directory is the one chunkah wrote" 0
+else
+  check "the reported directory is the one chunkah wrote" 1 \
+    "${rechunk_oci_dir} does not exist"
+fi
+assert_contains "the push body reads the variable this step exports" \
+  "${push_run}" 'CHUNKAH_OCI_DIR'
+assert_absent "no file from the previous run survives into the published layout" \
+  "$(cat -- "${rechunk_oci_dir}/index.json" 2>/dev/null || true)" "from an earlier run"
+
+# `sep-tags: " "` makes METADATA_TAGS one space-separated string, and only the
+# first tag names an image that exists in local storage at this point -- they
+# all point at the same build, so any of them would do, but the whole string is
+# not a reference. `awk '{print $1}'` is what reduces it to one; a quoted
+# expansion or a `$NF` here asks podman for an image nothing built.
+assert_equal "the source image is the first metadata tag, not the whole tag list" \
+  "podman inspect ${RECHUNK_IMAGE_NAME}:latest" \
+  "$(grep '^podman inspect ' "${RECHUNK_CALL_LOG}")"
+
+# Whole argv. Every flag is load-bearing and none of them fails locally:
+# without --compressed the layout is uncompressed blobs that push far slower
+# and blow the runner's disk; without --output the result lands in
+# containers-storage, which is the copy this step exists to avoid; a changed
+# --max-layers silently reshapes every future incremental pull.
+printf -v expected_chunkah_call '%s' \
+  "podman run --rm" \
+  " --mount=type=image,src=${RECHUNK_IMAGE_NAME}:latest,dst=/chunkah" \
+  " --mount=type=bind,src=${RECHUNK_WORK_DIR},dst=/out" \
+  " -e CHUNKAH_CONFIG_STR" \
+  " ${RECHUNK_CHUNKAH_IMAGE}" \
+  " build -v --max-layers 96 --compressed" \
+  " --output oci:/out/oci" \
+  " -t ${RECHUNK_IMAGE_NAME}:chunked"
+assert_equal "chunkah reads the source rootfs and writes the OCI layout directly to disk" \
+  "${expected_chunkah_call}" "$(grep '^podman run ' "${RECHUNK_CALL_LOG}")"
+
+# `-e NAME` forwards a variable by name and passes nothing at all if it is not
+# exported. chunkah then rebuilds the image config from an empty string, and
+# the result pushes, signs and verifies exactly like a correct image while
+# having lost the labels that make it bootable.
+assert_equal "the source image config reaches chunkah through the exported variable" \
+  "$(cat -- "${RECHUNK_INSPECT_JSON}")" "$(cat -- "${RECHUNK_CONFIG_SEEN}")"
+
+# Ordering is the whole of this step's disk budget. The prune has to happen
+# before chunkah runs -- that is the space chunkah writes into -- and the
+# source images have to survive until it has read them.
+assert_call_order "the local intermediates are dropped before chunkah runs" \
+  '^buildah prune -f$' '^podman run '
+assert_call_order "the source image survives until chunkah has read it" \
+  '^podman run ' "^podman rmi ${RECHUNK_IMAGE_NAME}:latest\$"
+assert_call_order "the layout is measured after it is written" \
+  '^podman run ' '^skopeo inspect '
+
+# Unquoted on purpose, as in the push step: every tag points at the same build
+# and each one is a separate entry in local storage, so a quoted expansion
+# removes nothing and leaves the full uncompressed image on disk for the push.
+printf -v expected_rmi_calls '%s\n' \
+  "podman rmi ${RECHUNK_IMAGE_NAME}:latest" \
+  "podman rmi ${RECHUNK_IMAGE_NAME}:20260910" \
+  "podman rmi ${RECHUNK_CHUNKAH_IMAGE}"
+assert_equal "every metadata tag and the chunkah image are removed before the push" \
+  "${expected_rmi_calls%$'\n'}" "$(grep '^podman rmi ' "${RECHUNK_CALL_LOG}")"
+
+assert_contains "the layer count of the produced layout is reported" \
+  "${output}" "Rechunked layer count: 3"
+# The rechunk is the longest step in the job and its log is the only place the
+# per-package layer split is visible. An unfolded group buries the rest of the
+# job's output under chunkah's.
+assert_contains "chunkah's output is folded into a log group" "${output}" \
+  "::group::Rechunking ${RECHUNK_IMAGE_NAME}:latest"
+assert_contains "the log group is closed" "${output}" "::endgroup::"
+
+# Three flavors build in parallel from one workflow and each writes an OCI
+# layout of its own. The flavor in the path is what keeps them apart; drop it
+# and two matrix legs sharing a runner temp overwrite each other's layout
+# between the rechunk and the push, which publishes one flavor's rootfs under
+# another flavor's tags.
+other_flavor="base"
+assert_contains "the second flavor these cases use is one build.yml builds" \
+  "${build_flavors}" "${other_flavor}"
+other_run="${rechunk_run_raw//"${flavor_expr}"/${other_flavor}}"
+run_rechunk "${other_run}" "${RECHUNK_TAGS}" >/dev/null 2>&1
+assert_status "a second flavor's rechunk exits 0" 0 "$?"
+assert_equal "each flavor reports a layout directory of its own" \
+  "CHUNKAH_OCI_DIR=${RECHUNK_RUNNER_TEMP}/chunkah-${other_flavor}/oci" \
+  "$(cat "${RECHUNK_ENV_FILE}")"
+
+# A warm runner has containers and layers to drop; a cold one does not, and
+# `buildah rm --all` exits nonzero when there is nothing to remove. Under
+# `set -e` that is a failed publish on the first build after a runner image
+# update, which is why all four cleanup calls are tolerated.
+(RECHUNK_BUILDAH_EXIT=1 run_rechunk "${rechunk_run}" "${RECHUNK_TAGS}") >/dev/null 2>&1
+assert_status "a cleanup that finds nothing to remove does not fail the step" 0 "$?"
+assert_contains "the rechunk still runs after a no-op cleanup" \
+  "$(cat "${RECHUNK_CALL_LOG}")" "podman run --rm"
+
+# The failure that must not be silent. chunkah exiting nonzero with the
+# variable already reported would hand the push step a directory holding
+# nothing, or holding the previous run's layout, and the first report of it
+# would be whoever pulled the image.
+output="$(RECHUNK_PODMAN_RUN_EXIT=1 run_rechunk "${rechunk_run}" "${RECHUNK_TAGS}" 2>&1)"
+status=$?
+assert_status "a failed rechunk fails the step" 1 "${status}"
+assert_equal "a failed rechunk reports no layout directory" "" \
+  "$(cat "${RECHUNK_ENV_FILE}")"
+
+# Same property one command earlier. An unreadable source image makes
+# CHUNKAH_CONFIG_STR empty, and an empty config is not an error to chunkah --
+# it is an image with no labels and no entrypoint.
+output="$(RECHUNK_PODMAN_INSPECT_EXIT=1 run_rechunk "${rechunk_run}" "${RECHUNK_TAGS}" 2>&1)"
+status=$?
+assert_status "an unreadable source image fails the step" 1 "${status}"
+assert_absent "an unreadable source image is never rechunked" \
+  "$(cat "${RECHUNK_CALL_LOG}")" "podman run --rm"
+assert_equal "an unreadable source image reports no layout directory" "" \
+  "$(cat "${RECHUNK_ENV_FILE}")"
+
+# `set -u` decides what a missing input does. Without it the source reference
+# is `:` plus whatever awk made of an empty string, and the step would go on to
+# report a layout directory for an image it never read.
+: >"${RECHUNK_CALL_LOG}"
+: >"${RECHUNK_ENV_FILE}"
+output="$(
+  PATH="${RECHUNK_STUBS}:${PATH}" \
+    RECHUNK_CALL_LOG="${RECHUNK_CALL_LOG}" \
+    RECHUNK_CONFIG_SEEN="${RECHUNK_CONFIG_SEEN}" \
+    RECHUNK_INSPECT_JSON="${RECHUNK_INSPECT_JSON}" \
+    RECHUNK_MANIFEST_JSON="${RECHUNK_MANIFEST_JSON}" \
+    IMAGE_NAME="${RECHUNK_IMAGE_NAME}" \
+    CHUNKAH_IMAGE="${RECHUNK_CHUNKAH_IMAGE}" \
+    RUNNER_TEMP="${RECHUNK_RUNNER_TEMP}" \
+    GITHUB_ENV="${RECHUNK_ENV_FILE}" \
+    env -u METADATA_TAGS "${BASH}" --noprofile --norc -c "${rechunk_run}" 2>&1
+)"
+status=$?
+assert_status "an unset tag list fails the step" 1 "${status}"
+assert_equal "an unset tag list reports no layout directory" "" \
+  "$(cat "${RECHUNK_ENV_FILE}")"
+
+# Restore the clean run's state for the push cases below, which consume the
+# directory this step reported rather than a path of their own invention.
+run_rechunk "${rechunk_run}" "${RECHUNK_TAGS}" >/dev/null 2>&1
+assert_status "the rechunk that feeds the push cases below exits 0" 0 "$?"
+rechunk_oci_dir="$(sed -n 's/^CHUNKAH_OCI_DIR=//p' <"${RECHUNK_ENV_FILE}")"
+assert_extracted "the push cases below have a real layout directory to read" \
+  "${rechunk_oci_dir}"
+
 PUSH_DIR="${WORK_DIR}/push"
 PUSH_STUBS="${PUSH_DIR}/bin"
 PUSH_RUNNER_TEMP="${PUSH_DIR}/runner-temp"
@@ -793,8 +1176,11 @@ PUSH_OUTPUT="${PUSH_DIR}/github-output"
 mkdir -p "${PUSH_STUBS}" "${PUSH_RUNNER_TEMP}"
 
 PUSH_REGISTRY="ghcr.io/danathar"
-PUSH_IMAGE_NAME="arch-bootc-base"
-PUSH_OCI_DIR="${PUSH_DIR}/chunkah-oci"
+# The same image name and the same layout directory the rechunk step above
+# produced, rather than values invented here: the reference the push step
+# builds has to be one the step before it actually wrote.
+PUSH_IMAGE_NAME="${RECHUNK_IMAGE_NAME}"
+PUSH_OCI_DIR="${rechunk_oci_dir}"
 PUSHED_DIGEST="sha256:1111111111111111111111111111111111111111111111111111111111111111"
 # Not a real credential: the value only has to be distinctive enough that the
 # leak assertions below can look for it. The variable is deliberately not named
