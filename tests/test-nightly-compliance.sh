@@ -540,6 +540,249 @@ assert_equal "the sign step is handed the digest the push step reported" \
   '${{ steps.push.outputs.digest }}' \
   "$(workflow_step_env "${BUILD_WORKFLOW}" build_push "${SIGN_STEP}" PUSH_DIGEST)"
 
+# --- the credential both of those steps read --------------------------------
+#
+# Neither body above takes a credential as an argument. Both resolve one out of
+# ${HOME}/.docker/config.json: the push step names that path explicitly with
+# --dest-authfile, and `cosign sign` finds the same file through buildah's and
+# skopeo's documented resolution order. One step writes it -- `Log in to GHCR
+# for the build cache and image signing`, 170 lines earlier in the same job --
+# and no test executed that body, so the fixture the push cases used was a
+# second, hand-written copy of the file format with nothing tying it to the
+# step that produces the real one.
+#
+# That gap is invisible from either side. A login step that keyed its entry on
+# the full image path instead of the registry host, wrote its JSON somewhere
+# else, or let base64 wrap its field would leave this file green and turn every
+# publish into an anonymous push -- which GHCR reports as a 401 forty minutes
+# into a build, reading like a registry outage rather than a workflow edit.
+#
+# So the body is executed here, and the file it produces *is* the fixture the
+# push cases below consume.
+
+LOGIN_STEP="Log in to GHCR for the build cache and image signing"
+
+login_run="$(workflow_step_run "${BUILD_WORKFLOW}" build_push "${LOGIN_STEP}")"
+assert_extracted "the login step's body is still where this test expects it" \
+  "${login_run}"
+# shellcheck disable=SC2016
+assert_absent "the login step's body is plain shell" "${login_run}" '${{'
+
+# The credential arrives through `env:` and the body never names a secret, so
+# what the step is handed is as much of the decision as what it does with it.
+# shellcheck disable=SC2016
+assert_equal "the login step is handed the actor GHCR will authenticate" \
+  '${{ github.actor }}' \
+  "$(workflow_step_env "${BUILD_WORKFLOW}" build_push "${LOGIN_STEP}" REGISTRY_USER)"
+# shellcheck disable=SC2016
+assert_equal "the login step is handed this run's own token as the password" \
+  '${{ github.token }}' \
+  "$(workflow_step_env "${BUILD_WORKFLOW}" build_push "${LOGIN_STEP}" REGISTRY_PASSWORD)"
+assert_equal "the credential reaches the body through those two variables and no others" \
+  "$(printf '%s\n' REGISTRY_USER REGISTRY_PASSWORD)" \
+  "$(workflow_step_env_keys "${BUILD_WORKFLOW}" build_push "${LOGIN_STEP}")"
+
+# The step is skipped for pull requests from forks, where GitHub downgrades the
+# token to read-only regardless of the `packages: write` permission the job
+# asks for. Widening this condition would hand a fork's PR a credential that
+# cannot authenticate; narrowing it would skip the login on runs that publish.
+# Both the push and sign steps run under a strictly narrower condition (not a
+# pull request at all), so this one holds whenever they do.
+assert_equal "the login step is skipped only for pull requests from forks" \
+  "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository" \
+  "$(workflow_step_field "${BUILD_WORKFLOW}" build_push "${LOGIN_STEP}" if)"
+
+# Print the step names of the named job, in the order Actions runs them.
+workflow_step_names() {
+  local workflow="$1" job="$2"
+  workflow_job_block "${workflow}" "${job}" | sed -n 's/^      - name: //p'
+}
+
+build_push_steps="$(workflow_step_names "${BUILD_WORKFLOW}" build_push)"
+assert_extracted "build_push's step list is still where this test expects it" \
+  "${build_push_steps}"
+
+step_index() {
+  local want="$1" index=0 name
+  while IFS= read -r name; do
+    index=$((index + 1))
+    if [[ "${name}" == "${want}" ]]; then
+      printf '%s' "${index}"
+      return 0
+    fi
+  done <<<"${build_push_steps}"
+  printf '0'
+}
+
+# Step order is the whole of this file's correctness: a credential written after
+# its readers is a credential nobody used. Moving the login step down the list
+# is a one-line edit that leaves the workflow valid, leaves every body
+# unchanged, and silently anonymizes the cache pull, the push and the signature.
+assert_before() {
+  local description="$1" earlier="$2" later="$3" a b
+  a="$(step_index "${earlier}")"
+  b="$(step_index "${later}")"
+  if ((a > 0 && b > 0 && a < b)); then
+    check "${description}" 0
+  else
+    check "${description}" 1 "step position ${a} is not before step position ${b}"
+  fi
+}
+assert_before "the credential is written before the build that caches through it" \
+  "${LOGIN_STEP}" "Build Image"
+assert_before "the credential is written before the push that reads it" \
+  "${LOGIN_STEP}" "${PUSH_STEP}"
+assert_before "the credential is written before the signature pushed with it" \
+  "${LOGIN_STEP}" "${SIGN_STEP}"
+
+LOGIN_DIR="${WORK_DIR}/login"
+mkdir -p "${LOGIN_DIR}"
+
+LOGIN_REGISTRY="ghcr.io/danathar"
+LOGIN_USER="octocat"
+# Not a real credential: distinctive enough for the assertions below to look
+# for, and deliberately not named with a prefix the body greps for.
+LOGIN_SECRET="ghs-login-fixture-not-a-real-token"
+
+# The umask is an argument because one case needs a hostile one: see below.
+run_login() {
+  local home="$1" registry="$2" user="$3" secret="$4" mask="${5:-022}"
+  (
+    umask "${mask}"
+    HOME="${home}" \
+      IMAGE_REGISTRY="${registry}" \
+      REGISTRY_USER="${user}" \
+      REGISTRY_PASSWORD="${secret}" \
+      "${BASH}" --noprofile --norc -c "${login_run}"
+  )
+}
+
+# Parse the produced file into the two decisions it encodes: which registry the
+# entry is keyed on, and what credential it carries. The pattern covers the
+# whole document, so a stray field, a missing brace or a second line fails here
+# rather than being tolerated the way a substring search would tolerate it --
+# and a container tool handed a malformed auth file does not fall back to
+# asking, it falls back to anonymous.
+login_auth_host=""
+login_auth_blob=""
+parse_auth_file() {
+  local file="$1" contents
+  login_auth_host=""
+  login_auth_blob=""
+  [[ -f "${file}" ]] || return 1
+  contents="$(cat -- "${file}")"
+  [[ "${contents}" =~ ^\{\"auths\":\{\"([^\"]+)\":\{\"auth\":\"([^\"]+)\"\}\}\}$ ]] || return 1
+  login_auth_host="${BASH_REMATCH[1]}"
+  login_auth_blob="${BASH_REMATCH[2]}"
+}
+
+login_home="${LOGIN_DIR}/clean"
+mkdir -p "${login_home}"
+LOGIN_FILE="${login_home}/.docker/config.json"
+output="$(run_login "${login_home}" "${LOGIN_REGISTRY}" "${LOGIN_USER}" "${LOGIN_SECRET}" 2>&1)"
+status=$?
+assert_status "writing the credential file exits 0" 0 "${status}"
+
+# The step creates the directory itself; the fixture above deliberately does
+# not, because a login step that assumed ~/.docker already existed would fail
+# on a fresh runner and only there.
+parse_auth_file "${LOGIN_FILE}"
+assert_status "the step writes one whole containers-auth.json document at the path its readers open" \
+  0 "$?"
+assert_equal "the entry is keyed on the registry host, not on the full image path" \
+  "ghcr.io" "${login_auth_host}"
+assert_equal "the entry carries the actor and token GHCR will check" \
+  "${LOGIN_USER}:${LOGIN_SECRET}" \
+  "$(printf '%s' "${login_auth_blob}" | base64 -d)"
+
+# 0600 is the entire reason the push step reads a file instead of passing
+# --dest-creds: it narrows a token that /proc/<pid>/cmdline would otherwise
+# expose to every uid on the runner down to the uid that wrote it.
+assert_equal "the credential file is readable only by the uid that wrote it" \
+  "600" "$(stat -c %a -- "${LOGIN_FILE}")"
+assert_absent "the token is stored encoded, never in the clear" \
+  "$(cat -- "${LOGIN_FILE}")" "${LOGIN_SECRET}"
+# These runs are public, so the log is the other route a credential can escape
+# by. The step has nothing to report and must report nothing.
+assert_equal "the login step prints nothing" "" "${output}"
+
+# base64 wraps its output at 76 columns unless told not to. A GITHUB_TOKEN plus
+# an actor name is comfortably past that, so a dropped -w0 embeds a newline in
+# the middle of the JSON string -- unparseable, and only on real-length
+# credentials, never on a short test value.
+long_secret="ghs-"
+while ((${#long_secret} < 200)); do
+  long_secret+="0123456789"
+done
+long_home="${LOGIN_DIR}/long-token"
+mkdir -p "${long_home}"
+run_login "${long_home}" "${LOGIN_REGISTRY}" "${LOGIN_USER}" "${long_secret}" >/dev/null 2>&1
+parse_auth_file "${long_home}/.docker/config.json"
+assert_status "a full-length token still produces one parseable document" 0 "$?"
+assert_equal "a full-length token is encoded without line breaks" \
+  "${LOGIN_USER}:${long_secret}" \
+  "$(printf '%s' "${login_auth_blob}" | base64 -d)"
+assert_equal "the document is a single line" "1" \
+  "$(wc -l <"${long_home}/.docker/config.json" | tr -d ' ')"
+
+# The credential is data, not format. `printf '%s:%s' "$user" "$pass"` is safe
+# for any value; `printf "${user}:${pass}"` is not, and the difference only
+# shows up when a token happens to contain a percent or a backslash -- at which
+# point the encoded credential is silently wrong and the push is silently
+# anonymous.
+# shellcheck disable=SC2016 # the point of the value is that nothing expands it
+odd_secret='100%s of \n "value" $HOME'
+odd_home="${LOGIN_DIR}/odd-token"
+mkdir -p "${odd_home}"
+run_login "${odd_home}" "${LOGIN_REGISTRY}" "${LOGIN_USER}" "${odd_secret}" >/dev/null 2>&1
+parse_auth_file "${odd_home}/.docker/config.json"
+assert_status "a token holding format characters still produces one parseable document" \
+  0 "$?"
+assert_equal "a token holding format characters is encoded verbatim" \
+  "${LOGIN_USER}:${odd_secret}" \
+  "$(printf '%s' "${login_auth_blob}" | base64 -d)"
+
+# A rerun on a warm runner, and the case that proves the chmod is doing work:
+# under a permissive umask a file created without it stays world-readable, so
+# dropping the chmod would pass under the default umask and leak here. The
+# stale content also has to be replaced rather than appended to -- `>>` would
+# leave a document no consumer can parse.
+loose_home="${LOGIN_DIR}/loose"
+mkdir -p "${loose_home}/.docker"
+printf 'stale content from an earlier run\n' >"${loose_home}/.docker/config.json"
+chmod 644 "${loose_home}/.docker/config.json"
+run_login "${loose_home}" "${LOGIN_REGISTRY}" "${LOGIN_USER}" "${LOGIN_SECRET}" 000 >/dev/null 2>&1
+parse_auth_file "${loose_home}/.docker/config.json"
+assert_status "an existing credential file is replaced, not appended to" 0 "$?"
+assert_equal "the credential is not world-readable even under a permissive umask" \
+  "600" "$(stat -c %a -- "${loose_home}/.docker/config.json")"
+assert_absent "no content from the previous run survives" \
+  "$(cat -- "${loose_home}/.docker/config.json")" "stale content"
+
+# `set -euo pipefail` decides what a missing input does. Failing here is the
+# only acceptable outcome: a file holding `octocat:` or an empty auths entry
+# would satisfy the push step's readability check and then push anonymously,
+# and the first report of that would be a 401 from GHCR at the end of the build.
+for missing in REGISTRY_PASSWORD IMAGE_REGISTRY; do
+  missing_home="${LOGIN_DIR}/missing-${missing}"
+  mkdir -p "${missing_home}"
+  output="$(
+    HOME="${missing_home}" \
+      IMAGE_REGISTRY="${LOGIN_REGISTRY}" \
+      REGISTRY_USER="${LOGIN_USER}" \
+      REGISTRY_PASSWORD="${LOGIN_SECRET}" \
+      env -u "${missing}" "${BASH}" --noprofile --norc -c "${login_run}" 2>&1
+  )"
+  status=$?
+  assert_status "an unset ${missing} fails the step" 1 "${status}"
+  if [[ ! -e "${missing_home}/.docker/config.json" ]]; then
+    check "an unset ${missing} leaves no half-written credential behind" 0
+  else
+    check "an unset ${missing} leaves no half-written credential behind" 1 \
+      "wrote $(cat -- "${missing_home}/.docker/config.json")"
+  fi
+done
+
 PUSH_DIR="${WORK_DIR}/push"
 PUSH_STUBS="${PUSH_DIR}/bin"
 PUSH_RUNNER_TEMP="${PUSH_DIR}/runner-temp"
@@ -561,16 +804,25 @@ PUSH_SECRET="ghs-fixture-not-a-real-token"
 
 # The body reads the credential out of ${HOME}/.docker/config.json rather than
 # taking it as an argument, so the fixture has to provide one: a private HOME
-# holding the same file the login step writes, with the secret inside it. It is
+# holding the file the login step writes, with the secret inside it. It is
 # reachable to the body exactly the way the real one is, and to the assertions
 # below as a value that must not turn up in skopeo's argv.
+#
+# Produced by executing the login step rather than by hand. A hand-written copy
+# would keep passing after the real step stopped writing anything the push step
+# can use, which is the one failure these cases exist to catch.
 PUSH_HOME="${PUSH_DIR}/home"
 PUSH_AUTH_FILE="${PUSH_HOME}/.docker/config.json"
-mkdir -p "${PUSH_HOME}/.docker"
-printf '{"auths":{"ghcr.io":{"auth":"%s"}}}\n' \
-  "$(printf '%s:%s' "${PUSH_ACTOR}" "${PUSH_SECRET}" | base64 -w0)" \
-  >"${PUSH_AUTH_FILE}"
-chmod 600 "${PUSH_AUTH_FILE}"
+mkdir -p "${PUSH_HOME}"
+run_login "${PUSH_HOME}" "${PUSH_REGISTRY}" "${PUSH_ACTOR}" "${PUSH_SECRET}" >/dev/null 2>&1
+parse_auth_file "${PUSH_AUTH_FILE}"
+assert_status "the login step supplies the credential file the push step reads" 0 "$?"
+# Without this the leak assertions further down are vacuous: a fixture that did
+# not actually contain the secret would pass every "never reaches argv" check
+# by containing nothing at all.
+assert_equal "the supplied credential is the one the leak assertions search for" \
+  "${PUSH_ACTOR}:${PUSH_SECRET}" \
+  "$(printf '%s' "${login_auth_blob}" | base64 -d)"
 
 # skopeo succeeds by writing the digest file the body reads, and fails the
 # first SKOPEO_FAIL_FIRST attempts of the process so the backoff loop can be
@@ -662,6 +914,19 @@ assert_absent "the registry password never reaches skopeo's command line" \
   "$(cat "${SKOPEO_CALL_LOG}")" "${PUSH_SECRET}"
 assert_absent "the auth file is named rather than its contents inlined" \
   "$(cat "${SKOPEO_CALL_LOG}")" "--dest-creds"
+
+# The two steps joined, live. A containers-auth.json entry authenticates for
+# exactly the host it is keyed on, and each step derives that host separately:
+# the login step strips the path off IMAGE_REGISTRY, the push step keeps the
+# whole value as the destination. If those ever disagree -- a login step keyed
+# on `ghcr.io/danathar`, a registry variable that grows another path segment --
+# skopeo finds no matching entry and pushes anonymously with the credential
+# sitting right there on disk.
+push_destination="$(sed -n 's|.*docker://||p' <"${SKOPEO_CALL_LOG}" | head -n 1)"
+assert_extracted "the recorded push has a registry destination" "${push_destination}"
+parse_auth_file "${PUSH_AUTH_FILE}"
+assert_equal "the credential is keyed on the host the push is addressed to" \
+  "${login_auth_host}" "${push_destination%%/*}"
 
 # The output half of the seam, executed. The key has to be `digest`, and the
 # value has to be what skopeo reported rather than a tag or an empty line.
