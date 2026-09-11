@@ -10,16 +10,25 @@ set -uo pipefail
 # real, because the script's flattening logic is most of what is worth testing
 # and stubbing jq would test nothing.
 #
-# The final section executes .github/workflows/ai-fix.yml's work-order shell.
-# That step is the script's only caller in CI, so the two belong in one file:
-# the workflow reaches the script by a relative path, tolerates its non-zero
-# gate exits, and embeds its report in a comment -- a seam neither the script's
-# own cases nor a static read of the workflow can see.
+# The last two sections execute workflow shell rather than the script. First
+# .github/workflows/ai-fix.yml's work-order step: that step is the script's
+# only caller in CI, so the two belong in one file -- the workflow reaches the
+# script by a relative path, tolerates its non-zero gate exits, and embeds its
+# report in a comment, a seam neither the script's own cases nor a static read
+# of the workflow can see.
+#
+# Then .github/workflows/labeler.yml's label-catalog gate. It lands here for
+# the same reason the `gh` stub does: it is the other `pull_request`-driven
+# workflow body in this repository whose only external dependency is `gh`, and
+# it reuses the extractor and the stub that the section above already builds.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 SCRIPT="${REPO_ROOT}/scripts/pr-review-state.sh"
 AI_FIX_WORKFLOW="${REPO_ROOT}/.github/workflows/ai-fix.yml"
+LABELER_WORKFLOW="${REPO_ROOT}/.github/workflows/labeler.yml"
+LABELER_CONFIG="${REPO_ROOT}/.github/labeler.yml"
+CI_CD_DOC="${REPO_ROOT}/docs/ci-cd.md"
 
 failures=0
 tests_run=0
@@ -170,6 +179,19 @@ case "$1 ${2:-}" in
         exit 91
       fi
       cat -- "${body_file}" >"${GH_STUB_COMMENT}"
+    fi
+    ;;
+  # The two calls labeler.yml's catalog step makes. The listing answers from a
+  # file of label names, one per line, which is what the step's
+  # `--json name --jq '.[].name'` reduction produces.
+  "label list")
+    if [[ -n "${GH_STUB_LABELS:-}" ]]; then
+      cat -- "${GH_STUB_LABELS}"
+    fi
+    ;;
+  "label create")
+    if [[ -n "${GH_STUB_LABEL_CREATES:-}" ]]; then
+      printf '%s\n' "$*" >>"${GH_STUB_LABEL_CREATES}"
     fi
     ;;
   *)
@@ -753,6 +775,199 @@ assert_contains "a failed query is fenced into the work order" "${comment}" \
   "GraphQL query failed"
 assert_contains "a failed query still leaves the rest of the work order intact" "${comment}" \
   "### What the response owes"
+
+# --- labeler.yml's label catalog gate --------------------------------------
+#
+# One list of pull request labels is written down three times: the `catalog=()`
+# array in .github/workflows/labeler.yml holds each label's colour and
+# description, the top-level keys of .github/labeler.yml hold its paths, and
+# the table in docs/ci-cd.md describes it for humans. The workflow step below
+# is the only thing that keeps the first two from drifting, and nothing
+# executed it -- tests/check-invariants.sh globs the workflow directory but
+# only greps it for pinning, credentials, triggers and timeouts.
+#
+# The step is worth executing rather than reading because both of its failure
+# modes are invisible in a static read. A configured label with no catalog
+# entry makes actions/labeler fail the run outright; a catalog entry with no
+# path rule is the quieter one, provisioning a repository label that nothing
+# will ever apply -- which is how a deleted path rule leaves its label behind.
+
+catalog_run="$(workflow_step_run "${LABELER_WORKFLOW}" "label" \
+  "Ensure every configured label exists")"
+assert_extracted "the catalog step's body is still where this test expects it" \
+  "${catalog_run}"
+
+# As above: Actions expands a GitHub expression before the shell sees the body,
+# and this harness expands none.
+# shellcheck disable=SC2016
+assert_absent "the catalog step's body is plain shell" "${catalog_run}" '${{'
+
+LABEL_PRESENT="${WORK_DIR}/labels-present"
+LABEL_CREATES="${WORK_DIR}/labels-created"
+
+# Run the body with the given directory as the working directory, because it
+# reads `.github/labeler.yml` by a relative path. Remaining arguments are the
+# labels the repository already has, which is the only input that decides
+# whether a label is created or skipped.
+run_catalog_gate() { # working_directory [existing_label...]
+  local dir="$1"
+  shift
+  : >"${LABEL_CREATES}"
+  if (($# > 0)); then
+    printf '%s\n' "$@" >"${LABEL_PRESENT}"
+  else
+    : >"${LABEL_PRESENT}"
+  fi
+  (
+    cd -- "${dir}" || exit 99
+    PATH="${STUB_DIR}:${PATH}" \
+      GH_TOKEN="not-a-real-token" \
+      GH_REPO="Danathar/arch-bootc" \
+      GH_STUB_LABELS="${LABEL_PRESENT}" \
+      GH_STUB_LABEL_CREATES="${LABEL_CREATES}" \
+      "${BASH}" --noprofile --norc -c "${catalog_run}" 2>&1
+  )
+}
+
+# A copy of the committed configuration that a case can then damage, so no case
+# has to restate the seven rules it is not testing.
+config_copy() { # subdirectory
+  local dir="${WORK_DIR}/$1"
+  mkdir -p "${dir}/.github"
+  cp -- "${LABELER_CONFIG}" "${dir}/.github/labeler.yml"
+  printf '%s\n' "${dir}"
+}
+
+ALL_LABELS=(
+  documentation
+  area/image
+  area/ci
+  area/tests
+  area/scripts
+  area/security-model
+  area/agent-policy
+)
+
+# The committed tree. This is the case that turns the gate into a test of the
+# repository rather than of the gate: any future edit that adds a path rule
+# without a catalog entry, or retires a rule and leaves its catalog entry
+# behind, fails here.
+output="$(run_catalog_gate "${REPO_ROOT}" "${ALL_LABELS[@]}")"
+assert_status "the committed catalog and configuration agree" 0 "$?"
+assert_absent "an agreeing pair reports no drift" "${output}" "::error"
+assert_equal "an agreeing pair creates nothing" "" "$(cat "${LABEL_CREATES}")"
+assert_contains "an existing label is left alone, not edited" "${output}" \
+  "label already exists, leaving it alone: area/security-model"
+
+# A fresh repository. Every label is created, with the colour and description
+# the catalog names -- the catalog is the source of truth for both, so a create
+# that dropped either would silently make the workflow's table decorative.
+output="$(run_catalog_gate "${REPO_ROOT}")"
+assert_status "provisioning every missing label succeeds" 0 "$?"
+creates="$(cat "${LABEL_CREATES}")"
+assert_equal "one create per catalog entry" 7 "$(printf '%s\n' "${creates}" | grep -c .)"
+assert_contains "a created label carries its catalog colour and description" \
+  "${creates}" \
+  "label create area/security-model --color b60205 --description Signing key, signature policy, or registry configuration"
+assert_contains "the plain documentation label is provisioned too" "${creates}" \
+  "label create documentation --color 0075ca --description"
+
+# A half-provisioned repository, which is the state the workflow actually meets
+# after a new label is added to both lists. The labels that exist must not be
+# touched: `documentation` predates the workflow and keeps whatever colour a
+# human gave it, and re-creating it would fail the step.
+output="$(run_catalog_gate "${REPO_ROOT}" documentation area/image)"
+assert_status "a partially provisioned repository succeeds" 0 "$?"
+creates="$(cat "${LABEL_CREATES}")"
+assert_equal "only the missing labels are created" 5 "$(printf '%s\n' "${creates}" | grep -c .)"
+assert_absent "an existing label is never re-created" "${creates}" "label create documentation "
+assert_absent "an existing label is never re-created" "${creates}" "label create area/image "
+
+# Drift, direction one: a path rule whose label has no catalog entry. The label
+# used here is `quality`, which is also the label this repository reserves for
+# "approved by an owner for auto-merge on green CI" -- with sync-labels on, a
+# path rule naming it would let a pull request award itself that approval by
+# touching a path. The gate refuses it because it is uncatalogued, and the
+# refusal must come before any label is created.
+dir="$(config_copy drift-configured)"
+cat >>"${dir}/.github/labeler.yml" <<'EXTRA'
+
+quality:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "tests/**"
+EXTRA
+output="$(run_catalog_gate "${dir}" "${ALL_LABELS[@]}")"
+assert_status "a configured label with no catalog entry fails the job" 1 "$?"
+assert_contains "the annotation points at the configuration file" "${output}" \
+  "::error file=.github/labeler.yml::label quality is configured but has no catalog entry in .github/workflows/labeler.yml"
+assert_equal "drift is detected before any label is created" "" "$(cat "${LABEL_CREATES}")"
+
+# Drift, direction two: a catalog entry whose path rule was deleted. Only the
+# key is removed, so the failure is exactly the missing rule and not a second
+# malformed one.
+dir="$(config_copy drift-catalogued)"
+sed -i '/^area\/scripts:$/d' "${dir}/.github/labeler.yml"
+output="$(run_catalog_gate "${dir}" "${ALL_LABELS[@]}")"
+assert_status "a catalog entry with no path rule fails the job" 1 "$?"
+assert_contains "the annotation points at the workflow file" "${output}" \
+  "::error file=.github/workflows/labeler.yml::label area/scripts has a catalog entry but no path rule in .github/labeler.yml"
+assert_absent "the surviving rules are not reported as drift" "${output}" \
+  "label area/tests has a catalog entry"
+assert_equal "drift is detected before any label is created" "" "$(cat "${LABEL_CREATES}")"
+
+# The configured set is read by a `sed` that only matches a key at column 0, so
+# reindenting the configuration -- or nesting it under a new top-level key --
+# reads as "no labels are configured". That must fail loudly. It is the one
+# failure mode that could otherwise pass as success: a gate that found nothing
+# to check has nothing to complain about.
+dir="$(config_copy indented)"
+sed -i 's/^\([A-Za-z]\)/  \1/' "${dir}/.github/labeler.yml"
+output="$(run_catalog_gate "${dir}" "${ALL_LABELS[@]}")"
+assert_status "a reindented configuration fails the job" 1 "$?"
+assert_contains "a reindented configuration is reported as missing rules" "${output}" \
+  "label documentation has a catalog entry but no path rule"
+assert_equal "no label is created from an unreadable configuration" "" \
+  "$(cat "${LABEL_CREATES}")"
+
+# The joins the body cannot make. It checks the catalog against the
+# configuration; these check the configuration against the rules docs/ci-cd.md
+# states about it, which together pin all three copies of the list.
+configured_labels="$(sed -nE 's/^([A-Za-z][A-Za-z0-9._/-]*):[[:space:]]*$/\1/p' "${LABELER_CONFIG}")"
+assert_equal "the configuration names seven labels" 7 \
+  "$(printf '%s\n' "${configured_labels}" | grep -c .)"
+
+# "A label that means someone approved something must never be reachable from a
+# file path" (docs/ci-cd.md). `hold` and `needs-human` are here for the same
+# reason: sync-labels removes a label whose paths stop supporting it, so a path
+# rule naming one of these would also let a push clear it.
+for reserved in quality testing ci security hold needs-human; do
+  assert_absent "no path rule can award the ${reserved} label" \
+    $'\n'"${configured_labels}"$'\n' $'\n'"${reserved}"$'\n'
+done
+
+unprefixed=""
+while IFS= read -r name; do
+  [[ -z "${name}" ]] && continue
+  [[ "${name}" == "documentation" || "${name}" == area/* ]] && continue
+  unprefixed+="${name} "
+done <<<"${configured_labels}"
+assert_equal "every path label is documentation or lives under area/" "" "${unprefixed}"
+
+# docs/ci-cd.md's table is the third copy of the list and the only one no
+# workflow reads, so it is the one that rots first.
+doc_section="$(awk '
+  /^## Pull request labels$/ { inside = 1; next }
+  inside && /^## / { inside = 0 }
+  inside
+' "${CI_CD_DOC}")"
+assert_extracted "the pull request labels section is still in docs/ci-cd.md" \
+  "${doc_section}"
+# shellcheck disable=SC2016
+doc_labels="$(printf '%s\n' "${doc_section}" | sed -nE 's/^\| `([^`]+)` \|.*/\1/p')"
+assert_equal "docs/ci-cd.md's table names exactly the configured labels" \
+  "$(printf '%s\n' "${configured_labels}" | LC_ALL=C sort)" \
+  "$(printf '%s\n' "${doc_labels}" | LC_ALL=C sort)"
 
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
