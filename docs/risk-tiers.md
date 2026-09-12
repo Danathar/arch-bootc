@@ -138,7 +138,8 @@ The load-bearing set. Any of these puts a change in T3 regardless of how small
 the diff is:
 
 - **The root-login model** — `PermitRootLogin prohibit-password` in the sshd
-  drop-in, `pam_wheel.so use_uid` in `/etc/pam.d/su`, display managers that
+  drop-in, `pam_wheel.so use_uid` in `/etc/pam.d/su` and `/etc/pam.d/su-l`
+  (the service `su -` uses), display managers that
   refuse root, `passwd --expire`. The image ships a known default root password;
   these four are only safe *together*, so touching one invalidates the reasoning
   behind the other three.

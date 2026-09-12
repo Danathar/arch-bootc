@@ -23,7 +23,8 @@ Reject or escalate anything here that is not called out explicitly as a
 deliberate security change.
 
 - [ ] The root-login model is intact: `PermitRootLogin prohibit-password` in the
-      sshd drop-in, `pam_wheel.so use_uid` in `/etc/pam.d/su`, display managers
+      sshd drop-in, `pam_wheel.so use_uid` in `/etc/pam.d/su` *and*
+      `/etc/pam.d/su-l` (the service `su -` uses), display managers
       still refusing root, `passwd --expire` still forcing a change. These four
       are load-bearing *together* — the default root password is only safe
       because all of them hold.
