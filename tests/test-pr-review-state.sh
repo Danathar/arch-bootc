@@ -21,6 +21,10 @@ set -uo pipefail
 # the same reason the `gh` stub does: it is the other `pull_request`-driven
 # workflow body in this repository whose only external dependency is `gh`, and
 # it reuses the extractor and the stub that the section above already builds.
+#
+# The last section validates .github/ISSUE_TEMPLATE instead, and is here
+# because it continues the same job: pinning the hand-maintained GitHub
+# configuration that no workflow reads back. It needs no stub at all.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -968,6 +972,319 @@ doc_labels="$(printf '%s\n' "${doc_section}" | sed -nE 's/^\| `([^`]+)` \|.*/\1/
 assert_equal "docs/ci-cd.md's table names exactly the configured labels" \
   "$(printf '%s\n' "${configured_labels}" | LC_ALL=C sort)" \
   "$(printf '%s\n' "${doc_labels}" | LC_ALL=C sort)"
+
+# --- the issue forms in .github/ISSUE_TEMPLATE ------------------------------
+#
+# Nothing in tests/ opens these files. They matter for two reasons a static
+# read does not surface.
+#
+# First, GitHub drops a malformed form from the "New issue" chooser silently:
+# no error, no annotation, no failed check -- the form simply stops being
+# offered, and because `blank_issues_enabled: false` below removes the plain
+# text box too, what is left is the contact link. A form that has lost its
+# `description`, gained a duplicate `id`, or quoted a `required:` boolean is
+# invalid in exactly that way, and every gate this repository runs would stay
+# green through it.
+#
+# Second, the flavor list is written down five times: twice as a matrix in
+# .github/workflows/build.yml, once as the `AS <flavor>` build stages in the
+# Containerfile those matrices target, and once in each form's dropdown. The
+# first three fail loudly when they disagree -- buildah cannot build a stage
+# that does not exist. The dropdowns are the copy that rots without a symptom:
+# a fourth flavor would ship for months while every bug report about it had to
+# be filed as "Not flavor-specific".
+#
+# The parser below is deliberately strict about the shape it accepts and
+# reports any line it did not understand, because the alternative failure is
+# the one that passes as success: a grep-shaped reader that finds nothing in a
+# reindented file has nothing to complain about.
+
+ISSUE_TEMPLATE_DIR="${REPO_ROOT}/.github/ISSUE_TEMPLATE"
+ISSUE_TEMPLATE_CONFIG="${ISSUE_TEMPLATE_DIR}/config.yml"
+BUILD_WORKFLOW="${REPO_ROOT}/.github/workflows/build.yml"
+CONTAINERFILE="${REPO_ROOT}/Containerfile"
+
+# Flatten one issue form into tab-separated records, one per meaningful value:
+#
+#   top<TAB>name<TAB>Bug report
+#   label<TAB><TAB>bug
+#   3<TAB>type<TAB>dropdown
+#   3<TAB>id<TAB>flavor
+#   3<TAB>option<TAB>base
+#   3<TAB>validations.required<TAB>true
+#
+# where the first field is the 1-based index of the body item the record
+# belongs to. A line that does not fit the grammar becomes an `unknown` record
+# rather than being skipped.
+issue_form_dump() { # file
+  awk '
+    function emit(kind, value) { printf "%d\t%s\t%s\n", item, kind, value }
+    function unknown() { printf "unknown\tline %d\t%s\n", NR, $0 }
+    # Swallow a block scalar: every following line indented past its key.
+    block > 0 {
+      if ($0 ~ /^[[:space:]]*$/) next
+      match($0, /^ */)
+      if (RLENGTH > block) next
+      block = 0
+    }
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ || /^---$/ { next }
+    /^[A-Za-z_]/ {
+      key = $0; sub(/:.*/, "", key)
+      value = $0; sub(/^[A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*/, "", value)
+      in_labels = 0; in_body = 0; in_options = 0
+      if (key == "body") { in_body = 1; next }
+      if (key == "labels" && value == "") { in_labels = 1; next }
+      printf "top\t%s\t%s\n", key, value
+      next
+    }
+    in_labels && /^  - [^ ]/ { value = $0; sub(/^  - /, "", value); printf "label\t\t%s\n", value; next }
+    !in_body { unknown(); next }
+    /^  - type: [a-z]+$/ {
+      item++; itemtype = $0; sub(/^  - type: /, "", itemtype)
+      emit("type", itemtype); scope = "item"; in_options = 0
+      next
+    }
+    /^    [a-z_]+:/ {
+      key = $0; sub(/^    /, "", key); sub(/:.*/, "", key)
+      value = $0; sub(/^    [a-z_]+:[[:space:]]*/, "", value)
+      in_options = 0
+      if (key == "attributes") { scope = "attributes"; next }
+      if (key == "validations") { scope = "validations"; next }
+      emit(key, value)
+      next
+    }
+    /^      [a-z_]+:/ {
+      key = $0; sub(/^      /, "", key); sub(/:.*/, "", key)
+      value = $0; sub(/^      [a-z_]+:[[:space:]]*/, "", value)
+      in_options = 0
+      if (key == "options" && value == "") { in_options = 1; next }
+      if (value == "|" || value == ">") { block = 6; emit(scope "." key, "<block>"); next }
+      emit(scope "." key, value)
+      next
+    }
+    in_options && /^        - [^ ]/ { value = $0; sub(/^        - /, "", value); emit("option", value); next }
+    in_options && /^          [a-z_]+:/ {
+      key = $0; sub(/^          /, "", key); sub(/:.*/, "", key)
+      value = $0; sub(/^          [a-z_]+:[[:space:]]*/, "", value)
+      emit("option-" key, value)
+      next
+    }
+    { unknown() }
+  ' "$1"
+}
+
+# The records of one kind, values only, in file order.
+dump_values() { # dump kind
+  printf '%s\n' "$1" | awk -F'\t' -v kind="$2" '$2 == kind { print $3 }'
+}
+
+# The records of one kind, as "<item index><TAB><value>", so a value can be
+# joined back to the body item it came from.
+dump_pairs() { # dump kind
+  printf '%s\n' "$1" | awk -F'\t' -v kind="$2" '$2 == kind { print $1 "\t" $3 }'
+}
+
+# One checkbox item's options as "<required><TAB><label text>". A checkbox
+# option carries its own `required:`, so the flag has to be paired with the
+# option it followed rather than with the item -- an item holding one required
+# box and one optional one is the normal case, not an edge one.
+checkbox_options() { # dump item-index
+  printf '%s\n' "$1" | awk -F'\t' -v i="$2" '
+    function flush() { if (seen) print required "\t" label }
+    $1 != i { next }
+    $2 == "option" { flush(); seen = 1; label = $3; sub(/^label: /, "", label); required = "false"; next }
+    $2 == "option-required" { required = $3; next }
+    END { flush() }
+  '
+}
+
+# The one flavor list the build actually uses. Both matrices and the
+# Containerfile stages have to agree for any image to exist at all, so this is
+# the copy the forms are measured against rather than a fourth hand-written
+# list here.
+matrix_flavors="$(sed -nE 's/^[[:space:]]*flavor: \[(.*)\][[:space:]]*$/\1/p' "${BUILD_WORKFLOW}" |
+  tr -d ' ' | tr ',' '\n')"
+assert_extracted "build.yml still declares a flavor matrix" "${matrix_flavors}"
+assert_equal "both jobs run the same three flavors" \
+  $'base\nkde\nxfce\nbase\nkde\nxfce' "${matrix_flavors}"
+FLAVORS="$(printf '%s\n' "${matrix_flavors}" | LC_ALL=C sort -u)"
+assert_equal "the matrix flavors are the Containerfile's build stages" \
+  "${FLAVORS}" \
+  "$(sed -nE 's/^FROM base-core AS ([A-Za-z0-9_-]+)$/\1/p' "${CONTAINERFILE}" | LC_ALL=C sort -u)"
+
+# Discovered by glob, not listed here: a form added later is validated by
+# every case below without anyone remembering to add it.
+shopt -s nullglob
+issue_forms=("${ISSUE_TEMPLATE_DIR}"/*.yml "${ISSUE_TEMPLATE_DIR}"/*.yaml)
+shopt -u nullglob
+forms=()
+for form in "${issue_forms[@]}"; do
+  [[ "${form}" == "${ISSUE_TEMPLATE_CONFIG}" ]] && continue
+  forms+=("${form}")
+done
+assert_extracted "the issue template directory still holds forms" "${forms[*]:-}"
+
+# A Markdown template in this directory would be offered by the chooser and
+# skipped by every case below, so the two must be the same set of files.
+assert_equal "every issue template is a form this test validates" \
+  "$((${#forms[@]} + 1))" \
+  "$(find "${ISSUE_TEMPLATE_DIR}" -type f | grep -c .)"
+
+# GitHub's own list. A `type:` outside it makes the form invalid, and the
+# parser's item grammar only recognises these shapes.
+FORM_TYPES=" markdown input textarea dropdown checkboxes "
+
+flavor_dropdowns=0
+required_credential_checkboxes=0
+for form in "${forms[@]}"; do
+  name="${form#"${ISSUE_TEMPLATE_DIR}/"}"
+  dump="$(issue_form_dump "${form}")"
+  assert_extracted "${name} parses to something" "${dump}"
+  assert_absent "${name} has no line the form grammar does not accept" \
+    "${dump}" $'unknown\t'
+
+  # Both are mandatory: GitHub will not offer a form that is missing either.
+  assert_equal "${name} names itself for the chooser" 1 \
+    "$(dump_values "${dump}" name | grep -c .)"
+  assert_equal "${name} describes itself for the chooser" 1 \
+    "$(dump_values "${dump}" description | grep -c .)"
+
+  # A form that applies no label files an issue nothing can route.
+  form_labels="$(printf '%s\n' "${dump}" | awk -F'\t' '$1 == "label" { print $3 }')"
+  assert_extracted "${name} applies at least one label" "${form_labels}"
+
+  # The same rule docs/ci-cd.md states for path labels, for the same reason:
+  # these labels mean "an owner approved this for auto-merge on green CI", and
+  # an issue form hands its label to whoever opens the issue.
+  for reserved in quality testing ci security hold needs-human; do
+    assert_absent "${name} cannot award the ${reserved} label" \
+      $'\n'"${form_labels}"$'\n' $'\n'"${reserved}"$'\n'
+  done
+
+  # `title:` seeds the issue title, and both forms use it to carry a kind
+  # prefix a human scanning the tracker can sort on.
+  title="$(dump_values "${dump}" title)"
+  assert_equal "${name} seeds a bracketed title prefix" 1 \
+    "$(printf '%s\n' "${title}" | grep -cE '^"\[[a-z]+\] "$')"
+
+  types="$(dump_values "${dump}" type)"
+  assert_extracted "${name} has body items" "${types}"
+  unknown_types=""
+  while IFS= read -r itemtype; do
+    [[ -z "${itemtype}" ]] && continue
+    [[ "${FORM_TYPES}" == *" ${itemtype} "* ]] || unknown_types+="${itemtype} "
+  done <<<"${types}"
+  assert_equal "${name} uses only the body item types GitHub accepts" "" \
+    "${unknown_types}"
+
+  # Every input needs an `id` (it names the section in the filed issue), no
+  # `markdown` block may have one, and a repeated id invalidates the form.
+  ids="$(dump_values "${dump}" id)"
+  id_items="$(dump_pairs "${dump}" id | cut -f1 | LC_ALL=C sort)"
+  input_items="$(printf '%s\n' "${dump}" |
+    awk -F'\t' '$2 == "type" && $3 != "markdown" { print $1 }' | LC_ALL=C sort)"
+  assert_equal "${name} gives every input an id and no markdown block one" \
+    "${input_items}" "${id_items}"
+  assert_equal "${name} uses each id once" \
+    "$(printf '%s\n' "${ids}" | grep -c .)" \
+    "$(printf '%s\n' "${ids}" | LC_ALL=C sort -u | grep -c .)"
+  markdown_items="$(printf '%s\n' "${dump}" |
+    awk -F'\t' '$2 == "type" && $3 == "markdown" { print $1 }')"
+  while IFS= read -r markdown_item; do
+    [[ -z "${markdown_item}" ]] && continue
+    assert_absent "${name} item ${markdown_item} is markdown, so it has no validations" \
+      "$(printf '%s\n' "${dump}" | awk -F'\t' -v i="${markdown_item}" '$1 == i')" \
+      "validations."
+  done <<<"${markdown_items}"
+
+  # `required: "true"` is a string, and GitHub rejects the form rather than
+  # reading it as the boolean it looks like.
+  bad_booleans=""
+  while IFS= read -r value; do
+    [[ -z "${value}" ]] && continue
+    [[ "${value}" == "true" || "${value}" == "false" ]] || bad_booleans+="${value} "
+  done < <(printf '%s\n' "${dump}" |
+    awk -F'\t' '$2 == "validations.required" || $2 == "option-required" { print $3 }')
+  assert_equal "${name} writes every required flag as a bare boolean" "" \
+    "${bad_booleans}"
+
+  # A dropdown with fewer than two options is a question with one answer, and
+  # a checkboxes item with no `label:` renders as an empty box.
+  while IFS= read -r pair; do
+    [[ -z "${pair}" ]] && continue
+    index="${pair%%$'\t'*}"
+    itemtype="${pair#*$'\t'}"
+    options="$(printf '%s\n' "${dump}" |
+      awk -F'\t' -v i="${index}" '$1 == i && $2 == "option" { print $3 }')"
+    case "${itemtype}" in
+      dropdown)
+        option_count="$(printf '%s\n' "${options}" | grep -c .)"
+        if ((option_count < 2)); then
+          check "${name} dropdown ${index} offers a choice" 1 \
+            "only ${option_count} option(s)"
+        else
+          check "${name} dropdown ${index} offers a choice" 0
+        fi
+        # The join this section exists for. A dropdown that mentions any build
+        # flavor must offer all of them, plus exactly one escape hatch for the
+        # reports that are not about an image -- and the escape hatch has to be
+        # last, so the flavors read as the list they are.
+        offered="$(printf '%s\n' "${options}" | LC_ALL=C sort)"
+        if [[ -n "$(comm -12 <(printf '%s\n' "${offered}") <(printf '%s\n' "${FLAVORS}"))" ]]; then
+          flavor_dropdowns=$((flavor_dropdowns + 1))
+          assert_equal "${name} dropdown ${index} offers every build flavor" \
+            "${FLAVORS}" \
+            "$(comm -12 <(printf '%s\n' "${offered}") <(printf '%s\n' "${FLAVORS}"))"
+          assert_equal "${name} dropdown ${index} adds one non-flavor answer" \
+            "$(($(printf '%s\n' "${FLAVORS}" | grep -c .) + 1))" \
+            "${option_count}"
+          assert_equal "${name} dropdown ${index} keeps the non-flavor answer last" \
+            "" \
+            "$(comm -12 <(printf '%s\n' "${options}" | tail -n1) <(printf '%s\n' "${FLAVORS}"))"
+        fi
+        ;;
+      checkboxes)
+        unlabelled=""
+        while IFS= read -r option; do
+          [[ -z "${option}" ]] && continue
+          [[ "${option}" == label:* ]] || unlabelled+="${option} "
+        done <<<"${options}"
+        assert_equal "${name} checkboxes ${index} labels every box" "" "${unlabelled}"
+        ;;
+    esac
+  done < <(dump_pairs "${dump}" type)
+
+  # This repository ships a signing key and its policy, and asks reporters for
+  # image digests and command output. The redaction checkbox is the one prompt
+  # standing between that and a pasted credential, so it stays required.
+  while IFS= read -r index; do
+    [[ -z "${index}" ]] && continue
+    while IFS=$'\t' read -r required label; do
+      [[ "${label}" == *credentials* ]] || continue
+      [[ "${required}" == "true" ]] || continue
+      required_credential_checkboxes=$((required_credential_checkboxes + 1))
+    done < <(checkbox_options "${dump}" "${index}")
+  done <<<"$(printf '%s\n' "${dump}" | awk -F'\t' '$2 == "type" && $3 == "checkboxes" { print $1 }')"
+done
+
+assert_equal "every form offering flavors is joined to the build matrix" \
+  "${#forms[@]}" "${flavor_dropdowns}"
+assert_equal "a required credential-redaction checkbox survives somewhere" 1 \
+  "${required_credential_checkboxes}"
+
+# `blank_issues_enabled: false` is what makes all of the above load-bearing:
+# with the plain text box removed, a form that GitHub refuses to render leaves
+# a reporter with the contact link and no way to open an issue at all.
+config_dump="$(grep -vE '^[[:space:]]*(#|$)' "${ISSUE_TEMPLATE_CONFIG}")"
+assert_extracted "the chooser configuration is readable" "${config_dump}"
+assert_contains "blank issues stay disabled" "${config_dump}" "blank_issues_enabled: false"
+contact_links="$(grep -cE '^  - name: ' "${ISSUE_TEMPLATE_CONFIG}")"
+for key in name url about; do
+  assert_equal "every contact link carries ${key}" "${contact_links}" \
+    "$(grep -cE "^ +-? *${key}: " "${ISSUE_TEMPLATE_CONFIG}")"
+done
+assert_equal "every contact link is https" "${contact_links}" \
+  "$(grep -cE '^ +url: https://' "${ISSUE_TEMPLATE_CONFIG}")"
 
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
