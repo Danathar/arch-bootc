@@ -738,6 +738,152 @@ assert_status "a package within the retention floor exits 0" 0 "$?"
 assert_contains "a package within the retention floor prunes nothing" "${output}" "nothing to prune"
 assert_equal "no version is removed" "" "$(pruned_ids)"
 
+# --- the other half of the seam: the name the build job publishes ---------
+#
+# Everything above proves the prune job removes the right versions of whatever
+# package it is pointed at. Which package that is gets decided in two
+# `Prepare environment` steps, one per job, and only `cleanup_packages`' was
+# run here. `build_push`'s body composes the published name -- lowercased image
+# name plus the matrix flavor -- and `cleanup_packages`' body says in a comment
+# to "keep this in sync with the build job's own IMAGE_NAME handling above".
+# Nothing checked that sync. The two bodies could drift apart with both jobs
+# still green: the build would publish under one name and the prune would run
+# against another, which `gh` answers with a 404 that this script reports as
+# "could not list versions" -- indistinguishable from the missing Admin grant
+# documented in docs/ci-cd.md, while the real packages keep growing forever.
+#
+# So the build job's body is executed here too, against the same mixed-case
+# repository name, and the two sides are compared. The comparison is the point;
+# the per-flavor assertions are there so a failure names which side moved.
+
+BUILD_JOB="build_push"
+build_prepare_run="$(workflow_step_run "${BUILD_WORKFLOW}" "${BUILD_JOB}" "${PREPARE_STEP}")"
+assert_extracted "the build job's prepare body is still where this file looks for it" \
+  "${build_prepare_run}"
+
+# Unlike the prune job's body, this one is not plain shell: it pastes the
+# matrix flavor in as text. Pinning the exact set of expressions is what keeps
+# the substitution below honest -- a body that grew a second expression would
+# otherwise be run here with that expression left unresolved, proving something
+# about a string the runner never executes.
+# The literals below are workflow expressions, so they must stay unexpanded.
+# shellcheck disable=SC2016
+flavor_expr='${{ matrix.flavor }}'
+# shellcheck disable=SC2016
+build_prepare_expressions="$(printf '%s\n' "${build_prepare_run}" | grep -o '\${{[^}]*}}' | sort -u)"
+assert_equal "the matrix flavor is the only expression pasted into the build job's prepare body" \
+  "${flavor_expr}" "${build_prepare_expressions}"
+
+# Print every line of the named job, so the matrix can be read from the job
+# that declares it rather than from the first `flavor:` in the file --
+# cleanup_packages declares one of its own.
+workflow_job_block() {
+  local workflow="$1" job="$2"
+  awk -v want="${job}" '
+    /^jobs:$/ { in_jobs = 1; next }
+    in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ {
+      in_job = (substr($0, 3, length($0) - 3) == want)
+    }
+    in_job { print }
+  ' "${workflow}"
+}
+
+build_flavors="$(workflow_job_block "${BUILD_WORKFLOW}" "${BUILD_JOB}" |
+  sed -n 's/^ *flavor: \[\(.*\)\]$/\1/p' | tr ',' ' ')"
+assert_extracted "the build job still declares a flavor matrix" "${build_flavors}"
+read -ra build_flavor_list <<<"${build_flavors}"
+
+# The name the prune job is aimed at is composed in the step's environment from
+# what its own prepare body wrote, so it is resolved the way Actions resolves
+# it: the `env.IMAGE_NAME` this file already captured, plus the matrix flavor.
+package_template="$(workflow_step_env "${BUILD_WORKFLOW}" "${PRUNE_JOB}" "${DELETE_STEP}" PACKAGE_NAME)"
+# shellcheck disable=SC2016
+image_name_expr='${{ env.IMAGE_NAME }}'
+
+BUILD_ENV_FILE="${WORK_DIR}/build-github-env"
+cache_images=""
+published_refs=""
+first_built_name=""
+for flavor in "${build_flavor_list[@]}"; do
+  : >"${BUILD_ENV_FILE}"
+  # `Arch-BootC` and a mixed-case registry owner for the same reason the prune
+  # body is given one above: both sides lowercase, and against an
+  # already-lowercase name a side that stopped lowercasing would still agree
+  # with the other one.
+  IMAGE_REGISTRY="ghcr.io/Danathar" IMAGE_NAME="Arch-BootC" GITHUB_ENV="${BUILD_ENV_FILE}" \
+    "${BASH}" -c "${build_prepare_run//"${flavor_expr}"/${flavor}}" >/dev/null 2>&1
+  assert_status "the build job's prepare step exits 0 for ${flavor}" 0 "$?"
+
+  built_registry="$(sed -n 's/^IMAGE_REGISTRY=//p' "${BUILD_ENV_FILE}")"
+  built_name="$(sed -n 's/^IMAGE_NAME=//p' "${BUILD_ENV_FILE}")"
+  built_cache="$(sed -n 's/^CACHE_IMAGE=//p' "${BUILD_ENV_FILE}")"
+
+  assert_equal "the build job publishes the lowercased name plus the ${flavor} flavor" \
+    "arch-bootc-${flavor}" "${built_name}"
+  assert_equal "the registry the ${flavor} build pushes to is lowercased" \
+    "ghcr.io/danathar" "${built_registry}"
+
+  # The seam itself: what one job publishes is what the other job prunes.
+  pruned_package="${package_template//"${image_name_expr}"/${image_name}}"
+  pruned_package="${pruned_package//"${flavor_expr}"/${flavor}}"
+  # shellcheck disable=SC2016
+  assert_absent "the pruned ${flavor} package name resolves to plain text" "${pruned_package}" '${{'
+  assert_equal "the package the prune job removes versions from is the one the build job published (${flavor})" \
+    "${built_name}" "${pruned_package}"
+
+  cache_images="${cache_images}${built_cache}"$'\n'
+  published_refs="${published_refs}${built_registry}/${built_name}"$'\n'
+  [[ -n "${first_built_name}" ]] || first_built_name="${built_name}"
+done
+
+# Every later step in the job reads this body's output through `env.`, so an
+# added or renamed variable here is a variable nothing reads, and a dropped one
+# is an empty image reference. Three, by these names, is the contract.
+assert_equal "the build job's prepare step writes exactly the variables its later steps read" \
+  "IMAGE_REGISTRY IMAGE_NAME CACHE_IMAGE" \
+  "$(cut -d= -f1 "${BUILD_ENV_FILE}" | tr '\n' ' ' | sed 's/ $//')"
+
+# One shared cache repository for all three flavors is the documented intent of
+# the body's own comment. Per-flavor cache repos would still build, just with
+# each flavor's cache missing the other two's base-core layers.
+assert_equal "every flavor shares one layer-cache repository" \
+  "ghcr.io/danathar/buildcache" "$(printf '%s' "${cache_images}" | sort -u | tr -d '\n')"
+
+# And that repository must not be one of the shipped images: the cache push is
+# unconditional on publish runs, so a CACHE_IMAGE that collided with a
+# published reference would overwrite a shipped image with cache blobs.
+if printf '%s' "${published_refs}" | grep -qxF "ghcr.io/danathar/buildcache"; then
+  check "the layer-cache repository is not one of the published images" 1 \
+    "CACHE_IMAGE resolves to a reference this job also publishes"
+else
+  check "the layer-cache repository is not one of the published images" 0
+fi
+
+# The readers, pinned where they are written. The variables above are only
+# load-bearing because these steps name them; a renamed variable on either side
+# is silent otherwise.
+build_workflow_text="$(cat "${BUILD_WORKFLOW}")"
+# shellcheck disable=SC2016
+assert_contains "a buildah step pulls from the cache repository this body writes" \
+  "${build_workflow_text}" '--cache-from ${{ env.CACHE_IMAGE }}'
+# shellcheck disable=SC2016
+assert_contains "a buildah step pushes to the cache repository this body writes" \
+  "${build_workflow_text}" '--cache-to ${{ env.CACHE_IMAGE }}'
+# shellcheck disable=SC2016
+assert_contains "the image buildah builds is the name this body writes" \
+  "${build_workflow_text}" 'image: ${{ env.IMAGE_NAME }}'
+
+# End to end, with nothing invented in between: the name the build body
+# produced is handed to the prune body, which reaches the real script, which
+# asks for that package over the stubbed REST API.
+workflow_fixture
+output="$(run_prune_step Danathar User "${first_built_name}")"
+assert_status "the prune step exits 0 against the name the build job publishes" 0 "$?"
+assert_contains "the pruned REST path names the package the build job publishes" \
+  "$(requested_paths)" \
+  "GET users/Danathar/packages/container/${first_built_name}/versions?per_page=100"
+assert_equal "the retention floor still holds for the published package" "1" "$(pruned_ids)"
+
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
   printf 'FAILED %d of %d assertion(s)\n' "${failures}" "${tests_run}" >&2
