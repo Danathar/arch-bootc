@@ -331,6 +331,52 @@ RUN bootc container lint
 COPY --from=ghcr.io/ublue-os/brew:latest@sha256:d52b3f578f01623636aff534291b0bd8ff0a0244ef225bf51aecb5fa05a137af /system_files /
 RUN systemctl preset brew-setup.service brew-update.timer brew-upgrade.timer
 
+# That /system_files carries shell integration alongside the units and the
+# tarball, and none of it is guarded:
+#
+#   /etc/profile.d/brew.sh                        evals `brew shellenv`
+#   /etc/profile.d/brew-bash-completion.sh        runs `brew completions link`,
+#                                                 then sources every file in
+#                                                 the prefix's
+#                                                 etc/bash_completion.d
+#   /usr/share/fish/vendor_conf.d/ublue-brew.fish the fish equivalent
+#
+# All three read /home/linuxbrew/.linuxbrew, and brew-setup.service above ends
+# with `chown -R 1000:1000 /home/linuxbrew`. In root's interactive shell each
+# one is therefore UID 1000 choosing what root executes, without a password and
+# without a sudo record — the path this image's console-only root model exists
+# to close, reached from a local session.
+#
+# The guarded fragments this repository ships (/etc/profile.d/homebrew.sh,
+# /etc/fish/conf.d/homebrew.fish) do not displace them. The filenames differ, so
+# every one of them is sourced, and /etc/profile.d is read in collation order,
+# which puts brew-bash-completion.sh and brew.sh ahead of homebrew.sh. The one
+# condition that could have saved it — brew.sh skipping when HOMEBREW_PREFIX is
+# already set — never fires, because homebrew.sh runs afterwards and correctly
+# refuses to set it for root.
+#
+# `brew`'s bash completion goes with brew-bash-completion.sh. Sourcing files out
+# of a prefix one unprivileged account can rewrite is the vulnerability, so it
+# cannot simply be kept; re-adding it behind homebrew.sh's ownership guard
+# belongs in that fragment, with its own cases.
+#
+# The sweep is the load-bearing half. Deleting three names fixes this digest and
+# says nothing about the next one, so anything under the three shell-integration
+# directories that names brew, and is not one of the two guarded fragments,
+# fails the build here instead of shipping.
+RUN rm -f /etc/profile.d/brew.sh \
+          /etc/profile.d/brew-bash-completion.sh \
+          /usr/share/fish/vendor_conf.d/ublue-brew.fish && \
+    unguarded="$(grep -rlI -- brew \
+        /etc/profile.d /etc/fish/conf.d /usr/share/fish/vendor_conf.d 2>/dev/null | \
+      grep -vxF -e /etc/profile.d/homebrew.sh -e /etc/fish/conf.d/homebrew.fish || true)" && \
+    if [ -n "${unguarded}" ]; then \
+        echo "error: unguarded Homebrew shell integration in the image:" >&2; \
+        printf '%s\n' "${unguarded}" >&2; \
+        echo "Guard it the way system_files/etc/profile.d/homebrew.sh does, or remove it." >&2; \
+        exit 1; \
+    fi
+
 
 # --- base (CLI) target ---
 # Tag every package-owned file with a chunkah `user.component` (its pacman

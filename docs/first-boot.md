@@ -132,13 +132,24 @@ automatically get `brew` on `PATH`:
 - Zsh login shells are covered automatically: `/etc/zsh/zprofile` sources
   `/etc/profile`, which runs `/etc/profile.d/homebrew.sh`
 
-Both fragments only use a prefix owned by root or by the user whose shell it
-is, so the UID 1000 install above puts `brew` on that user's `PATH` and on
-nobody else's. Homebrew needs its prefix writable by whoever runs it — `brew`
-refuses to run as root — so an unguarded fragment would have every other
-account, root included, executing a binary one unprivileged user can rewrite.
-Upstream Homebrew does not support a shared multi-user prefix either; a second
-user who wants `brew` should install their own.
+Those two are the only shell integration the image installs, and both only use
+a prefix owned by root or by the user whose shell it is, so the UID 1000
+install above puts `brew` on that user's `PATH` and on nobody else's. Homebrew
+needs its prefix writable by whoever runs it — `brew` refuses to run as root —
+so an unguarded fragment would have every other account, root included,
+executing a binary one unprivileged user can rewrite. Upstream Homebrew does
+not support a shared multi-user prefix either; a second user who wants `brew`
+should install their own.
+
+ublue-os/brew ships three unguarded fragments of its own —
+`/etc/profile.d/brew.sh`, `/etc/profile.d/brew-bash-completion.sh` and
+`/usr/share/fish/vendor_conf.d/ublue-brew.fish` — alongside the units and the
+tarball this image takes from it. The Containerfile deletes all three right
+after the `COPY --from`, and fails the build if a later upstream digest adds a
+fourth, because they would otherwise be sourced *before* the guarded fragments
+above and hand the prefix owner a shell in every other account. One consequence
+is visible: `brew`'s bash completion is not installed, since the way that
+fragment provided it was to source files out of the prefix itself.
 
 Ownership is read off each path itself, never off whatever a symlink points
 at. `bin/brew` is allowed to be a link — a stock Homebrew prefix ships it as
