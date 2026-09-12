@@ -260,6 +260,72 @@ assert_present "the POSIX fragment is executed by a test" \
 assert_present "the fish fragment is executed by a test" \
   "tests/test-homebrew-shell-integration.sh" 'system_files/etc/fish/conf\.d/homebrew\.fish'
 
+# The image also receives shell integration this repository did not write.
+# ublue-os/brew's /system_files carries /etc/profile.d/brew.sh,
+# /etc/profile.d/brew-bash-completion.sh and
+# /usr/share/fish/vendor_conf.d/ublue-brew.fish -- none guarded, all reading the
+# prefix brew-setup.service chowns to 1000:1000 -- and it arrives through
+# `COPY --from`. That is why the assertions above cannot reach it: they name
+# files in this tree, and those three are not in this tree at any revision.
+#
+# The guarded fragments do not displace them either. The filenames differ, so
+# all of them are sourced, and /etc/profile.d is read in collation order, which
+# puts brew-bash-completion.sh and brew.sh ahead of homebrew.sh.
+#
+# What *is* in this tree is the Containerfile step that removes them and then
+# fails the build on a fourth, so that is what is asserted here.
+VENDORED_BREW_FRAGMENTS=(
+  /etc/profile.d/brew.sh
+  /etc/profile.d/brew-bash-completion.sh
+  /usr/share/fish/vendor_conf.d/ublue-brew.fish
+)
+
+# Join line continuations first: the removal is one multi-line RUN, and a
+# line-at-a-time grep would report the step present when only its first path
+# survived an edit.
+containerfile_joined="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' "${CONTAINERFILE}")"
+brew_removal="$(grep -E '^[[:space:]]*RUN[[:space:]]+rm -f' <<<"${containerfile_joined}" |
+  grep -F -- '/etc/profile.d/brew.sh')"
+
+if [[ -z "${brew_removal}" ]]; then
+  fail "the Containerfile removes ublue-os/brew's own shell integration" \
+    "no RUN step removes /etc/profile.d/brew.sh"
+else
+  not_removed=""
+  for vendored in "${VENDORED_BREW_FRAGMENTS[@]}"; do
+    grep -qF -- "${vendored}" <<<"${brew_removal}" || not_removed+="${vendored} "
+  done
+  if [[ -z "${not_removed}" ]]; then
+    pass "the Containerfile removes ublue-os/brew's own shell integration"
+  else
+    fail "the Containerfile removes ublue-os/brew's own shell integration" \
+      "still shipped: ${not_removed}"
+  fi
+fi
+
+# Removing them before the COPY that creates them is a no-op that leaves every
+# assertion above green, so the order is asserted rather than assumed.
+brew_copy_line="$(grep -n 'COPY --from=ghcr.io/ublue-os/brew' "${CONTAINERFILE}" | head -1 | cut -d: -f1)"
+brew_removal_line="$(grep -n 'rm -f /etc/profile.d/brew.sh' "${CONTAINERFILE}" | head -1 | cut -d: -f1)"
+if [[ -n "${brew_copy_line}" && -n "${brew_removal_line}" ]] &&
+  ((brew_removal_line > brew_copy_line)); then
+  pass "the removal runs after the COPY that brings the fragments in"
+else
+  fail "the removal runs after the COPY that brings the fragments in" \
+    "COPY at line ${brew_copy_line:-none}, removal at line ${brew_removal_line:-none}"
+fi
+
+# The list above is this digest's inventory. The sweep is what covers the next
+# one: it fails the build on anything under the three shell-integration
+# directories that names brew and is not one of the two guarded fragments.
+assert_present "an unguarded fragment from a later brew digest fails the build" \
+  "${CONTAINERFILE}" 'unguarded Homebrew shell integration in the image' \
+  "the sweep that catches a fragment the removal list does not name is gone"
+
+assert_present "the sweep exempts only this repository's two guarded fragments" \
+  "${CONTAINERFILE}" 'grep -vxF -e /etc/profile\.d/homebrew\.sh -e /etc/fish/conf\.d/homebrew\.fish' \
+  "the sweep's allowlist no longer names exactly the two guarded fragments"
+
 # ---------------------------------------------------------------------------
 group "Signature chain (docs/ci-cd.md, docs/security/SECURITY-AI.md)"
 
