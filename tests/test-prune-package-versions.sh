@@ -884,6 +884,189 @@ assert_contains "the pruned REST path names the package the build job publishes"
   "GET users/Danathar/packages/container/${first_built_name}/versions?per_page=100"
 assert_equal "the retention floor still holds for the published package" "1" "$(pruned_ids)"
 
+# --- the other derived value the build job computes: the cache bust --------
+#
+# `Prepare environment` above decides *what* is published. `Get current date`
+# decides *how fresh what is published is*, and no test ran its body. It writes
+# two step outputs:
+#
+#   date -> org.opencontainers.image.created, the ArtifactHub timestamp
+#   ymd  -> PACMAN_CACHE_BUST, the Containerfile build-arg whose only job is to
+#           change once per calendar day so the remote buildah layer cache
+#           misses from the package-install step onward
+#
+# Both failure directions are silent. A `ymd` that stopped changing daily --
+# coarser granularity, a dropped `-u` at the wrong hour, a renamed output that
+# Actions expands to the empty string -- leaves the cache-bust line constant,
+# so every build reuses a cached `pacman -Syu` against Arch's live repositories
+# and the image ships a package set nobody chose, on a green run. A `ymd` that
+# changed more often than daily is the opposite and just as quiet: every run
+# misses the cache and rebuilds from the package install down. A malformed
+# `date` leaves the published image carrying a creation timestamp ArtifactHub
+# cannot read, which nothing in this repository would ever notice.
+#
+# So the body is executed here, and both of its outputs are joined to the
+# expressions that read them. The runtime cases drive it through a `date` stub
+# on PATH that answers from a fixed epoch, because the properties worth
+# asserting -- same UTC day gives the same bust, one second later the next day
+# gives a different one -- cannot be observed against the real clock.
+
+DATE_STEP="Get current date"
+date_run="$(workflow_step_run "${BUILD_WORKFLOW}" "${BUILD_JOB}" "${DATE_STEP}")"
+assert_extracted "the date step's body is still where this file looks for it" "${date_run}"
+# shellcheck disable=SC2016
+assert_absent "the date step's body is plain shell" "${date_run}" '${{'
+
+# Print one scalar key declared directly on the named step, such as `id:`.
+# The expressions that read this step name it by id, not by step name, so a
+# renamed id breaks every reader while the step itself still looks right.
+workflow_step_key() {
+  local workflow="$1" job="$2" step="$3" key="$4"
+  awk -v want_job="${job}" -v want="${step}" -v key="${key}" '
+    /^jobs:$/ { in_jobs = 1; next }
+    in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ {
+      current_job = substr($0, 3, length($0) - 3)
+    }
+    /^      - name: / { current = substr($0, 15); next }
+    current_job == want_job && current == want && $0 ~ ("^        " key ": ") {
+      print substr($0, length(key) + 11); exit
+    }
+  ' "${workflow}"
+}
+
+assert_equal "the date step still declares the id its readers name" \
+  "date" "$(workflow_step_key "${BUILD_WORKFLOW}" "${BUILD_JOB}" "${DATE_STEP}" id)"
+
+# --- the body, run against a fixed clock -----------------------------------
+
+DATE_STUB_DIR="${WORK_DIR}/date-stubs"
+DATE_ARGS="${WORK_DIR}/date-args"
+DATE_OUTPUT_FILE="${WORK_DIR}/date-github-output"
+mkdir -p "${DATE_STUB_DIR}"
+
+# Resolved before the stub dir goes on PATH, so the stub can reach the real
+# program without recursing into itself.
+REAL_DATE="$(command -v date)"
+
+# The stub records the whole argv and then hands it to the real `date`
+# unchanged, with the instant pinned. Passing the arguments through rather than
+# reimplementing them is what keeps a dropped `-u` or a changed format string
+# observable in the output as well as in the recording.
+cat >"${DATE_STUB_DIR}/date" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"\${DATE_ARGS_FILE}"
+exec ${REAL_DATE} "\$@" --date "@\${FAKE_EPOCH}"
+EOF
+chmod +x "${DATE_STUB_DIR}/date"
+
+# Runs the step body at the given epoch, in the given TZ, and leaves its
+# outputs in DATE_OUTPUT_FILE.
+run_date_step() {
+  local epoch="$1" tz="${2:-UTC}"
+  : >"${DATE_OUTPUT_FILE}"
+  : >"${DATE_ARGS}"
+  PATH="${DATE_STUB_DIR}:${PATH}" \
+    DATE_ARGS_FILE="${DATE_ARGS}" \
+    FAKE_EPOCH="${epoch}" \
+    TZ="${tz}" \
+    GITHUB_OUTPUT="${DATE_OUTPUT_FILE}" \
+    "${BASH}" -c "${date_run}" 2>&1
+}
+
+date_output() { sed -n "s/^$1=//p" "${DATE_OUTPUT_FILE}"; }
+
+# 2026-01-01T23:59:59Z. One second before a UTC day boundary, which is where
+# every interesting property of this body lives.
+NEW_YEARS_EVE=1767311999
+
+output="$(run_date_step "${NEW_YEARS_EVE}")"
+assert_status "the date step exits 0" 0 "$?"
+assert_equal "the date step prints nothing to the log" "" "${output}"
+
+# Exactly two outputs, by these names: the expressions below read them by name,
+# so an added output is one nothing reads and a renamed one is an empty string
+# pasted into a label and a build-arg.
+assert_equal "the date step writes exactly the outputs its readers name" \
+  "date ymd" \
+  "$(cut -d= -f1 "${DATE_OUTPUT_FILE}" | tr '\n' ' ' | sed 's/ $//')"
+
+# `-u` on both calls, and the two format strings. The ArtifactHub form the
+# body's own comment cites is `%Y-%m-%dT%H:%M:%SZ`; the literal `Z` is only
+# truthful because of `-u`.
+assert_equal "both timestamps are asked of UTC in the documented formats" \
+  "-u +%Y-%m-%dT%H:%M:%SZ
+-u +%Y%m%d" \
+  "$(cat "${DATE_ARGS}")"
+
+assert_equal "the created timestamp is the ArtifactHub form at that instant" \
+  "2026-01-01T23:59:59Z" "$(date_output date)"
+assert_equal "the cache bust is that instant's UTC day" \
+  "20260101" "$(date_output ymd)"
+
+# The two outputs are read by different consumers and computed by separate
+# `date` calls, so nothing but this makes them describe the same day.
+assert_equal "the cache bust is the day part of the created timestamp" \
+  "$(date_output ymd)" "$(date_output date | cut -dT -f1 | tr -d -)"
+
+# A runner in a non-UTC zone must not change what is built. `XXX-14` is a
+# POSIX TZ 14 hours ahead of UTC, so at the instant above the local date is
+# already 2026-01-02: a body that dropped `-u` would bust the cache a day early
+# and stamp a creation time that never happened in UTC.
+run_date_step "${NEW_YEARS_EVE}" "XXX-14" >/dev/null
+assert_equal "a runner ahead of UTC still busts on the UTC day" \
+  "20260101" "$(date_output ymd)"
+assert_equal "a runner ahead of UTC still stamps a UTC creation time" \
+  "2026-01-01T23:59:59Z" "$(date_output date)"
+
+# Granularity, from both sides. These are the two ways the bust stops being
+# worth passing at all, and neither shows up as a failed run.
+run_date_step "$((NEW_YEARS_EVE - 86398))" >/dev/null
+assert_equal "an earlier instant on the same UTC day busts identically" \
+  "20260101" "$(date_output ymd)"
+
+run_date_step "$((NEW_YEARS_EVE + 1))" >/dev/null
+assert_equal "the first instant of the next UTC day busts differently" \
+  "20260102" "$(date_output ymd)"
+
+# --- the readers, joined to what the body writes ---------------------------
+#
+# Everything above proves the body computes two correct values. What makes them
+# load-bearing is the set of expressions that read them, and Actions expands a
+# reference to a missing step output to the empty string rather than failing.
+
+date_readers="$(grep -o 'steps\.date\.outputs\.[A-Za-z0-9_-]*' "${BUILD_WORKFLOW}" |
+  sed 's/.*\.//' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+assert_equal "every output this body writes is read, and nothing reads an output it does not write" \
+  "date ymd" "${date_readers}"
+
+# shellcheck disable=SC2016
+assert_contains "the created label is the timestamp this body computed" \
+  "${build_workflow_text}" \
+  'org.opencontainers.image.created=${{ steps.date.outputs.date }}'
+
+# Both buildah invocations, not one. `Populate build cache` re-runs the same
+# build to push cache blobs and is expected to hit the local layer cache the
+# build above just filled; handed a different cache bust it would instead
+# rebuild everything from the package install down, and then push that as the
+# cache the next run pulls.
+# shellcheck disable=SC2016
+cache_bust_arg='PACMAN_CACHE_BUST=${{ steps.date.outputs.ymd }}'
+assert_equal "both buildah steps pass the same cache bust" \
+  "2" "$(grep -cF "            ${cache_bust_arg}" "${BUILD_WORKFLOW}")"
+
+buildah_steps="$(grep -c '^        uses: redhat-actions/buildah-build@' "${BUILD_WORKFLOW}")"
+assert_equal "the two steps that pass it are every buildah build in the job" \
+  "${buildah_steps}" "2"
+
+# And the far end: a build-arg buildah is handed for an ARG the Containerfile
+# never declares is discarded, which is exactly the silent no-bust outcome.
+# shellcheck disable=SC2016
+cache_bust_name="$(printf '%s' "${cache_bust_arg}" | cut -d= -f1)"
+assert_status "the Containerfile declares the build-arg this body feeds" 0 \
+  "$(
+    grep -qE "^ARG ${cache_bust_name}=" "${REPO_ROOT}/Containerfile"
+    printf '%s' "$?"
+  )"
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
   printf 'FAILED %d of %d assertion(s)\n' "${failures}" "${tests_run}" >&2
