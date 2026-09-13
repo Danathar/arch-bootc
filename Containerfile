@@ -151,6 +151,19 @@ COPY cosign.pub /etc/pki/containers/arch-bootc.pub
 #               a wheel user already has full root via sudo, so gaining
 #               nothing extra from `su` is fine — it only removes the path
 #               for accounts that were never supposed to reach root at all.
+#
+#               Both PAM services, not just the obvious one. util-linux's su
+#               authenticates a login shell against /etc/pam.d/su-l, not
+#               /etc/pam.d/su -- su(1) lists it as "PAM configuration file if
+#               --login is specified" -- and Arch ships that file with the
+#               same line commented out. Editing only /etc/pam.d/su leaves
+#               `su root` restricted and `su - root` open, which is the form
+#               anyone reaching for root would use.
+#
+#               The result is checked rather than assumed. `sed` exits 0 when
+#               it matches nothing, and Renovate automerges base-image digest
+#               bumps, so an upstream change to either file's wording would
+#               otherwise turn this into a silent no-op behind a green build.
 #   - Console:   works — and this is the point.
 #
 # `passwd --expire` forces a change on that first login, so the well-known
@@ -163,7 +176,11 @@ RUN echo 'root:changeme' | chpasswd && \
     passwd --expire root && \
     mkdir -p /etc/ssh/sshd_config.d && \
     printf 'PermitRootLogin prohibit-password\n' > /etc/ssh/sshd_config.d/10-no-root-password.conf && \
-    sed -i 's/^#auth\s\+required\s\+pam_wheel\.so use_uid/auth            required        pam_wheel.so use_uid/' /etc/pam.d/su
+    for pamfile in /etc/pam.d/su /etc/pam.d/su-l; do \
+        sed -i 's/^#auth\s\+required\s\+pam_wheel\.so use_uid/auth            required        pam_wheel.so use_uid/' "${pamfile}" && \
+        grep -Eq '^auth[[:space:]]+required[[:space:]]+pam_wheel\.so[[:space:]]+use_uid' "${pamfile}" || \
+          { echo "error: pam_wheel.so use_uid is not active in ${pamfile} after the edit" >&2; exit 1; }; \
+    done
 
 # Grant sudo to whoever is placed in the wheel group — whether by the console
 # bootstrap above, cloud-init, or the QEMU guest agent. This is opt-in per user,

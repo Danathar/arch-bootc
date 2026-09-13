@@ -151,6 +151,25 @@ assert_present "pam_wheel.so use_uid is enabled in /etc/pam.d/su" \
   "${CONTAINERFILE}" 'pam_wheel\\?\.so use_uid' \
   "Arch ships this line commented out; without the sed that uncomments it, any local account can su to root"
 
+# Naming one PAM service is not enough, and the missing half is invisible to the
+# assertion above because both files' lines read identically. util-linux's su
+# authenticates a login shell against /etc/pam.d/su-l -- su(1) lists it as "PAM
+# configuration file if --login is specified" -- and Arch ships that file with
+# the same line commented out. Editing /etc/pam.d/su alone restricts `su root`
+# and leaves `su - root` open to any local account, which is the form this
+# repository's own prose reaches for when it describes the risk.
+assert_present "the pam_wheel edit covers /etc/pam.d/su-l, which is what \`su -\` authenticates against" \
+  "${CONTAINERFILE}" 'for pamfile in /etc/pam\.d/su /etc/pam\.d/su-l' \
+  "a login shell uses /etc/pam.d/su-l; editing only /etc/pam.d/su leaves \`su - root\` unrestricted"
+
+# `sed` exits 0 having changed nothing, and renovate.json automerges
+# docker.io/archlinux/archlinux digest bumps, so an upstream change to either
+# file's wording would turn the edit above into a no-op behind a green build.
+# The check that the line ended up active is what makes that a red build.
+assert_present "the pam_wheel edit is verified, not assumed" \
+  "${CONTAINERFILE}" 'pam_wheel\.so use_uid is not active in' \
+  "nothing fails the build when the sed matches nothing, which is how a base-image change removes this control silently"
+
 assert_present "the root password is expired on first use" \
   "${CONTAINERFILE}" 'passwd --expire root'
 

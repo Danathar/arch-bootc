@@ -99,8 +99,9 @@ must be described as such.
 - **The root-login model.** The image ships a known default root password. It is
   safe only because every remote, graphical, and local-escalation path to root is
   closed at the same time: `PermitRootLogin prohibit-password` in an sshd
-  drop-in, `pam_wheel.so use_uid` enabled in `/etc/pam.d/su` (Arch ships that
-  line commented out), display managers that refuse root, and `passwd --expire`
+  drop-in, `pam_wheel.so use_uid` enabled in `/etc/pam.d/su` *and*
+  `/etc/pam.d/su-l`, the service `su -` uses (Arch ships both lines commented
+  out), display managers that refuse root, and `passwd --expire`
   forcing a change on first use. The four hold together; removing one
   invalidates the reasoning behind the others.
 - **Signature verification.** `policy.json` requires a valid signature for this

@@ -259,8 +259,10 @@ remote, graphical, and local-escalation path to root is closed at the same time,
 and each of those closures is load-bearing:
 
 - `PermitRootLogin prohibit-password` pinned in an sshd drop-in.
-- `pam_wheel.so use_uid` enabled in `/etc/pam.d/su`, because Arch ships that
-  line commented out and would otherwise let any local account `su` to root.
+- `pam_wheel.so use_uid` enabled in **both** `/etc/pam.d/su` and
+  `/etc/pam.d/su-l`, because Arch ships both lines commented out and would
+  otherwise let any local account `su` to root. `su -` authenticates against
+  `su-l`, so enabling it in one file only leaves the escalation path open.
 - Display managers that refuse root.
 - `passwd --expire` forcing a change on first use.
 
