@@ -313,8 +313,8 @@ silently drops to offline mode and checks less than it looks like it does.
 To reproduce locally before pushing:
 
 ```bash
-uvx zizmor@1.29.0 --no-progress .          # offline
-GH_TOKEN="$(gh auth token)" uvx zizmor@1.29.0 --no-progress .   # matches CI
+uvx zizmor@1.30.1 --no-progress .          # offline
+GH_TOKEN="$(gh auth token)" uvx zizmor@1.30.1 --no-progress .   # matches CI
 ```
 
 The version is pinned in the workflow's `ZIZMOR_VERSION` env var rather than tracking

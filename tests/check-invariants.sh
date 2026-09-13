@@ -594,6 +594,290 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Renovate pin tracking (docs/renovate.md: 'nothing will fail; updates just stop arriving')"
+
+# Every version pin in this tree that is not a container reference or an action
+# SHA is moved by a hand-written regex in renovate.json. That file is the only
+# place those rules exist, and its failure mode is silence: a matchString that
+# no longer matches its pin does not error, it just stops producing PRs, and a
+# packageRule whose matchPackageNames no longer names a real dependency stops
+# applying without saying so. docs/renovate.md states this outright for the
+# bootc manager -- "nothing will fail; updates just stop arriving" -- and the
+# same is true of every other manager and rule in the file.
+#
+# So the checks below run renovate.json's own regexes against the tree, rather
+# than restating the pins here. A restated pin is a second hand-maintained copy
+# with the same drift problem; a regex executed against the file it claims to
+# match is the join itself.
+#
+# What this cannot see: Renovate's matchStrings are RE2/JS regexes and these
+# run under PCRE (`grep -P`). The two agree on everything used here -- named
+# groups, `\s`, `\d`, bounded repeats -- but a future matchString using a
+# construct where they differ would be checked under the wrong engine.
+RENOVATE="renovate.json"
+ZIZMOR_WORKFLOW=".github/workflows/zizmor.yaml"
+
+renovate_readable=0
+if ! command -v jq >/dev/null 2>&1; then
+  fail "jq is available to read ${RENOVATE}" \
+    "jq is not on PATH, so none of the Renovate invariants below could run"
+elif ! jq -e 'type == "object"' "${RENOVATE}" >/dev/null 2>&1; then
+  fail "${RENOVATE} parses as a JSON object" "jq could not parse ${RENOVATE}"
+else
+  pass "${RENOVATE} parses as a JSON object"
+  renovate_readable=1
+fi
+
+if ((renovate_readable)); then
+  repo_files=()
+  while IFS= read -r repo_file; do
+    repo_files+=("${repo_file#./}")
+  done < <(find . -path ./.git -prune -o -type f -print | sort)
+
+  # This repo is a fork, and Renovate skips forks unless told not to. Without
+  # this single line nothing below runs at all -- no manager matches anything,
+  # because no run happens.
+  assert_equal "renovate is enabled on this fork" \
+    "$(jq -r '.forkProcessing // "unset"' "${RENOVATE}")" "enabled"
+
+  # docs/renovate.md, "Why merging is Renovate's job": GitHub's native
+  # auto-merge gates only on *required* checks, `main` here is unprotected, so
+  # there are none -- flipping this to true would let a Renovate PR merge the
+  # moment it opens, about twenty minutes before its build finishes. Renovate's
+  # own documentation warns about exactly this configuration.
+  #
+  # Read with has() rather than `.platformAutomerge // "unset"`: jq's `//`
+  # treats `false` as empty, so the alternative form reports the correct
+  # setting as missing and the missing setting as correct.
+  assert_equal "merging waits for the build instead of GitHub's auto-merge" \
+    "$(jq -r 'if has("platformAutomerge") then (.platformAutomerge | tostring) else "unset" end' "${RENOVATE}")" "false"
+
+  manager_count="$(jq -r '.customManagers | length' "${RENOVATE}")"
+  if ((manager_count == 0)); then
+    fail "${RENOVATE} still declares custom regex managers" \
+      "customManagers is empty, so every hand-written pin is untracked"
+  else
+    pass "${RENOVATE} still declares custom regex managers"
+  fi
+
+  # Collected while walking the managers, checked against the packageRules
+  # afterwards: docs/renovate.md records that a `docker` datasource whose
+  # matchStrings capture no digest must have digest updates disabled, because
+  # Renovate's default digest pinning then finds nowhere to write the digest
+  # and errors the branch. That happened twice for real (chunkah in #18, and
+  # the shellcheck image in #68), so the rule is derived from the managers
+  # here rather than listing today's two names.
+  needs_digest_exclusion=()
+
+  for ((manager_index = 0; manager_index < manager_count; manager_index++)); do
+    dep="$(jq -r ".customManagers[${manager_index}].depNameTemplate // \"\"" "${RENOVATE}")"
+    datasource="$(jq -r ".customManagers[${manager_index}].datasourceTemplate // \"\"" "${RENOVATE}")"
+    if [[ -z "${dep}" ]]; then
+      fail "custom manager ${manager_index} names a dependency" \
+        "depNameTemplate is missing, so its updates cannot be matched by any packageRule"
+      continue
+    fi
+
+    file_patterns=()
+    while IFS= read -r file_pattern; do
+      file_patterns+=("${file_pattern}")
+    done < <(jq -r ".customManagers[${manager_index}].managerFilePatterns[]" "${RENOVATE}")
+
+    match_strings=()
+    while IFS= read -r match_string; do
+      match_strings+=("${match_string}")
+    done < <(jq -r ".customManagers[${manager_index}].matchStrings[]" "${RENOVATE}")
+
+    targets=()
+    while IFS= read -r target; do
+      targets+=("${target}")
+    done < <(
+      for file_pattern in "${file_patterns[@]}"; do
+        file_regex="${file_pattern#/}"
+        file_regex="${file_regex%/}"
+        printf '%s\n' "${repo_files[@]}" | grep -P -- "${file_regex}" || true
+      done | sort -u
+    )
+
+    if ((${#targets[@]} == 0)); then
+      fail "the ${dep} manager selects a file that exists" \
+        "no file in the tree matches ${file_patterns[*]}"
+      continue
+    fi
+    pass "the ${dep} manager selects a file that exists"
+
+    strict_matches=0
+    loose_matches=0
+    literal_ok=1
+    for match_string in "${match_strings[@]}"; do
+      # The literal head of the matchString -- everything before its first
+      # regex metacharacter. It is what a human writing the pin types, and
+      # counting it separately is what distinguishes "the pin moved" (both
+      # counts drop) from "the pin is still there but the regex no longer
+      # matches it" (only the strict count drops), which is the silent case.
+      literal="$(printf '%s' "${match_string}" | sed -E 's/[\\([?*+{|^$.].*$//')"
+      if [[ -z "${literal}" ]]; then
+        literal_ok=0
+        fail "the ${dep} matchString begins with a literal" \
+          "it starts with a regex metacharacter, so no independent count of its pin is possible"
+        continue
+      fi
+      for target in "${targets[@]}"; do
+        # -z makes grep treat the file as one NUL-terminated record, which is
+        # what lets a matchString spanning two lines (bootc's tag + commit
+        # pair) match at all; -o then emits one NUL-terminated match each, so
+        # counting NULs counts matches.
+        strict_matches=$((strict_matches + $(grep -Pzo -- "${match_string}" "${target}" 2>/dev/null | tr -dc '\0' | wc -c)))
+        # Comments are stripped on this side only. Prose *about* a pin is not a
+        # pin -- nightly-compliance.yml explains the cosign manager using the
+        # words `cosign-release: vX.Y.Z` -- while the strict side deliberately
+        # reads the raw file, because that is what Renovate reads.
+        loose_matches=$((loose_matches + $(grep -Ev '^[[:space:]]*#' "${target}" | grep -Fc -- "${literal}" || true)))
+      done
+    done
+
+    if ((strict_matches > 0)); then
+      pass "the ${dep} regex still matches the pin it tracks"
+    else
+      fail "the ${dep} regex still matches the pin it tracks" \
+        "no match in ${targets[*]}; Renovate would stop bumping ${dep} without reporting anything"
+    fi
+
+    if ((literal_ok)); then
+      assert_equal "every ${dep} pin in the tree is one the regex matches" \
+        "${strict_matches}" "${loose_matches}"
+    fi
+
+    if [[ "${datasource}" == "docker" ]]; then
+      captures_digest=0
+      for match_string in "${match_strings[@]}"; do
+        [[ "${match_string}" == *'<currentDigest>'* ]] && captures_digest=1
+      done
+      ((captures_digest)) || needs_digest_exclusion+=("${dep}")
+    fi
+  done
+
+  # Every check above is per-manager, so deleting a manager outright passes all
+  # of them: the pin stays in the tree, nothing claims to track it, and updates
+  # stop. docs/renovate.md's "What is tracked" table is the only other place
+  # the set of custom managers is written down, so the two are joined by count
+  # here -- a manager added or removed without the table moving with it fails.
+  documented_managers="$(grep -c '^|.*custom regex manager' docs/renovate.md || true)"
+  assert_equal "docs/renovate.md lists every custom regex manager" \
+    "${documented_managers}" "${manager_count}"
+
+  manager_deps=()
+  while IFS= read -r manager_dep; do
+    manager_deps+=("${manager_dep}")
+  done < <(jq -r '[.customManagers[].depNameTemplate] | unique[]' "${RENOVATE}")
+
+  # Exact string membership, deliberately not `grep -Fw`. A dependency name
+  # here is full of characters grep treats as word separators, so `-w` reports
+  # `bootc-dev/bootc` as present in `bootc-dev/bootc-src` -- which is precisely
+  # the rename this check exists to catch.
+  contains_exactly() {
+    local needle="$1" candidate
+    shift
+    for candidate in "$@"; do
+      [[ "${candidate}" == "${needle}" ]] && return 0
+    done
+    return 1
+  }
+
+  # A packageRule that names a dependency no custom manager produces is a rule
+  # that matches nothing. Renovate does not warn about it, and the two rules
+  # here that carry a safety decision -- never digest-pin chunkah/shellcheck,
+  # never automerge a major bootc -- would both fail open that way.
+  unmatched_rule_deps=""
+  while IFS= read -r ruled_dep; do
+    [[ -z "${ruled_dep}" ]] && continue
+    contains_exactly "${ruled_dep}" "${manager_deps[@]}" \
+      || unmatched_rule_deps+="${ruled_dep} "
+  done < <(jq -r '[.packageRules[] | (.matchPackageNames // [])[]] | unique[]' "${RENOVATE}")
+  assert_equal "every packageRule names a dependency some manager produces" \
+    "${unmatched_rule_deps}" ""
+
+  digest_disabled=()
+  while IFS= read -r disabled_dep; do
+    digest_disabled+=("${disabled_dep}")
+  done < <(jq -r '
+    [ .packageRules[]
+      | select(.enabled == false)
+      | select((.matchUpdateTypes // []) | index("digest"))
+      | (.matchPackageNames // [])[] ] | unique[]' "${RENOVATE}")
+  missing_exclusion=""
+  for dep in "${needs_digest_exclusion[@]}"; do
+    contains_exactly "${dep}" "${digest_disabled[@]}" \
+      || missing_exclusion+="${dep} "
+  done
+  assert_equal "every digest-less docker manager has digest updates disabled" \
+    "${missing_exclusion}" ""
+
+  # Disabling `digest` alone is not enough: `pin` and `pinDigest` reach the
+  # same code path, and it was a pinDigest update that errored the branch the
+  # first time.
+  assert_equal "the exclusion covers pin and pinDigest as well as digest" \
+    "$(jq -r '["digest","pin","pinDigest"] - ([.packageRules[] | select(.enabled == false) | (.matchUpdateTypes // [])[]] | unique) | join(" ")' "${RENOVATE}")" \
+    ""
+
+  # Renovate applies packageRules in order and the last match wins, so the
+  # blanket automerge rule and the bootc-major exception are only correct in
+  # this order. Swap them and a major bootc bump automerges on a build that
+  # never boots the image -- the one update docs/renovate.md says must never
+  # merge on its own.
+  blanket_index="$(jq -r 'first(.packageRules | to_entries[] | select(.value.automerge == true and ((.value | has("matchPackageNames")) | not)) | .key) // -1' "${RENOVATE}")"
+  if [[ "${blanket_index}" == "-1" ]]; then
+    fail "a blanket rule automerges every tracked update" \
+      "no packageRule sets automerge without narrowing to specific packages"
+  else
+    pass "a blanket rule automerges every tracked update"
+  fi
+
+  last_bootc_rule="$(jq -r '
+    [ .packageRules | to_entries[]
+      | select(.value | has("automerge"))
+      | select(((.value.matchPackageNames // []) | length == 0)
+               or ((.value.matchPackageNames // []) | index("bootc-dev/bootc")))
+      | select(((.value.matchUpdateTypes // []) | length == 0)
+               or ((.value.matchUpdateTypes // []) | index("major")))
+      | .key ] | last // -1' "${RENOVATE}")"
+  bootc_major_index="$(jq -r '
+    first(.packageRules | to_entries[]
+      | select(.value.automerge == false)
+      | select((.value.matchPackageNames // []) | index("bootc-dev/bootc"))
+      | select((.value.matchUpdateTypes // []) | index("major"))
+      | .key) // -1' "${RENOVATE}")"
+  if [[ "${bootc_major_index}" == "-1" ]]; then
+    fail "a major bootc bump never automerges" \
+      "no packageRule sets automerge:false for a major bootc-dev/bootc update"
+  else
+    pass "a major bootc bump never automerges"
+  fi
+  assert_equal "the bootc exception is the last automerge rule that applies to it" \
+    "${last_bootc_rule}" "${bootc_major_index}"
+fi
+
+# The reproduce-locally commands in docs/ci-cd.md are labelled as matching CI.
+# They are a hand-written copy of a pinned version, so Renovate bumps the
+# workflow and leaves the documented command behind, and the next person to
+# reproduce a finding runs a different analyzer than the one that reported it.
+zizmor_pin="$(sed -n 's/^[[:space:]]*ZIZMOR_VERSION:[[:space:]]*"\{0,1\}\([0-9][0-9.]*\)"\{0,1\}[[:space:]]*$/\1/p' "${ZIZMOR_WORKFLOW}")"
+if [[ -z "${zizmor_pin}" ]]; then
+  fail "${ZIZMOR_WORKFLOW} pins a zizmor version" "no ZIZMOR_VERSION line found"
+else
+  pass "${ZIZMOR_WORKFLOW} pins a zizmor version"
+  documented_zizmor="$(grep -ho 'zizmor@[0-9][0-9.]*' docs/*.md | sed 's/^zizmor@//' | sort -u | tr '\n' ' ')"
+  documented_zizmor="${documented_zizmor% }"
+  if [[ -z "${documented_zizmor}" ]]; then
+    fail "the documented zizmor command names a version" \
+      "no 'zizmor@X.Y.Z' invocation found under docs/"
+  else
+    assert_equal "the documented zizmor command runs the version CI pins" \
+      "${documented_zizmor}" "${zizmor_pin}"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then
   printf 'invariants: %d of %d check(s) failed\n' "${failures}" "${checks_run}" >&2
