@@ -151,6 +151,21 @@ above and hand the prefix owner a shell in every other account. One consequence
 is visible: `brew`'s bash completion is not installed, since the way that
 fragment provided it was to source files out of the prefix itself.
 
+Extraction itself runs in a private `/tmp`. The upstream unit stages its 154MB
+tarball through the fixed path `/tmp/homebrew` as root before copying it to
+`/var/home/linuxbrew` and chowning it to UID 1000. `/tmp` is world-writable on a
+booted system and `mkdir -p` accepts an existing symlink instead of replacing it,
+so without containment an account that created that name first would have root
+extract through its symlink and have its own files copied into the prefix — and
+the ownership guard above would then trust them, because after the chown they
+belong to the user whose shell it is. The drop-in
+`/usr/lib/systemd/system/brew-setup.service.d/10-private-tmp.conf` sets
+`PrivateTmp=yes`, which gives the unit a `/tmp` and `/var/tmp` no other process
+can reach; `/var/home/linuxbrew` is outside both, so the payload still lands
+where it should. Because that unit is vendored rather than written here, the
+build also fails if a later upstream digest stages somewhere `PrivateTmp=` does
+not cover.
+
 Ownership is read off each path itself, never off whatever a symlink points
 at. `bin/brew` is allowed to be a link — a stock Homebrew prefix ships it as
 one — but the link, every directory traversed while resolving it, and the file

@@ -243,6 +243,7 @@ group "Homebrew shell integration (the fourth path to root, alongside the three 
 # symlink planted by the prefix owner answered for whatever root-owned target
 # it pointed at. Nothing failed; the guard simply stopped guarding.
 
+BREW_SETUP_DROPIN="system_files/usr/lib/systemd/system/brew-setup.service.d/10-private-tmp.conf"
 BREW_SH="system_files/etc/profile.d/homebrew.sh"
 BREW_FISH="system_files/etc/fish/conf.d/homebrew.fish"
 
@@ -344,6 +345,40 @@ assert_present "an unguarded fragment from a later brew digest fails the build" 
 assert_present "the sweep exempts only this repository's two guarded fragments" \
   "${CONTAINERFILE}" 'grep -vxF -e /etc/profile\.d/homebrew\.sh -e /etc/fish/conf\.d/homebrew\.fish' \
   "the sweep's allowlist no longer names exactly the two guarded fragments"
+
+# The same payload's brew-setup.service creates that prefix, and it stages a
+# 154MB tarball through the fixed path /tmp/homebrew as root. `mkdir -p` exits 0
+# on an existing symlink, so an account that claims the name first has root
+# extract through it and has its own files copied into the prefix the unit then
+# chowns to UID 1000 -- which the ownership guard above cannot refuse, because
+# after the chown they are owned by the user whose shell it is. The drop-in is
+# the containment; these three assertions are what notices if it, or the
+# build-time check backstopping it, goes away.
+assert_present "brew-setup.service stages the payload in a private /tmp" \
+  "${BREW_SETUP_DROPIN}" '^PrivateTmp=yes$' \
+  "the drop-in no longer contains the staging path the payload uses"
+
+assert_present "a missing or weakened drop-in fails the build" \
+  "${CONTAINERFILE}" 'is missing or does not set PrivateTmp=yes' \
+  "nothing checks that the drop-in reached the image"
+
+# PrivateTmp= contains /tmp and /var/tmp and nothing else, and the unit is not in
+# this tree at any revision -- only the build sees the digest that landed.
+assert_present "a payload that stages elsewhere fails the build" \
+  "${CONTAINERFILE}" 'no longer stages under /tmp or /var/tmp' \
+  "a payload bump could move staging out of PrivateTmp's reach unnoticed"
+
+# Checking before the COPY reads the previous digest's unit, or no unit at all,
+# and leaves every assertion above green.
+brew_staging_line="$(grep -n 'no longer stages under /tmp or /var/tmp' "${CONTAINERFILE}" |
+  head -1 | cut -d: -f1)"
+if [[ -n "${brew_copy_line}" && -n "${brew_staging_line}" ]] &&
+  ((brew_staging_line > brew_copy_line)); then
+  pass "the staging check runs after the COPY that brings the unit in"
+else
+  fail "the staging check runs after the COPY that brings the unit in" \
+    "COPY at line ${brew_copy_line:-none}, staging check at line ${brew_staging_line:-none}"
+fi
 
 # ---------------------------------------------------------------------------
 group "Signature chain (docs/ci-cd.md, docs/security/SECURITY-AI.md)"

@@ -394,6 +394,54 @@ RUN rm -f /etc/profile.d/brew.sh \
         exit 1; \
     fi
 
+# How that prefix gets created is the other half of the same trust boundary.
+# `brew-setup.service`, preset above, stages the payload's 154MB tarball through
+# the fixed path /tmp/homebrew as root: `mkdir -p`, `tar -C`, then
+# `cp -R -n /tmp/homebrew/home/linuxbrew/.linuxbrew /home/linuxbrew`, then
+# `chown -R 1000:1000`. /tmp is world-writable on a booted system and `mkdir -p`
+# exits 0 on an existing symlink instead of replacing it, so an account that
+# creates that name first has root extract through its symlink and has its own
+# extra files copied into the prefix the chown then hands to UID 1000 — the
+# account docs/first-boot.md puts in wheel, and the account brew-update.timer
+# runs as ten minutes after every boot. The ownership guard in
+# system_files/etc/profile.d/homebrew.sh does not catch that: after the chown the
+# planted files are genuinely owned by the user whose shell it is.
+#
+# The containment is a drop-in, system_files/usr/lib/systemd/system/
+# brew-setup.service.d/10-private-tmp.conf, which arrives with the
+# `COPY system_files/ /` in this stage and gives the unit a private /tmp and
+# /var/tmp. A drop-in rather than a replacement unit, because restating
+# upstream's ExecStart= chain would go stale the first time the pinned digest
+# moves.
+#
+# Which is why this step is here rather than nowhere: `PrivateTmp=` contains
+# staging under /tmp and /var/tmp and nothing else, and the unit is not ours to
+# read at any revision — only the build sees the one that actually landed. A
+# payload that stops staging there, or a payload that ships its own drop-in of
+# the same name, turns the containment into decoration, and fails the build
+# instead.
+RUN unit=/usr/lib/systemd/system/brew-setup.service && \
+    dropin=/usr/lib/systemd/system/brew-setup.service.d/10-private-tmp.conf && \
+    if [ ! -f "${unit}" ]; then \
+        echo "error: ${unit} is not in the brew payload; re-read the payload before" >&2; \
+        echo "assuming the drop-in below still has a unit to contain." >&2; \
+        exit 1; \
+    fi && \
+    if [ ! -f "${dropin}" ] || \
+       ! grep -Eq '^[[:space:]]*PrivateTmp=yes[[:space:]]*$' "${dropin}"; then \
+        echo "error: ${dropin} is missing or does not set PrivateTmp=yes, so brew-setup.service" >&2; \
+        echo "stages its payload through a path any local account can claim first." >&2; \
+        exit 1; \
+    fi && \
+    if ! grep -E '^ExecStart=' "${unit}" | \
+         grep -qE '(^|[=[:space:]])/(var/)?tmp(/|[[:space:]]|$)'; then \
+        echo "error: brew-setup.service no longer stages under /tmp or /var/tmp:" >&2; \
+        grep -E '^ExecStart=' "${unit}" >&2; \
+        echo "PrivateTmp= in ${dropin} cannot contain that. Re-read the unit, then" >&2; \
+        echo "either widen the drop-in to cover the new path or remove it." >&2; \
+        exit 1; \
+    fi
+
 
 # --- base (CLI) target ---
 # Tag every package-owned file with a chunkah `user.component` (its pacman
