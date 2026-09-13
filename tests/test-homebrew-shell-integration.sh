@@ -120,6 +120,15 @@ assert_not_contains() {
   fi
 }
 
+assert_equals() {
+  local desc="$1" actual="$2" expected="$3"
+  if [[ "${actual}" == "${expected}" ]]; then
+    check "${desc}" 0
+  else
+    check "${desc}" 1 "expected '${expected}', got '${actual}'"
+  fi
+}
+
 # --- extracting the shipped guard -------------------------------------------
 
 # The POSIX-sh function, from its opening line to the closing brace in column
@@ -748,6 +757,315 @@ test_neither_file_leaves_its_helper_defined() {
     "$(cat "${HOMEBREW_FISH}")" "functions --erase ${GUARD_FN}"
 }
 
+# --- group 5: the CI steps that keep the groups above from skipping ----------
+#
+# Everything above answers "does the guard hold". This group answers the
+# question the file header already raises and nothing checked: does CI still
+# hand this suite the environment its cases ask for? Two steps of build.yml's
+# `test` job exist for no other reason -- `Install fish`, without which every
+# fish case above reports SKIP, and `Allow unprivileged user namespaces`,
+# without which the cases in tests/test-ostree-pkg-diff.sh and
+# tests/test-homebrew-profile.sh that run a shipped script as a program do the
+# same. Both bodies are shell, and shell in a `run:` block is executed by no
+# tier: tests/check-coverage.sh measures the shipped scripts, and .github/ is
+# not in its manifest at all.
+#
+# The bodies are extracted from the workflow and run here against stubbed
+# tools, rather than restated, so a step that is renamed, reindented or
+# rewritten fails the extraction instead of leaving these assertions agreeing
+# with a copy of text nobody runs.
+
+BUILD_WORKFLOW="${REPO_ROOT}/.github/workflows/build.yml"
+TEST_JOB="test"
+FISH_STEP="Install fish"
+NAMESPACE_STEP="Allow unprivileged user namespaces"
+SUITE_STEP="Run shell tests and enforce coverage floors"
+# The knob build.yml relaxes, and the path the body derives from it.
+APPARMOR_KEY="kernel.apparmor_restrict_unprivileged_userns"
+APPARMOR_PATH="/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+
+# Print the `run:` block of the named step of the named job, dedented to column
+# zero. Jobs sit at two columns, steps at six, `run: |` at eight and its body at
+# ten. The job has to be named because step names repeat across jobs. Same
+# extractor as tests/test-prune-package-versions.sh and
+# tests/test-nightly-compliance.sh, which read other steps of this workflow.
+workflow_step_run() {
+  local workflow="$1" job="$2" step="$3"
+  awk -v want_job="${job}" -v want="${step}" '
+    /^jobs:$/ { in_jobs = 1; next }
+    in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ {
+      current_job = substr($0, 3, length($0) - 3)
+      in_run = 0
+    }
+    /^      - name: / { current = substr($0, 15); in_run = 0; next }
+    current_job == want_job && current == want && /^        run: \|/ { in_run = 1; next }
+    in_run {
+      if ($0 == "") { print ""; next }
+      if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
+      in_run = 0
+    }
+  ' "${workflow}"
+}
+
+# One key of the named step's `env:` block, unexpanded. What a step hands its
+# command through the environment decides as much as the body does: the suite
+# step below is a bare `./tests/check-coverage.sh` and everything that makes it
+# strict is in its env.
+workflow_step_env() {
+  local workflow="$1" job="$2" step="$3" key="$4"
+  awk -v want_job="${job}" -v want="${step}" -v key="${key}" '
+    /^jobs:$/ { in_jobs = 1; next }
+    in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ {
+      current_job = substr($0, 3, length($0) - 3)
+      in_env = 0
+    }
+    /^      - name: / { current = substr($0, 15); in_env = 0; next }
+    current_job == want_job && current == want && /^        env:$/ { in_env = 1; next }
+    in_env && substr($0, 1, 10) != "          " { in_env = 0 }
+    in_env && $0 ~ ("^          " key ": ") { print substr($0, length(key) + 13); exit }
+  ' "${workflow}"
+}
+
+assert_extracted() {
+  local desc="$1" value="$2"
+  if [[ -n "${value}" ]]; then
+    check "${desc}" 0
+  else
+    check "${desc}" 1 "nothing was extracted; the step was renamed, moved or reindented"
+  fi
+}
+
+# Every tool these two bodies reach for, replaced by a stub that appends its own
+# name and argv to one log in call order. The log is the assertion surface: a
+# dropped `sudo`, a reordered pair, an extra flag and a silently different
+# package name all change it.
+# The stubs interpret themselves with this shell by absolute path: the body
+# runs with the stub directory as the whole of PATH, so `#!/usr/bin/env bash`
+# would leave every stub unexecutable and every case passing on 127.
+make_step_stub_bin() {
+  local bindir="$1" log="$2"
+  mkdir -p "${bindir}"
+  : >"${log}"
+
+  # Records, then runs what it was asked to run, so `sudo apt-get update`
+  # leaves both the privileged wrapper and the command it wrapped in the log.
+  cat >"${bindir}/sudo" <<STUB
+#!${BASH}
+printf '%s\n' "sudo \$*" >>"\${STUB_LOG}"
+exec "\$@"
+STUB
+
+  cat >"${bindir}/apt-get" <<STUB
+#!${BASH}
+printf '%s\n' "apt-get \$*" >>"\${STUB_LOG}"
+exit "\${STUB_APT_GET_STATUS:-0}"
+STUB
+
+  cat >"${bindir}/fish" <<STUB
+#!${BASH}
+printf '%s\n' "fish \$*" >>"\${STUB_LOG}"
+echo "fish, version 3.7.1"
+STUB
+
+  cat >"${bindir}/sysctl" <<STUB
+#!${BASH}
+printf '%s\n' "sysctl \$*" >>"\${STUB_LOG}"
+STUB
+
+  # The runner's answer to "may this user have a user + mount namespace", under
+  # the case's control. A refusal writes to stderr, which is where the real
+  # unshare(1) reports it and where the body's `2>&1` capture picks it up.
+  cat >"${bindir}/unshare" <<STUB
+#!${BASH}
+printf '%s\n' "unshare \$*" >>"\${STUB_LOG}"
+status="\${STUB_UNSHARE_STATUS:-0}"
+if (( status != 0 )); then
+  [[ -n "\${STUB_UNSHARE_MESSAGE:-}" ]] && printf '%s\n' "\${STUB_UNSHARE_MESSAGE}" >&2
+  exit "\${status}"
+fi
+exit 0
+STUB
+
+  chmod 755 "${bindir}/sudo" "${bindir}/apt-get" "${bindir}/fish" \
+    "${bindir}/sysctl" "${bindir}/unshare"
+}
+
+# Run one extracted body with nothing on PATH but the stubs. GitHub runs a
+# `run:` block as `bash -e {0}`; both bodies open with `set -euo pipefail`
+# anyway, so the interpreter is the only thing borrowed from this host.
+# Writes stdout and stderr to ${WORK_DIR}/<tag>.out and .err and returns the
+# body's exit status.
+run_workflow_step() {
+  local tag="$1" body="$2"
+  shift 2
+  local bindir="${WORK_DIR}/stepbin.${tag}"
+  local log="${WORK_DIR}/step-calls.${tag}"
+  local script="${WORK_DIR}/step.${tag}.sh"
+  make_step_stub_bin "${bindir}" "${log}"
+  printf '%s\n' "${body}" >"${script}"
+  env -i PATH="${bindir}" HOME="${WORK_DIR}" STUB_LOG="${log}" "$@" \
+    "${BASH}" "${script}" >"${WORK_DIR}/${tag}.out" 2>"${WORK_DIR}/${tag}.err"
+}
+
+step_calls() {
+  cat "${WORK_DIR}/step-calls.$1"
+}
+
+test_the_steps_this_suite_depends_on_are_still_in_the_workflow() {
+  assert_extracted "build.yml still has an ${FISH_STEP} step in its ${TEST_JOB} job" \
+    "$(workflow_step_run "${BUILD_WORKFLOW}" "${TEST_JOB}" "${FISH_STEP}")"
+  assert_extracted "build.yml still has an ${NAMESPACE_STEP} step in its ${TEST_JOB} job" \
+    "$(workflow_step_run "${BUILD_WORKFLOW}" "${TEST_JOB}" "${NAMESPACE_STEP}")"
+  # Executing a body that interpolates a workflow expression would execute
+  # something other than what CI runs; neither of these may grow one.
+  # shellcheck disable=SC2016 # the literal '${{' is the thing being looked for
+  assert_not_contains "the ${FISH_STEP} body is plain shell" \
+    "$(workflow_step_run "${BUILD_WORKFLOW}" "${TEST_JOB}" "${FISH_STEP}")" '${{'
+  # shellcheck disable=SC2016
+  assert_not_contains "the ${NAMESPACE_STEP} body is plain shell" \
+    "$(workflow_step_run "${BUILD_WORKFLOW}" "${TEST_JOB}" "${NAMESPACE_STEP}")" '${{'
+}
+
+test_a_skip_in_ci_is_a_failure_and_both_ends_agree_on_the_name() {
+  # The join that makes the two steps below load-bearing rather than
+  # decorative. Without ARCH_BOOTC_NO_SKIPS the fish cases above would report
+  # SKIP and the job would stay green over them, so a lost `env:` block is the
+  # same defect as a lost install -- just quieter.
+  assert_equals "the CI suite step sets ARCH_BOOTC_NO_SKIPS" \
+    "$(workflow_step_env "${BUILD_WORKFLOW}" "${TEST_JOB}" "${SUITE_STEP}" ARCH_BOOTC_NO_SKIPS)" \
+    '"1"'
+  # And the name the workflow sets is the name the runner reads. Renaming it on
+  # either side alone leaves a variable nothing consults.
+  assert_contains "tests/run-tests.sh reads the variable build.yml sets" \
+    "$(cat "${REPO_ROOT}/tests/run-tests.sh")" 'ARCH_BOOTC_NO_SKIPS'
+}
+
+test_the_fish_step_installs_the_interpreter_these_cases_need() {
+  local body
+  body="$(workflow_step_run "${BUILD_WORKFLOW}" "${TEST_JOB}" "${FISH_STEP}")"
+  run_workflow_step fish "${body}"
+  local status=$?
+  assert_equals "the ${FISH_STEP} step succeeds" "${status}" "0"
+  # Whole log, in order, not a substring search: the index refresh has to
+  # happen before the install or the install resolves against whatever the
+  # runner image shipped with, both have to go through sudo, and the version
+  # call afterwards is what turns a package that unpacked but cannot run into a
+  # failed step rather than a suite full of skips.
+  assert_equals "the step refreshes the index, installs fish under sudo, then runs it" \
+    "$(step_calls fish)" \
+    "sudo apt-get update
+apt-get update
+sudo apt-get install -y --no-install-recommends fish
+apt-get install -y --no-install-recommends fish
+fish --version"
+}
+
+test_the_fish_step_fails_the_job_when_the_install_fails() {
+  local body
+  body="$(workflow_step_run "${BUILD_WORKFLOW}" "${TEST_JOB}" "${FISH_STEP}")"
+  run_workflow_step fish-broken "${body}" STUB_APT_GET_STATUS=100
+  local status=$?
+  # `set -e` is the whole mechanism. Without it the step would go green on a
+  # failed install and the fish cases would skip on a runner CI believes is
+  # equipped.
+  assert_equals "a failing install fails the step" "${status}" "100"
+  assert_not_contains "the step stops at the failed install" \
+    "$(step_calls fish-broken)" "fish --version"
+}
+
+test_the_namespace_step_accepts_a_runner_that_allows_namespaces() {
+  local body
+  body="$(workflow_step_run "${BUILD_WORKFLOW}" "${TEST_JOB}" "${NAMESPACE_STEP}")"
+  run_workflow_step ns-ok "${body}"
+  local status=$?
+  assert_equals "the ${NAMESPACE_STEP} step succeeds when namespaces are available" \
+    "${status}" "0"
+  # The probe itself, argv and all. Weakening it -- dropping --mount, say --
+  # would let the step pass on a runner where tests/test-ostree-pkg-diff.sh
+  # still cannot run its program cases.
+  assert_equals "the step proves a user + mount namespace, not merely a user one" \
+    "$(step_calls ns-ok | tail -n 1)" "unshare --map-root-user --mount true"
+  assert_contains "the step says so" "$(cat "${WORK_DIR}/ns-ok.out")" \
+    "unprivileged user + mount namespaces are available"
+}
+
+test_the_namespace_step_fails_the_job_when_namespaces_are_refused() {
+  local body
+  body="$(workflow_step_run "${BUILD_WORKFLOW}" "${TEST_JOB}" "${NAMESPACE_STEP}")"
+  run_workflow_step ns-refused "${body}" STUB_UNSHARE_STATUS=1 \
+    STUB_UNSHARE_MESSAGE="unshare: write failed /proc/self/uid_map: Operation not permitted"
+  local status=$?
+  # This is the half issue #182 is about. A refusal that does not fail the step
+  # produces a green job over a suite that skipped the cases needing root in a
+  # namespace, which is indistinguishable from a job that ran them.
+  assert_equals "a refused namespace fails the step" "${status}" "1"
+  # The whole diagnostic, exactly: what was refused, what the kernel said about
+  # it, and -- the part that is not obvious to whoever reads the failed job --
+  # that the consequence is tests silently not running rather than a slow
+  # runner. Losing any line leaves a failure nobody can act on.
+  assert_equals "the step says what was refused, what said so, and what it costs" \
+    "$(cat "${WORK_DIR}/ns-refused.err")" \
+    "error: unprivileged user + mount namespaces are still refused:
+  unshare: write failed /proc/self/uid_map: Operation not permitted
+Tests that run a shipped script as a program would skip, and the
+suite below would pass without having covered them."
+  assert_not_contains "the step does not claim success as well" \
+    "$(cat "${WORK_DIR}/ns-refused.out")" "are available"
+}
+
+test_the_namespace_step_explains_a_refusal_with_no_message() {
+  local body
+  body="$(workflow_step_run "${BUILD_WORKFLOW}" "${TEST_JOB}" "${NAMESPACE_STEP}")"
+  run_workflow_step ns-silent "${body}" STUB_UNSHARE_STATUS=1
+  local status=$?
+  assert_equals "a silent refusal still fails the step" "${status}" "1"
+  # An empty capture printed as-is leaves a two-space line under a heading
+  # promising a reason. The fallback is what keeps the log readable.
+  assert_contains "a refusal with no output still says something" \
+    "$(cat "${WORK_DIR}/ns-silent.err")" "no message"
+}
+
+test_the_namespace_step_relaxes_the_sysctl_exactly_where_the_knob_exists() {
+  local body
+  body="$(workflow_step_run "${BUILD_WORKFLOW}" "${TEST_JOB}" "${NAMESPACE_STEP}")"
+  run_workflow_step ns-sysctl "${body}"
+  local calls out
+  calls="$(step_calls ns-sysctl)"
+  out="$(cat "${WORK_DIR}/ns-sysctl.out")"
+  # Which branch runs is a property of the kernel underneath, not of anything
+  # this test can arrange: /proc is the body's own input and cannot be
+  # substituted without privileges the suite refuses to take. So both branches
+  # are asserted, and the host decides which one is exercised -- the write on
+  # the AppArmor kernels CI runs on (ubuntu-24.04 ships this knob), the
+  # explanation everywhere else.
+  if [[ -e "${APPARMOR_PATH}" ]]; then
+    assert_equals "the step clears the AppArmor restriction under sudo" \
+      "$(printf '%s\n' "${calls}" | grep '^sudo ')" \
+      "sudo sysctl -w ${APPARMOR_KEY}=0"
+    assert_not_contains "the step does not also call the knob missing" \
+      "${out}" "does not exist on this kernel"
+  else
+    assert_not_contains "the step writes no sysctl where the knob is absent" \
+      "${calls}" "sysctl"
+    assert_contains "the step says which knob it did not find" "${out}" \
+      "${APPARMOR_KEY} does not exist on this kernel; nothing to relax"
+  fi
+}
+
+test_the_namespace_gate_proves_what_the_suites_own_probes_require() {
+  # The gate is only worth having while it tests the same capability the
+  # detectors do. Both files decide whether to run or skip on exactly this, so
+  # a detector that stops asking for it -- or asks for something more -- makes
+  # the CI gate a check on nothing.
+  local probe="unshare --map-root-user --mount"
+  assert_contains "tests/test-ostree-pkg-diff.sh probes for the capability the gate proves" \
+    "$(cat "${REPO_ROOT}/tests/test-ostree-pkg-diff.sh")" "${probe}"
+  assert_contains "tests/test-homebrew-profile.sh probes for the capability the gate proves" \
+    "$(cat "${REPO_ROOT}/tests/test-homebrew-profile.sh")" "${probe}"
+  assert_contains "the gate probes it too" \
+    "$(workflow_step_run "${BUILD_WORKFLOW}" "${TEST_JOB}" "${NAMESPACE_STEP}")" "${probe}"
+}
+
 main() {
   for test_fn in \
     test_a_prefix_this_user_owns_is_trusted \
@@ -771,7 +1089,16 @@ main() {
     test_fish_guard_matches_the_posix_one \
     test_neither_file_uses_a_dereferencing_ownership_test \
     test_both_files_guard_the_same_prefixes \
-    test_neither_file_leaves_its_helper_defined; do
+    test_neither_file_leaves_its_helper_defined \
+    test_the_steps_this_suite_depends_on_are_still_in_the_workflow \
+    test_a_skip_in_ci_is_a_failure_and_both_ends_agree_on_the_name \
+    test_the_fish_step_installs_the_interpreter_these_cases_need \
+    test_the_fish_step_fails_the_job_when_the_install_fails \
+    test_the_namespace_step_accepts_a_runner_that_allows_namespaces \
+    test_the_namespace_step_fails_the_job_when_namespaces_are_refused \
+    test_the_namespace_step_explains_a_refusal_with_no_message \
+    test_the_namespace_step_relaxes_the_sysctl_exactly_where_the_knob_exists \
+    test_the_namespace_gate_proves_what_the_suites_own_probes_require; do
     printf '# %s\n' "${test_fn}"
     "${test_fn}"
   done
