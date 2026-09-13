@@ -143,6 +143,21 @@ when no entry references `/EFI/Linux/<id>/`, `--dry-run`, and the fail-closed
 rejections in `is_genuine_esp` — the check that stops the script from treating a
 plugged-in bootable USB stick as the ESP.
 
+Its last group covers the three systemd files that start the script on a real
+system: `arch-bootc-prune-esp.service`, `arch-bootc-prune-esp.timer`, and the
+`bootc-fetch-apply-updates.service.d/10-prune-esp.conf` drop-in. It reads
+`ExecStart=` out of the unit and runs that exact command line against a fixture
+ESP, and it joins the unit to the rest of the tree: `ConditionPathExists=` to the
+binary `ExecStart=` runs, `Before=` to the unit the drop-in directory is named
+for, and the timer's `WantedBy=` to the `.wants` directory the Containerfile
+symlinks it into. `systemd-analyze verify` does not substitute for this. It runs
+only in the image build and in `just lint`, so it needs a container runtime, and
+both callers list units with `-maxdepth 1 -type f`, which excludes every
+`*.service.d/` drop-in. A drop-in directory named for a unit that does not exist
+is an error at no point — it simply never applies — and a stale
+`ConditionPathExists=` makes systemd skip the unit and report success, so the
+timer keeps firing, the journal stays clean, and the ESP fills up anyway.
+
 Most of those tests point the script at a throwaway fixture directory via
 `BOOTC_PRUNE_ESP_PATH`. That is not optional: with the variable unset the script
 discovers ESPs from the real mount table, and the tests would delete real boot
