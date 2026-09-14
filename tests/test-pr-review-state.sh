@@ -22,9 +22,12 @@ set -uo pipefail
 # workflow body in this repository whose only external dependency is `gh`, and
 # it reuses the extractor and the stub that the section above already builds.
 #
-# The last section validates .github/ISSUE_TEMPLATE instead, and is here
-# because it continues the same job: pinning the hand-maintained GitHub
-# configuration that no workflow reads back. It needs no stub at all.
+# The last two sections validate .github/ISSUE_TEMPLATE and docs/risk-tiers.md
+# instead, and are here because they continue the same job: pinning the
+# hand-maintained configuration that no workflow reads back. Neither needs a
+# stub at all. docs/risk-tiers.md belongs with the issue forms in particular --
+# the page tiers those forms by whether they match build.yml's path filter, so
+# the two sections are reading the same directory against the same globs.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -1285,6 +1288,386 @@ for key in name url about; do
 done
 assert_equal "every contact link is https" "${contact_links}" \
   "$(grep -cE '^ +url: https://' "${ISSUE_TEMPLATE_CONFIG}")"
+
+
+# --- docs/risk-tiers.md, the model of what CI actually runs -----------------
+#
+# Nothing in tests/ opens this file, and check-coverage.sh can never reach it:
+# it counts traced lines in shipped shell scripts, and this is Markdown.
+#
+# It is not ordinary prose. The page decides how much evidence a change owes
+# before it merges, and it does that by restating things the tree already
+# holds mechanically: build.yml's path filter quoted verbatim, zizmor's
+# trigger, which `.github/` subtrees those two filters do and do not skip, the
+# T1/T2/T3 artifact lists, the four root-login controls by their literal
+# strings, and the one Renovate rule that enforces a tier.
+#
+# The page's own argument is why that matters. "CI cannot tell these tiers
+# apart, which is the whole reason the table has a last column." The table is
+# the control. When it drifts from the workflows it describes, a reviewer
+# classifies against a model of CI that no longer exists, and every check stays
+# green -- including for the T0 section, whose entire claim is that no check
+# runs at all.
+#
+# Drift is silent in both directions, so every join below is asserted in both.
+
+RISK_TIERS_DOC="${REPO_ROOT}/docs/risk-tiers.md"
+ZIZMOR_WORKFLOW="${REPO_ROOT}/.github/workflows/zizmor.yaml"
+RENOVATE_CONFIG="${REPO_ROOT}/renovate.json"
+
+# One `on:` path filter, as one value per line. Deliberately indentation-bound
+# rather than grep-shaped: a reindented workflow must come back empty and trip
+# assert_extracted, because the failure that otherwise passes as success is a
+# reader that finds nothing and therefore has nothing to complain about.
+workflow_path_filter() { # file event key
+  awk -v want_event="$2" -v want_key="$3" '
+    /^on:[[:space:]]*$/ { in_on = 1; next }
+    in_on && /^[^[:space:]#]/ { in_on = 0; in_event = 0; in_key = 0 }
+    !in_on { next }
+    { match($0, /^ */); indent = RLENGTH }
+    indent == 2 && /^  [A-Za-z_]+:[[:space:]]*$/ {
+      ev = $0
+      sub(/^  /, "", ev)
+      sub(/:[[:space:]]*$/, "", ev)
+      in_event = (ev == want_event)
+      in_key = 0
+      next
+    }
+    !in_event { next }
+    indent == 4 && /^    [A-Za-z_-]+:[[:space:]]*$/ {
+      k = $0
+      sub(/^    /, "", k)
+      sub(/:[[:space:]]*$/, "", k)
+      in_key = (k == want_key)
+      next
+    }
+    in_key && indent == 6 && /^      - / {
+      v = $0
+      sub(/^      - /, "", v)
+      gsub(/"/, "", v)
+      print v
+      next
+    }
+    in_key && indent <= 4 { in_key = 0 }
+  ' "$1"
+}
+
+sorted_lines() { printf '%s\n' "$1" | grep -v '^$' | LC_ALL=C sort | tr '\n' ' '; }
+
+# GitHub path-filter glob semantics, hand-rolled: `**` crosses `/`, a single
+# `*` does not, and a leading `**/` is optional rather than mandatory so that
+# `**/*.md` matches a file at the repository root. Everything below is built on
+# this, so it gets its own case table first -- an unverified matcher would make
+# every assertion that uses it vacuously true.
+glob_to_regex() { # glob
+  local glob="$1" out="" i ch
+  for ((i = 0; i < ${#glob}; i++)); do
+    ch="${glob:i:1}"
+    case "${ch}" in
+      '*')
+        if [[ "${glob:i:3}" == "**/" ]]; then
+          out+='(.*/)?'
+          i=$((i + 2))
+        elif [[ "${glob:i:2}" == "**" ]]; then
+          out+='.*'
+          i=$((i + 1))
+        else
+          out+='[^/]*'
+        fi
+        ;;
+      '?') out+='[^/]' ;;
+      *)
+        # Every remaining character is a literal, so anything an extended
+        # regular expression would read as an operator has to be escaped.
+        if [[ '\.+*?()[]{}|^$' == *"${ch}"* ]]; then
+          out+="\\${ch}"
+        else
+          out+="${ch}"
+        fi
+        ;;
+    esac
+  done
+  printf '^%s$' "${out}"
+}
+
+path_matches_glob() { # glob path
+  local regex
+  regex="$(glob_to_regex "$1")"
+  [[ "$2" =~ ${regex} ]]
+}
+
+while IFS=$'\t' read -r want glob path; do
+  [[ -z "${want}" ]] && continue
+  if path_matches_glob "${glob}" "${path}"; then
+    got=yes
+  else
+    got=no
+  fi
+  assert_equal "glob ${glob} vs ${path}" "${want}" "${got}"
+done <<'MATCHER_CASES'
+yes	**/*.md	README.md
+yes	**/*.md	docs/risk-tiers.md
+yes	**/*.md	docs/reflections/a/b.md
+no	**/*.md	docs/notes.mdx
+no	**/*.md	Containerfile
+no	**/*.md	.github/labeler.yml
+yes	docs/**	docs/ci-cd.md
+yes	docs/**	docs/security/SECURITY-AI.md
+no	docs/**	docs
+no	docs/**	documents/a.md
+no	docs/**	README.md
+yes	.github/workflows/**	.github/workflows/build.yml
+no	.github/workflows/**	.github/labeler.yml
+no	.github/workflows/**	xgithub/workflows/build.yml
+yes	tests/test-*.sh	tests/test-prune-esp.sh
+no	tests/test-*.sh	tests/e2e/test-quickstart-dry-run.sh
+MATCHER_CASES
+
+# The build workflow's filter, from the workflow. Both path-filterable events
+# have to carry it: the T0 claim is that a documentation change runs nothing,
+# and a `push` that had lost the filter would build `main` after every merge.
+build_ignore_pr="$(workflow_path_filter "${BUILD_WORKFLOW}" pull_request paths-ignore)"
+build_ignore_push="$(workflow_path_filter "${BUILD_WORKFLOW}" push paths-ignore)"
+assert_extracted "build.yml's pull_request filter is still readable" "${build_ignore_pr}"
+assert_extracted "build.yml's push filter is still readable" "${build_ignore_push}"
+assert_equal "both build.yml events ignore the same paths" \
+  "$(sorted_lines "${build_ignore_pr}")" "$(sorted_lines "${build_ignore_push}")"
+assert_equal "build.yml ignores exactly the two documentation globs" \
+  "**/*.md docs/** " "$(sorted_lines "${build_ignore_pr}")"
+
+# An allowlist would silently invert the whole page: `paths` and `paths-ignore`
+# are mutually exclusive on GitHub, and a workflow that grew one would run for
+# a set of files this document does not describe at all.
+for event in pull_request push; do
+  assert_equal "build.yml's ${event} uses no paths allowlist" "" \
+    "$(workflow_path_filter "${BUILD_WORKFLOW}" "${event}" paths)"
+done
+
+zizmor_pr="$(workflow_path_filter "${ZIZMOR_WORKFLOW}" pull_request paths)"
+zizmor_push="$(workflow_path_filter "${ZIZMOR_WORKFLOW}" push paths)"
+assert_extracted "zizmor.yaml's pull_request filter is still readable" "${zizmor_pr}"
+assert_equal "both zizmor.yaml events watch the same paths" \
+  "$(sorted_lines "${zizmor_pr}")" "$(sorted_lines "${zizmor_push}")"
+assert_equal "zizmor.yaml watches only the workflow directory" \
+  ".github/workflows/** " "$(sorted_lines "${zizmor_pr}")"
+assert_equal "zizmor.yaml ignores nothing" "" \
+  "$(workflow_path_filter "${ZIZMOR_WORKFLOW}" pull_request paths-ignore)"
+
+# Now the other direction: the document quotes the filter inline, and that
+# quote is what a reader classifies against.
+doc_ignore_quote="$(grep -oE 'paths-ignore: \[[^]]*\]' "${RISK_TIERS_DOC}" | head -1)"
+assert_extracted "docs/risk-tiers.md still quotes the filter" "${doc_ignore_quote}"
+doc_ignore_globs="$(printf '%s\n' "${doc_ignore_quote}" |
+  sed -E 's/^paths-ignore: \[//; s/\]$//' | tr ',' '\n' | tr -d ' "')"
+assert_equal "the quoted filter is the filter build.yml enforces" \
+  "$(sorted_lines "${build_ignore_pr}")" "$(sorted_lines "${doc_ignore_globs}")"
+# shellcheck disable=SC2016 # a literal Markdown code span, not an expansion
+assert_contains "the page names zizmor's trigger path" \
+  "$(cat "${RISK_TIERS_DOC}")" '`.github/workflows/**`'
+
+# T0 says `.github/pull_request_template.md` and `.github/prompts/` run no
+# checks at all, and that is true only for as long as every file in them
+# matches an ignore glob. A `.github/prompts/triage.yml` would be tiered as
+# documentation by this page while triggering a three-flavor image build.
+#
+# Untracked-but-unignored files count too: the point is to fail while the new
+# file is still in a working tree, not after it has been committed and the
+# tier it was filed under has already been argued in review.
+tracked_files="$(git -C "${REPO_ROOT}" ls-files --cached --others --exclude-standard)"
+assert_extracted "the committed file list is readable" "${tracked_files}"
+
+matches_any_ignore() { # path
+  local glob
+  while IFS= read -r glob; do
+    [[ -z "${glob}" ]] && continue
+    path_matches_glob "${glob}" "$1" && return 0
+  done <<<"${build_ignore_pr}"
+  return 1
+}
+
+t0_unignored=""
+t0_checked=0
+while IFS= read -r tracked; do
+  case "${tracked}" in
+    docs/* | .github/prompts/* | .github/pull_request_template.md) ;;
+    *) continue ;;
+  esac
+  t0_checked=$((t0_checked + 1))
+  matches_any_ignore "${tracked}" || t0_unignored+="${tracked} "
+done <<<"${tracked_files}"
+assert_equal "the T0 paths hold files at all" 0 \
+  "$((t0_checked > 0 ? 0 : 1))"
+assert_equal "every file the page tiers as T0 really is ignored by the build" \
+  "" "${t0_unignored}"
+
+# The carve-out paragraph is the same computation with the answer reversed:
+# the issue forms are YAML, so they match neither glob and trigger the full
+# build. A `.github/ISSUE_TEMPLATE/bug.md` would make that paragraph false.
+issue_form_ignored=""
+issue_forms_checked=0
+while IFS= read -r tracked; do
+  [[ "${tracked}" == .github/ISSUE_TEMPLATE/* ]] || continue
+  issue_forms_checked=$((issue_forms_checked + 1))
+  matches_any_ignore "${tracked}" && issue_form_ignored+="${tracked} "
+done <<<"${tracked_files}"
+assert_equal "the issue form directory is not empty" 0 \
+  "$((issue_forms_checked > 0 ? 0 : 1))"
+assert_equal "no issue form is skipped by the build's filter" "" \
+  "${issue_form_ignored}"
+
+# The tier table and the tier sections are two hand-written copies of the same
+# four names. A renamed section leaves the table pointing at a heading that no
+# longer exists, and the page is navigated by that table.
+table_tiers="$(sed -nE 's/^\| \*\*(T[0-9])\*\* (.+) \| .+ \| .+ \|$/\1\t\2/p' "${RISK_TIERS_DOC}")"
+heading_tiers="$(sed -nE 's/^## (T[0-9]) — (.+)$/\1\t\2/p' "${RISK_TIERS_DOC}")"
+assert_extracted "the tier table is still readable" "${table_tiers}"
+assert_extracted "the tier headings are still readable" "${heading_tiers}"
+assert_equal "the table names four tiers" 4 "$(printf '%s\n' "${table_tiers}" | grep -c .)"
+assert_equal "every table row has a section with the same title" \
+  "${table_tiers}" "${heading_tiers}"
+
+# Everything the tier sections claim about the tree, run against the tree.
+# Fenced blocks are dropped: they hold example commands, not path claims.
+tier_sections="$(awk '
+  /^## T[0-9] / { inside = 1 }
+  /^## What automation does per tier$/ { inside = 0 }
+  inside && /^```/ { fence = !fence; next }
+  inside && !fence
+' "${RISK_TIERS_DOC}")"
+assert_extracted "the tier sections are still readable" "${tier_sections}"
+
+# shellcheck disable=SC2016 # literal backticks: the Markdown code-span delimiter
+tier_tokens="$(printf '%s\n' "${tier_sections}" | grep -oE '`[^`]+`' | tr -d '`' | LC_ALL=C sort -u)"
+assert_extracted "the tier sections still quote paths" "${tier_tokens}"
+
+# A token is a claim about a repository path when it carries a separator and
+# does not start with one. That excludes the in-image paths (`/etc/pam.d/su`),
+# the command fragments (`bootc container lint`), and the bare identifiers
+# (`PACMAN_CACHE_BUST`), each of which is joined separately below.
+missing_paths=""
+path_claims=0
+while IFS= read -r token; do
+  [[ "${token}" == */* ]] || continue
+  [[ "${token}" == /* ]] && continue
+  [[ "${token}" == *" "* ]] && continue
+  path_claims=$((path_claims + 1))
+  candidate="${token%/}"
+  [[ -e "${REPO_ROOT}/${candidate}" ]] && continue
+  if [[ "${token}" == *"*"* ]]; then
+    hits=0
+    while IFS= read -r tracked; do
+      path_matches_glob "${token}" "${tracked}" && hits=$((hits + 1))
+    done <<<"${tracked_files}"
+    ((hits > 0)) && continue
+  fi
+  missing_paths+="${token} "
+done <<<"${tier_tokens}"
+assert_equal "every repository path the tiers name still exists" "" "${missing_paths}"
+
+# The other direction. Without this, deleting `cosign.pub` from the T3 list
+# passes every assertion above -- a path that is no longer claimed cannot be a
+# claim that no longer resolves.
+for required in \
+  tests/ \
+  .github/workflows/ \
+  .github/labeler.yml \
+  .github/ISSUE_TEMPLATE/ \
+  .github/pull_request_template.md \
+  .github/prompts/ \
+  system_files/ \
+  system_files/etc/containers/policy.json \
+  system_files/etc/containers/registries.d/ \
+  Containerfile \
+  Justfile \
+  renovate.json \
+  cosign.pub \
+  .shellcheckrc \
+  .editorconfig \
+  .coverage-thresholds.json \
+  'packages-*.txt'; do
+  assert_contains "the tiers still name ${required}" \
+    $'\n'"${tier_tokens}"$'\n' $'\n'"${required}"$'\n'
+done
+assert_equal "the top-level files the tiers name still exist" "" \
+  "$(for name in Containerfile Justfile renovate.json cosign.pub .shellcheckrc \
+    .editorconfig .coverage-thresholds.json; do
+    [[ -e "${REPO_ROOT}/${name}" ]] || printf '%s ' "${name}"
+  done)"
+assert_equal "the flavor package lists the tiers name still exist" 3 \
+  "$(find "${REPO_ROOT}" -maxdepth 1 -name 'packages-*.txt' -type f | grep -c .)"
+
+# T3's root-login model, package freshness, and provenance markers are named by
+# their literal strings, and every one of them is a string the Containerfile
+# has to contain. This is the join that makes the T3 list a description of the
+# image rather than of an image someone remembers.
+t3_section="$(awk '
+  /^## T3 — / { inside = 1; next }
+  inside && /^## / { inside = 0 }
+  inside
+' "${RISK_TIERS_DOC}")"
+assert_extracted "the T3 section is still readable" "${t3_section}"
+
+while IFS= read -r control; do
+  [[ -z "${control}" ]] && continue
+  assert_contains "T3 still names the ${control} control" \
+    "${t3_section}" "\`${control}\`"
+  assert_equal "Containerfile still carries ${control}" 0 \
+    "$(grep -qF -- "${control}" "${CONTAINERFILE}" && echo 0 || echo 1)"
+done <<'T3_CONTROLS'
+PermitRootLogin prohibit-password
+pam_wheel.so use_uid
+passwd --expire
+PACMAN_CACHE_BUST
+BOOTC_VERSION
+BOOTC_COMMIT
+T3_CONTROLS
+
+# `su -` authenticates against /etc/pam.d/su-l, not /etc/pam.d/su, and a
+# hardening pass that edited only the first file left the second open once
+# already. The page records both; so must the loop that writes them.
+# shellcheck disable=SC2016 # literal backticks: the Markdown code-span delimiter
+doc_pam_files="$(printf '%s\n' "${t3_section}" | grep -oE '`/etc/pam\.d/[a-z-]+`' |
+  tr -d '`' | LC_ALL=C sort -u)"
+containerfile_pam_files="$(sed -nE 's/.*for pamfile in ([^;]*);.*/\1/p' "${CONTAINERFILE}" |
+  tr ' ' '\n' | grep -E '^/etc/pam\.d/' | LC_ALL=C sort -u)"
+assert_extracted "the T3 section still names the PAM services" "${doc_pam_files}"
+assert_extracted "the Containerfile still loops over the PAM services" \
+  "${containerfile_pam_files}"
+assert_equal "the page and the Containerfile agree on which PAM files are hardened" \
+  "$(sorted_lines "${doc_pam_files}")" "$(sorted_lines "${containerfile_pam_files}")"
+
+# The automation table's last row is, by the page's own account, "this table's
+# one real enforcement point". It lives in renovate.json.
+carve_out="$(jq -r '
+  [.packageRules[]
+   | select((.matchPackageNames // []) | index("bootc-dev/bootc"))
+   | select((.matchUpdateTypes // []) | index("major"))
+   | select(.automerge == false)]
+  | length
+' "${RENOVATE_CONFIG}")"
+assert_equal "renovate.json still refuses to automerge a major bootc bump" 1 "${carve_out}"
+# shellcheck disable=SC2016 # a literal Markdown code span, not an expansion
+assert_contains "the automation table still records the carve-out" \
+  "$(cat "${RISK_TIERS_DOC}")" '**Major `bootc-dev/bootc` bumps never automerge**'
+
+# The row above it names the update types that do automerge. The rule may
+# enable more than the page lists -- `pinDigest` is not prose-worthy -- but
+# every type the page promises has to actually be enabled, or the page is
+# describing an automerge scope the repository does not have.
+automerged_types="$(jq -r '
+  [.packageRules[] | select(.automerge == true) | .matchUpdateTypes[]] | unique | join(" ")
+' "${RENOVATE_CONFIG}")"
+assert_extracted "renovate.json still has an automerging rule" "${automerged_types}"
+doc_automerge_types="$(sed -nE 's/^\| Renovate automerge \| On for ([a-z\/]+) updates.*/\1/p' \
+  "${RISK_TIERS_DOC}" | tr '/' '\n')"
+assert_extracted "the automation table still lists the automerged update types" \
+  "${doc_automerge_types}"
+unpromised=""
+while IFS= read -r update_type; do
+  [[ -z "${update_type}" ]] && continue
+  [[ " ${automerged_types} " == *" ${update_type} "* ]] || unpromised+="${update_type} "
+done <<<"${doc_automerge_types}"
+assert_equal "every update type the page promises automerges really does" "" "${unpromised}"
 
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
