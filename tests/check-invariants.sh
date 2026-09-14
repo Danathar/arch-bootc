@@ -421,6 +421,159 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Vendored Flathub remote (docs/customizations.md, docs/renovate.md)"
+# The second piece of third-party key material this repository ships, and the
+# only one nothing read until now. `system_files/etc/flatpak/remotes.d/
+# flathub.flatpakrepo` carries Flathub's signing key inline, and the
+# `COPY system_files/ /` in base-core is the only thing that installs it: there
+# is no `flatpak remote-add` anywhere in the tree, and docs/renovate.md records
+# that the file is deliberately vendored rather than curled during the build,
+# with no Renovate datasource watching it. So whatever this file says is what
+# every desktop install trusts, and it changes only by hand.
+#
+# Every failure mode below is silent. flatpak reads the files under
+# remotes.d/ while configuring remotes; one that it cannot parse -- wrong group
+# header, a name that is not `*.flatpakrepo` -- simply does not become a remote,
+# and the image builds, boots and passes every other check in this suite with
+# no Flathub configured at all. A key that has been replaced is quieter still:
+# the file keeps its shape, `grep GPGKey=` keeps matching, and the only thing
+# that changed is which signatures the machine will accept.
+#
+# The fingerprint is therefore checked by computing it, not by grepping for a
+# blob. That is plain OpenPGP: the decoded key starts with an old-format public
+# key packet (tag 6, two-byte length), and a v4 fingerprint is the SHA-1 of
+# 0x99, that length, and the packet body -- so coreutils is enough and no gpg
+# binary has to be present for this to run everywhere the rest of the suite
+# does.
+
+FLATHUB_REMOTES_D="system_files/etc/flatpak/remotes.d"
+FLATHUB_REPO="${FLATHUB_REMOTES_D}/flathub.flatpakrepo"
+# Flathub's published signing-key fingerprint, and the repository URL the key
+# signs for. Both are upstream constants: a diff that moves either of them is
+# repointing every desktop install's application source and must be read as
+# that rather than as a file edit.
+FLATHUB_KEY_FINGERPRINT="6E5C05D979C76DAF93C081354184DD4D907A7CAE"
+FLATHUB_URL="https://dl.flathub.org/repo/"
+
+# A file in this directory whose name does not end in .flatpakrepo is not a
+# remote definition; it is a file flatpak walks past. Catching that here is the
+# difference between "the remote is missing" being a failed check and being a
+# support question from someone whose `flatpak install` cannot find anything.
+flathub_stray="$(find "${FLATHUB_REMOTES_D}" -type f ! -name '*.flatpakrepo' 2>/dev/null)"
+if [[ -z "${flathub_stray}" ]]; then
+  pass "every file under ${FLATHUB_REMOTES_D} is a .flatpakrepo definition"
+else
+  fail "every file under ${FLATHUB_REMOTES_D} is a .flatpakrepo definition" \
+    "found: ${flathub_stray//$'\n'/ | }"
+fi
+
+# The remote's name comes from the filename, not from anything inside the file,
+# and docs/customizations.md promises the remote is pre-configured -- which is
+# only useful to a reader who can then type `flatpak install flathub ...`.
+# Renaming the file renames the remote and leaves the documentation describing
+# something that is not there.
+flathub_definitions="$(find "${FLATHUB_REMOTES_D}" -type f -name '*.flatpakrepo' -printf '%f\n' 2>/dev/null | sort | tr '\n' ' ')"
+assert_equal "the vendored definition is named for the 'flathub' remote" \
+  "${flathub_definitions% }" "flathub.flatpakrepo"
+
+if [[ ! -f "${FLATHUB_REPO}" ]]; then
+  fail "${FLATHUB_REPO} exists" "the vendored Flathub remote is gone"
+else
+  pass "${FLATHUB_REPO} exists"
+
+  # GKeyFile syntax: the keys are only read under this exact group header.
+  flathub_first_line="$(grep -m1 -v '^[[:space:]]*$' "${FLATHUB_REPO}")"
+  assert_equal "the definition opens with the [Flatpak Repo] group header" \
+    "${flathub_first_line}" "[Flatpak Repo]"
+
+  flathub_url_count="$(grep -c '^Url=' "${FLATHUB_REPO}")"
+  flathub_key_count="$(grep -c '^GPGKey=' "${FLATHUB_REPO}")"
+  assert_equal "the definition sets Url exactly once" "${flathub_url_count}" "1"
+  assert_equal "the definition sets GPGKey exactly once" "${flathub_key_count}" "1"
+
+  flathub_url="$(sed -n 's/^Url=//p' "${FLATHUB_REPO}" | head -1)"
+  assert_equal "the remote points at Flathub's repository" \
+    "${flathub_url}" "${FLATHUB_URL}"
+
+  flathub_key_b64="$(sed -n 's/^GPGKey=//p' "${FLATHUB_REPO}" | head -1)"
+  if [[ ! "${flathub_key_b64}" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+    fail "GPGKey is a single line of base64" \
+      "the value is empty, wrapped across lines, or contains non-base64 characters"
+  else
+    pass "GPGKey is a single line of base64"
+
+    flathub_work="$(mktemp -d)"
+    # Decoded with a redirect rather than a pipeline on purpose: under
+    # `set -o pipefail` a reader that stops early (od -N3, head -c) sends
+    # base64 a SIGPIPE and the pipeline reports 141 on a tree that is fine --
+    # the same race the assert_present comment at the top of this file
+    # describes.
+    flathub_key_bin="${flathub_work}/flathub-key.gpg"
+    if ! base64 -d <<<"${flathub_key_b64}" >"${flathub_key_bin}" 2>/dev/null; then
+      fail "GPGKey decodes as base64" "base64 -d rejected the value"
+    else
+      pass "GPGKey decodes as base64"
+
+      # 0x99 = old-format packet header, tag 6 (public key), two-byte length.
+      flathub_header="$(od -An -tu1 -N3 "${flathub_key_bin}")"
+      read -r flathub_tag flathub_len_hi flathub_len_lo <<<"${flathub_header}"
+      if [[ "${flathub_tag:-}" != "153" || -z "${flathub_len_lo:-}" ]]; then
+        fail "the decoded key begins with an OpenPGP public-key packet" \
+          "first bytes were '${flathub_header// /,}', expected a 153 (0x99) tag"
+      else
+        pass "the decoded key begins with an OpenPGP public-key packet"
+
+        flathub_packet_bytes=$((3 + flathub_len_hi * 256 + flathub_len_lo))
+        flathub_decoded_bytes="$(wc -c <"${flathub_key_bin}")"
+        if (( flathub_decoded_bytes < flathub_packet_bytes )); then
+          fail "the public-key packet is complete" \
+            "header claims ${flathub_packet_bytes} bytes, only ${flathub_decoded_bytes} decoded"
+        else
+          pass "the public-key packet is complete"
+
+          flathub_fingerprint="$(head -c "${flathub_packet_bytes}" "${flathub_key_bin}" \
+            | sha1sum | cut -d' ' -f1 | tr 'a-f' 'A-F')"
+          assert_equal "the vendored key is Flathub's published signing key" \
+            "${flathub_fingerprint}" "${FLATHUB_KEY_FINGERPRINT}"
+        fi
+      fi
+    fi
+    rm -rf -- "${flathub_work}"
+  fi
+fi
+
+# Vendoring is the point: docs/renovate.md and docs/customizations.md both say
+# this file is not fetched over the network during the build. A reintroduced
+# fetch would restore exactly the build-time dependency on an unauthenticated
+# download that vendoring removed, and would do it while both documents went on
+# claiming otherwise.
+assert_absent "the Flathub definition is not fetched during the build" \
+  "${CONTAINERFILE}" 'dl\.flathub\.org|flathub\.flatpakrepo' \
+  "an active Containerfile line fetches or writes the repo definition that system_files/ already vendors"
+
+assert_absent "no build step adds the remote imperatively" \
+  "${CONTAINERFILE}" 'flatpak[[:space:]]+remote-add'
+
+# Nothing else installs it. If this COPY moves or narrows, the file is in the
+# repository and on no image, and every check above still passes.
+assert_present "system_files/ is copied into the image" \
+  "${CONTAINERFILE}" '^COPY[[:space:]]+system_files/[[:space:]]+/$'
+
+# The Containerfile comment beside the remote calls `base` "the flatpak-less
+# CLI image" and says the definition is inert there. That is a claim about the
+# package lists, which live in different files and move independently, so join
+# the two: the desktop flavors install flatpak, base does not.
+flathub_flavors_with_flatpak=""
+for list in packages-base.txt packages-kde.txt packages-xfce.txt; do
+  [[ -f "${list}" ]] || continue
+  if grep -Eq '^[[:space:]]*flatpak[[:space:]]*$' "${list}"; then
+    flathub_flavors_with_flatpak+="${list} "
+  fi
+done
+assert_equal "the flavors that install flatpak are the desktop ones, and base is not among them" \
+  "${flathub_flavors_with_flatpak% }" "packages-kde.txt packages-xfce.txt"
+
+# ---------------------------------------------------------------------------
 group "bootc provenance (AGENTS.md: 'bootc provenance')"
 
 bootc_version="$(sed -nE 's/^ARG BOOTC_VERSION=(.+)$/\1/p' "${CONTAINERFILE}" | head -1)"

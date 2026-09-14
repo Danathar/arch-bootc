@@ -102,6 +102,13 @@ longer fetched live with `curl` at build time) and has no Renovate datasource â€
 URL/key have been stable since ~2018, but there's no automation watching it. Re-check it
 manually if Flathub ever changes it.
 
+Nothing watches Flathub for you, but `tests/check-invariants.sh` does pin what is committed:
+it asserts the `Url=`, and it decodes the inline `GPGKey=` and computes the key's OpenPGP
+fingerprint rather than grepping for the blob, so a hand edit that swaps the key fails the
+build. Updating the vendored file to a genuinely new upstream key therefore means updating
+`FLATHUB_KEY_FINGERPRINT` in that script in the same commit â€” deliberately, because
+repointing the remote or its key changes what every desktop install trusts.
+
 ## The flow, step by step
 
 1. **Renovate runs** and compares each tracked pin against its upstream source.

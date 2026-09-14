@@ -147,7 +147,10 @@ one.
 the checked-out tree, that the properties `AGENTS.md` calls load-bearing are
 still where they are supposed to be: the root-login controls, the signature
 chain (including that `policy.json`'s `keyPath` still matches where the
-`Containerfile` copies `cosign.pub`), the `bootc` tag-and-commit pin and its
+`Containerfile` copies `cosign.pub`), the vendored Flathub remote — whose
+inline `GPGKey=` is decoded and fingerprinted rather than grepped for, so a
+substituted key fails the check instead of keeping the file's shape — the
+`bootc` tag-and-commit pin and its
 hard failure on a mismatch, `PACMAN_CACHE_BUST` still preceding the first
 `pacman -Syu`, the absence of third-party package sources, the systemd
 enablement layout, SHA-pinned actions with `persist-credentials: false` and
