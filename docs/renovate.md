@@ -22,7 +22,7 @@ skips forks by default; without that line nothing would run at all.
 | --- | --- | --- | --- |
 | `bootc-dev/bootc` | git tag **and** commit SHA, built from source | `Containerfile` `ARG BOOTC_VERSION` + `ARG BOOTC_COMMIT` | custom regex manager (`github-tags`, with digest) |
 | Arch base image | `:latest@sha256:…` | `Containerfile` `FROM` | `dockerfile` manager |
-| `ublue-os/brew` | `:latest@sha256:…` | `Containerfile` `COPY --from=` | `dockerfile` manager |
+| `ublue-os/brew` | `:latest@sha256:…` | `Containerfile` `FROM … AS brew` | `dockerfile` manager |
 | `actions/checkout` | commit SHA | `build.yml` | `github-actions` manager |
 | `docker/metadata-action` | commit SHA | `build.yml` | `github-actions` manager |
 | `redhat-actions/buildah-build` | commit SHA | `build.yml` | `github-actions` manager |
@@ -33,7 +33,7 @@ skips forks by default; without that line nothing would run at all.
 | zizmor | `ZIZMOR_VERSION: X.Y.Z` | `zizmor.yaml` env | custom regex manager (`pypi`) |
 | runner image | `ubuntu-24.04` | `build.yml` `runs-on` | `github-actions` manager |
 
-Two of these need explanation.
+Three of these need explanation.
 
 **bootc** is not a container image reference — it is an `ARG` consumed by
 `git clone --branch "${BOOTC_VERSION}"`, and it is pinned twice: by tag, and by the commit
@@ -80,6 +80,17 @@ default digest-pinning apply to them fails to find anywhere to write the digest 
 branch (this happened for real: chunkah in #18, shellcheck in #68). Any future custom regex
 manager on the `docker` datasource needs the same exclusion unless its `matchStrings` also
 captures a digest.
+
+**ublue-os/brew** is pinned on a `FROM … AS brew` line rather than on the `COPY --from=` that
+uses it. The `dockerfile` manager finds it either way; the stage name is what lets the
+`Containerfile` bind-mount the payload and read its file list without copying 154MB into the
+image twice. That matters here more than for the other pins, because this one is a whole
+third-party filesystem tree landing in `/`, and a digest bump is reviewed as a 64-hex string.
+So the step before the `COPY` compares the payload against
+[`brew-payload.manifest`](../brew-payload.manifest) — every path it ships, with a note on why
+each is allowed — and fails the build on any difference. A bump that brings a new file with it
+does not merge until somebody has read that file and added the line, which is the one place in
+this config where automerge is deliberately not the whole story.
 
 ## What is *not* tracked
 

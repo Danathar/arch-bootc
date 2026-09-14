@@ -1,3 +1,11 @@
+# The Homebrew payload, as a named stage rather than an image reference spelled
+# out in the `COPY --from=` further down. Naming it is what lets the inventory
+# check before that COPY bind-mount the payload and read its file list without
+# copying 154MB into the image a second time to do it. Renovate tracks a `FROM`
+# with its `dockerfile` manager exactly as it tracked the `COPY --from=`
+# (docs/renovate.md, "What is tracked").
+FROM ghcr.io/ublue-os/brew:latest@sha256:60ada2d65891d8797beef49d8b43f2108519cbbaf04c9c7363e1a008677fcd35 AS brew
+
 FROM docker.io/archlinux/archlinux:latest@sha256:7cc4adc87a3f414c9b80fc14b90073d84ef27a170a89c00c5e40055bf20a80f7 AS base-core
 
 # Move everything from `/var` to `/usr/lib/sysimage` so behavior around pacman remains the same on `bootc usroverlay`'d systems
@@ -345,7 +353,57 @@ RUN bootc container lint
 # NOT converted to the /usr-based enablement policy used elsewhere in this
 # file (see the network/basic services comment above); this one stays on
 # /etc-based enablement.
-COPY --from=ghcr.io/ublue-os/brew:latest@sha256:60ada2d65891d8797beef49d8b43f2108519cbbaf04c9c7363e1a008677fcd35 /system_files /
+# What that COPY lands is a whole third-party tree in this image's root, and the
+# digest above makes it reproducible without making it reviewed: what a person
+# sees on a Renovate bump is a 64-hex string, and reading what came with it means
+# unpacking layers out of a registry by hand. The two checks after the COPY each
+# read one file out of eleven -- the three shell fragments, and brew-setup.service
+# -- and say nothing about the rest. A payload that added
+# /etc/sudoers.d/brew, a tmpfiles.d entry, or a second unit would pass both and
+# ship, and the COPY lands at this point in the file, after the root-login
+# controls above, so an added file wins over them.
+#
+# So compare the payload's complete file list against the one somebody read.
+# brew-payload.manifest at the repo root is that list, one path per line with a
+# note on why each is allowed; any difference fails the build here, before the
+# COPY, before the preset, and before either of the checks that act on the
+# payload's contents.
+#
+# Paths, not hashes, deliberately: the 154MB tarball's bytes change on every
+# upstream release, so a content check would fire on every bump and train people
+# to wave it through. A new *path* is new surface, and that is what is worth
+# stopping a build for.
+#
+# The walk is `! -type d` rather than a list of the types worth worrying about.
+# Regular files and symlinks are all the payload ships today, but that is a
+# property of one digest and this check exists because the next one is not it:
+# `COPY --from=brew` carries a FIFO, a socket or a character/block device node
+# into / as readily as a regular file, and an entry the walk never produces is
+# not an entry the comparison can fail on -- it is a silent pass. Inverting the
+# one case that genuinely is not an entry leaves no fourth type to forget.
+#
+# The payload is bind-mounted from the `brew` stage rather than copied, so
+# reading a list of names costs the image nothing; the mount disappears with the
+# step.
+RUN --mount=type=bind,from=brew,source=/system_files,target=/tmp/brew-payload,ro \
+    --mount=type=bind,source=brew-payload.manifest,target=/tmp/brew-payload.manifest,ro \
+    scratch="$(mktemp -d)" && \
+    (cd /tmp/brew-payload && find . ! -type d -printf '%P\n') | \
+      LC_ALL=C sort > "${scratch}/landed" && \
+    sed -e 's/#.*//' -e 's/[[:space:]]*$//' /tmp/brew-payload.manifest | \
+      grep -v '^$' | LC_ALL=C sort > "${scratch}/expected" && \
+    if [ "$(cat "${scratch}/landed")" != "$(cat "${scratch}/expected")" ]; then \
+        echo "error: the ublue-os/brew payload no longer matches brew-payload.manifest:" >&2; \
+        grep -vxF -f "${scratch}/expected" "${scratch}/landed" | sed 's/^/  added:   /' >&2 || true; \
+        grep -vxF -f "${scratch}/landed" "${scratch}/expected" | sed 's/^/  missing: /' >&2 || true; \
+        echo "Read every added file before listing it in brew-payload.manifest: all of it is" >&2; \
+        echo "copied into / below, and then signed and published from there." >&2; \
+        rm -rf "${scratch}"; \
+        exit 1; \
+    fi && \
+    rm -rf "${scratch}"
+
+COPY --from=brew /system_files /
 RUN systemctl preset brew-setup.service brew-update.timer brew-upgrade.timer
 
 # That /system_files carries shell integration alongside the units and the

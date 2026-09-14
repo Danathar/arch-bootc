@@ -1,0 +1,57 @@
+# Every file `COPY --from=brew /system_files /` puts into this image.
+#
+# Paths are relative to the payload's own /system_files, which is the same thing
+# as being relative to / in the built image. One path per line; `#` starts a
+# comment. The Containerfile step immediately before that COPY compares this list
+# against what actually arrived and fails the build on any difference.
+#
+# This is a review record, not a lock file. The `FROM ghcr.io/ublue-os/brew ... AS
+# brew` line at the top of the Containerfile pins which payload arrives; this says
+# what was in it when a person last looked. Bumping that digest without touching
+# this file fails the build, which is the point: the reviewer of a Renovate digest
+# bump otherwise sees a 64-hex string and has no way to tell that a new file came
+# with it.
+#
+# Read the file before adding a line here. Everything below is copied into / and
+# then signed and published, and the COPY runs after the root-login controls
+# earlier in the Containerfile, so an added file wins over them.
+#
+# Deliberately paths only, no hashes. The tarball's bytes change on every upstream
+# release, so hashing would fire on every bump and train people to skip the check.
+# New surface is what is worth stopping a build for.
+
+# Login-shell fragments. The Containerfile removes all three: they eval and source
+# code out of /var/home/linuxbrew/.linuxbrew, which brew-setup.service gives to
+# UID 1000, and /etc/profile.d and the fish vendor directory are read by root's
+# login shells too. See issue #243. They are listed here because they do arrive;
+# the removal and the sweep beside it are what prove they left again.
+etc/profile.d/brew-bash-completion.sh
+etc/profile.d/brew.sh
+usr/share/fish/vendor_conf.d/ublue-brew.fish
+
+# PAM resource limits, applied to console and SSH logins. Raises nofile from the
+# 1024 default to 4096 for every user and for root. Not a privilege boundary.
+etc/security/limits.d/30-brew-limits.conf
+
+# First-boot extraction of the Homebrew prefix, run as root. The Containerfile
+# presets it and ships a PrivateTmp=yes drop-in for it, because it stages the
+# tarball below through a fixed /tmp path. See issue #258, and the staging check
+# after the COPY for the part of it this repository keeps watching.
+usr/lib/systemd/system/brew-setup.service
+
+# `brew update` / `brew upgrade` on a timer. Both run User=1000 against the prefix
+# that user already owns, so neither is a root execution path.
+usr/lib/systemd/system/brew-update.service
+usr/lib/systemd/system/brew-update.timer
+usr/lib/systemd/system/brew-upgrade.service
+usr/lib/systemd/system/brew-upgrade.timer
+
+# `enable` lines for the three units above. The Containerfile presets those three
+# by name rather than relying on this file, so a unit added here alone would not
+# be enabled -- but a preset file is worth seeing change.
+usr/lib/systemd/system-preset/01-homebrew.preset
+
+# The 154MB Homebrew prefix itself, extracted at first boot by brew-setup.service.
+# The largest thing this image takes from the payload and the reason the payload
+# exists.
+usr/share/homebrew.tar.zst
