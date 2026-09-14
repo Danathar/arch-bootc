@@ -374,13 +374,21 @@ RUN bootc container lint
 # to wave it through. A new *path* is new surface, and that is what is worth
 # stopping a build for.
 #
+# The walk is `! -type d` rather than a list of the types worth worrying about.
+# Regular files and symlinks are all the payload ships today, but that is a
+# property of one digest and this check exists because the next one is not it:
+# `COPY --from=brew` carries a FIFO, a socket or a character/block device node
+# into / as readily as a regular file, and an entry the walk never produces is
+# not an entry the comparison can fail on -- it is a silent pass. Inverting the
+# one case that genuinely is not an entry leaves no fourth type to forget.
+#
 # The payload is bind-mounted from the `brew` stage rather than copied, so
 # reading a list of names costs the image nothing; the mount disappears with the
 # step.
 RUN --mount=type=bind,from=brew,source=/system_files,target=/tmp/brew-payload,ro \
     --mount=type=bind,source=brew-payload.manifest,target=/tmp/brew-payload.manifest,ro \
     scratch="$(mktemp -d)" && \
-    (cd /tmp/brew-payload && find . \( -type f -o -type l \) -printf '%P\n') | \
+    (cd /tmp/brew-payload && find . ! -type d -printf '%P\n') | \
       LC_ALL=C sort > "${scratch}/landed" && \
     sed -e 's/#.*//' -e 's/[[:space:]]*$//' /tmp/brew-payload.manifest | \
       grep -v '^$' | LC_ALL=C sort > "${scratch}/expected" && \

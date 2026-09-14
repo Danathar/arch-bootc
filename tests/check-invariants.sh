@@ -317,6 +317,20 @@ assert_present "the check reads the manifest out of the build context" \
   "${CONTAINERFILE}" "--mount=type=bind,source=${BREW_MANIFEST}," \
   "the manifest is not mounted, so the comparison has nothing to compare against"
 
+# A walk restricted to regular files and symlinks is the shape of this check that
+# looks right and is not: `COPY --from=brew` puts a FIFO, a socket or a device
+# node in / as readily as a file, and one the walk never lists is one the
+# comparison cannot fail on. Asserted both ways -- that the inverted form is
+# there, and that the enumerated form has not come back -- because the second is
+# what a well-meaning edit would reintroduce.
+assert_present "the inventory counts every non-directory entry" \
+  "${CONTAINERFILE}" "find \\. ! -type d -printf" \
+  "the walk no longer covers FIFOs, sockets and device nodes in the payload"
+
+assert_absent "the inventory does not enumerate the file types it accepts" \
+  "${CONTAINERFILE}" 'find \. \\\( -type f' \
+  "the walk is back to regular files and symlinks, so a special file would pass unseen"
+
 # Checking after the COPY would still fail the build, but only after the
 # unreviewed files were already in the image's root and the preset had run.
 brew_copy_line="$(grep -n '^COPY --from=brew[[:space:]]' "${CONTAINERFILE}" | head -1 | cut -d: -f1)"
