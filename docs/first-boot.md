@@ -141,6 +141,18 @@ executing a binary one unprivileged user can rewrite. Upstream Homebrew does
 not support a shared multi-user prefix either; a second user who wants `brew`
 should install their own.
 
+What arrives from ublue-os/brew is checked before any of it is used. The
+payload is a whole third-party tree copied into `/`, and the digest that pins it
+is reviewed as a 64-hex string, so the build compares the payload's complete file
+list against [`brew-payload.manifest`](../brew-payload.manifest) — one path per
+line, with a note on why each is allowed — and fails on any difference before the
+copy runs. The two checks described below each read one named file out of the
+eleven; the manifest is what covers the other ten, and what stops an upstream
+bump from adding a sudoers drop-in, a PAM file or a second unit to a signed image
+without somebody having read it. It compares paths and not contents on purpose:
+the 154MB tarball's bytes change on every upstream release, and a check that
+fires on every bump is a check that gets waved through.
+
 ublue-os/brew ships three unguarded fragments of its own —
 `/etc/profile.d/brew.sh`, `/etc/profile.d/brew-bash-completion.sh` and
 `/usr/share/fish/vendor_conf.d/ublue-brew.fish` — alongside the units and the

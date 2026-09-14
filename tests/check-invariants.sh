@@ -280,6 +280,85 @@ assert_present "the POSIX fragment is executed by a test" \
 assert_present "the fish fragment is executed by a test" \
   "tests/test-homebrew-shell-integration.sh" 'system_files/etc/fish/conf\.d/homebrew\.fish'
 
+# Everything below this point is about a payload this repository does not write
+# and cannot read at any revision: ublue-os/brew's /system_files, which arrives
+# whole through a `COPY --from`. The checks come in that order -- first what the
+# payload contains, then the two files out of it this repository acts on.
+#
+# The inventory is the outer one. The two checks after it read one named file
+# each out of eleven, and the COPY lands further down the Containerfile than the
+# root-login controls, so a payload that added /etc/sudoers.d/brew, an
+# /etc/pam.d/ file or a second unit would satisfy both of them and ship anyway.
+# brew-payload.manifest is the list somebody read; the build compares the
+# payload against it and fails on any difference, before the COPY runs.
+BREW_MANIFEST="brew-payload.manifest"
+
+# Reading the payload without copying it needs it to be a named stage. Renovate
+# tracks the digest on a `FROM` with the same `dockerfile` manager that tracked
+# it on the `COPY --from=` (docs/renovate.md, "What is tracked"), so the pin is
+# not weakened by moving -- but an unpinned or unnamed one would be.
+assert_present "the brew payload arrives as a digest-pinned named stage" \
+  "${CONTAINERFILE}" '^FROM ghcr\.io/ublue-os/brew:[^@[:space:]]+@sha256:[0-9a-f]{64} AS brew$' \
+  "the payload is no longer a digest-pinned stage, so nothing can mount it to read it"
+
+assert_present "the COPY takes the payload from that same stage" \
+  "${CONTAINERFILE}" '^COPY --from=brew[[:space:]]+/system_files[[:space:]]+/$' \
+  "the COPY names an image again, so what is inspected and what is copied can differ"
+
+assert_present "the payload's whole file list is checked against a manifest" \
+  "${CONTAINERFILE}" 'no longer matches brew-payload\.manifest' \
+  "nothing compares the payload's file list, so a new file arrives unreviewed"
+
+assert_present "the check reads the payload from the stage, not from a second copy" \
+  "${CONTAINERFILE}" '--mount=type=bind,from=brew,source=/system_files' \
+  "the inventory check no longer bind-mounts the stage it is supposed to inspect"
+
+assert_present "the check reads the manifest out of the build context" \
+  "${CONTAINERFILE}" "--mount=type=bind,source=${BREW_MANIFEST}," \
+  "the manifest is not mounted, so the comparison has nothing to compare against"
+
+# Checking after the COPY would still fail the build, but only after the
+# unreviewed files were already in the image's root and the preset had run.
+brew_copy_line="$(grep -n '^COPY --from=brew[[:space:]]' "${CONTAINERFILE}" | head -1 | cut -d: -f1)"
+brew_inventory_line="$(grep -n 'no longer matches brew-payload.manifest' "${CONTAINERFILE}" |
+  head -1 | cut -d: -f1)"
+if [[ -n "${brew_copy_line}" && -n "${brew_inventory_line}" ]] &&
+  ((brew_inventory_line < brew_copy_line)); then
+  pass "the inventory check runs before the COPY that lands the payload"
+else
+  fail "the inventory check runs before the COPY that lands the payload" \
+    "inventory check at line ${brew_inventory_line:-none}, COPY at line ${brew_copy_line:-none}"
+fi
+
+# The manifest's contents are not restated here -- a copy of a list checked
+# against the list is not an assertion. What is checked is that it is still
+# shaped like the thing the build compares against, and that it is joined to the
+# two narrower checks below: those name files out of this same payload, and a
+# manifest that stopped listing one of them would leave them green while the
+# file they read had quietly gone.
+if [[ ! -f "${BREW_MANIFEST}" ]]; then
+  fail "the brew payload manifest exists" "${BREW_MANIFEST} is not in the tree"
+else
+  manifest_paths="$(sed -e 's/#.*//' -e 's/[[:space:]]*$//' "${BREW_MANIFEST}" | grep -v '^$')"
+  if [[ -z "${manifest_paths}" ]]; then
+    fail "the brew payload manifest lists files" \
+      "${BREW_MANIFEST} has no entries, so the build would reject every payload"
+  else
+    pass "the brew payload manifest lists files"
+  fi
+
+  # The build compares against `find -printf '%P\n'`, which is relative. A
+  # leading slash fails the build rather than passing it, but it fails it in a
+  # container build an hour into CI instead of here.
+  absolute_entries="$(grep '^/' <<<"${manifest_paths}" || true)"
+  if [[ -z "${absolute_entries}" ]]; then
+    pass "every manifest entry is relative to the payload root"
+  else
+    fail "every manifest entry is relative to the payload root" \
+      "absolute: ${absolute_entries//$'\n'/ | }"
+  fi
+fi
+
 # The image also receives shell integration this repository did not write.
 # ublue-os/brew's /system_files carries /etc/profile.d/brew.sh,
 # /etc/profile.d/brew-bash-completion.sh and
@@ -323,9 +402,25 @@ else
   fi
 fi
 
+# Each of them is in the manifest too, because they do arrive; what proves they
+# left again is the removal below. A manifest that stopped listing one would mean
+# the payload had stopped shipping it -- at which point the removal is removing
+# nothing, and the sweep beside it is the only thing left watching.
+if [[ -n "${manifest_paths:-}" ]]; then
+  unlisted=""
+  for vendored in "${VENDORED_BREW_FRAGMENTS[@]}"; do
+    grep -qxF -- "${vendored#/}" <<<"${manifest_paths}" || unlisted+="${vendored} "
+  done
+  if [[ -z "${unlisted}" ]]; then
+    pass "the manifest lists the fragments the removal below deletes"
+  else
+    fail "the manifest lists the fragments the removal below deletes" \
+      "not in ${BREW_MANIFEST}: ${unlisted}"
+  fi
+fi
+
 # Removing them before the COPY that creates them is a no-op that leaves every
 # assertion above green, so the order is asserted rather than assumed.
-brew_copy_line="$(grep -n 'COPY --from=ghcr.io/ublue-os/brew' "${CONTAINERFILE}" | head -1 | cut -d: -f1)"
 brew_removal_line="$(grep -n 'rm -f /etc/profile.d/brew.sh' "${CONTAINERFILE}" | head -1 | cut -d: -f1)"
 if [[ -n "${brew_copy_line}" && -n "${brew_removal_line}" ]] &&
   ((brew_removal_line > brew_copy_line)); then
@@ -357,6 +452,18 @@ assert_present "the sweep exempts only this repository's two guarded fragments" 
 assert_present "brew-setup.service stages the payload in a private /tmp" \
   "${BREW_SETUP_DROPIN}" '^PrivateTmp=yes$' \
   "the drop-in no longer contains the staging path the payload uses"
+
+# Same join as the fragments above: the drop-in below and the build-time check
+# beside it are written against a unit that comes from the payload, so the
+# manifest listing it is what says that unit is still expected to arrive.
+if [[ -n "${manifest_paths:-}" ]]; then
+  if grep -qxF -- 'usr/lib/systemd/system/brew-setup.service' <<<"${manifest_paths}"; then
+    pass "the manifest lists the unit the drop-in contains"
+  else
+    fail "the manifest lists the unit the drop-in contains" \
+      "usr/lib/systemd/system/brew-setup.service is not in ${BREW_MANIFEST}"
+  fi
+fi
 
 assert_present "a missing or weakened drop-in fails the build" \
   "${CONTAINERFILE}" 'is missing or does not set PrivateTmp=yes' \
