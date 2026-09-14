@@ -201,7 +201,7 @@ by construction.
 | --- | --- |
 | Build workflow | Skipped entirely for T0; runs for T1–T3 |
 | zizmor | Runs only when `.github/workflows/**` changes |
-| Renovate automerge | On for digest/pin/patch/minor/major updates once the build is green |
+| Renovate automerge | On for digest/pin/pinDigest/patch/minor/major updates once the build is green |
 | Renovate carve-out | **Major `bootc-dev/bootc` bumps never automerge** — they are T3, and a green build does not boot-test the image |
 
 The Renovate carve-out is this table's one real enforcement point, and it exists
