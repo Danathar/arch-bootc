@@ -702,6 +702,260 @@ test_fixed_internal_esp_is_genuine() {
     "${RUN_OUTPUT}" "would prune EFI/Linux/old"
 }
 
+# --- the systemd units that actually run this script ------------------------
+#
+# Everything above proves the script does the right thing when something runs
+# it. Nothing proved that anything ever does. The three files below are what
+# start it on a real system, and until this group existed no test opened any of
+# them:
+#
+#   arch-bootc-prune-esp.service   ExecStart= plus the ConditionPathExists=
+#                                  guard in front of it
+#   arch-bootc-prune-esp.timer     the periodic trigger, enabled by a symlink
+#                                  the Containerfile creates by hand
+#   bootc-fetch-apply-updates.service.d/10-prune-esp.conf
+#                                  the drop-in that makes bootc's updater pull
+#                                  the prune in and wait for it
+#
+# The build is not a substitute for these checks. `systemd-analyze verify` runs
+# in the image build and in `just lint`, so it needs a container runtime and a
+# built image, and neither invocation reaches the drop-in: the Containerfile
+# lists units with `find /tmp/shipped-units -maxdepth 1 -type f`, and `-maxdepth
+# 1` excludes everything under a `*.service.d/` directory. A drop-in directory
+# named for a unit that does not exist is not an error at any point -- not at
+# build time, not at boot. It simply never applies.
+#
+# The failure this group is really aimed at is quieter than that. Move or rename
+# the script and `ConditionPathExists=` stops matching, at which point systemd
+# skips the unit and reports success: the timer fires on schedule, the journal
+# shows no failure, and the ESP fills up anyway. Reading the two paths out of
+# the unit and comparing them to the file this test file already drives is the
+# only thing here that catches it early.
+UNIT_DIR="${REPO_ROOT}/system_files/usr/lib/systemd/system"
+PRUNE_SERVICE="${UNIT_DIR}/arch-bootc-prune-esp.service"
+PRUNE_TIMER="${UNIT_DIR}/arch-bootc-prune-esp.timer"
+FETCH_DROPIN_DIR="${UNIT_DIR}/bootc-fetch-apply-updates.service.d"
+FETCH_DROPIN="${FETCH_DROPIN_DIR}/10-prune-esp.conf"
+CONTAINERFILE="${REPO_ROOT}/Containerfile"
+
+# Print every value assigned to KEY inside SECTION, one per line.
+#
+# Hand-rolled rather than shelled out to a systemd tool on purpose: the point of
+# this group is to run wherever the rest of the suite runs, including hosts with
+# no systemd at all, and `systemd-analyze` would not answer these questions
+# anyway -- it validates one unit in isolation, it does not join a unit to the
+# file the repository ships or to the symlink the Containerfile writes.
+#
+# Directives repeat legitimately (ExecStart= in a oneshot service, After=), so
+# every match is printed and the caller decides whether more than one is a
+# problem.
+unit_values() {
+  local file="$1" want="$2" key="$3"
+  awk -v want="${want}" -v key="${key}" '
+    { sub(/\r$/, "") }
+    /^[[:space:]]*([#;]|$)/ { next }
+    /^[[:space:]]*\[/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\].*$/, "", section)
+      next
+    }
+    {
+      eq = index($0, "=")
+      if (eq == 0) next
+      k = substr($0, 1, eq - 1)
+      v = substr($0, eq + 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+      if (section == want && k == key) print v
+    }
+  ' "${file}"
+}
+
+# Print each section KEY appears in, deduplicated, space separated.
+unit_sections_for_key() {
+  local file="$1" key="$2"
+  awk -v key="${key}" '
+    { sub(/\r$/, "") }
+    /^[[:space:]]*([#;]|$)/ { next }
+    /^[[:space:]]*\[/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\].*$/, "", section)
+      next
+    }
+    {
+      eq = index($0, "=")
+      if (eq == 0) next
+      k = substr($0, 1, eq - 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+      if (k == key && !(section in seen)) { seen[section] = 1; order[++n] = section }
+    }
+    END { for (i = 1; i <= n; i++) printf "%s%s", (i > 1 ? " " : ""), order[i] }
+  ' "${file}"
+}
+
+# Strip the `-`, `+`, `!` and `:` prefixes systemd allows on ExecStart= and
+# print the resulting command line. A `-` in particular changes the meaning of
+# the whole unit -- the prune failing would stop being a failure -- so the
+# prefix is removed here and asserted on separately.
+execstart_prefix=""
+execstart_command() {
+  local value="$1"
+  execstart_prefix=""
+  while [[ "${value}" == [-+!:]* ]]; do
+    execstart_prefix+="${value:0:1}"
+    value="${value:1}"
+  done
+  printf '%s' "${value}"
+}
+
+# Map an absolute path in the booted image back to the file this repository
+# ships at it. `COPY system_files/ /` in the Containerfile is what makes the two
+# the same file.
+shipped_path_for() {
+  printf '%s' "${REPO_ROOT}/system_files$1"
+}
+
+test_service_execstart_runs_the_script_this_repo_ships() {
+  local values count command
+  values="$(unit_values "${PRUNE_SERVICE}" Service ExecStart)"
+  count="$(printf '%s\n' "${values}" | grep -c .)"
+  assert_eq "the service declares exactly one ExecStart=" "1" "${count}"
+  command="$(execstart_command "${values}")"
+  assert_eq "ExecStart= carries no prefix that would swallow a prune failure" \
+    "" "${execstart_prefix}"
+  assert_eq "ExecStart= names the script this test file drives" \
+    "${PRUNE_ESP}" "$(shipped_path_for "${command%% *}")"
+  check "the path ExecStart= names is executable in the tree" \
+    "$([[ -x "$(shipped_path_for "${command%% *}")" ]] && printf 0 || printf 1)" \
+    "$(shipped_path_for "${command%% *}") is not executable"
+}
+
+test_service_condition_guards_the_path_execstart_uses() {
+  local command binary conditions
+  command="$(execstart_command "$(unit_values "${PRUNE_SERVICE}" Service ExecStart)")"
+  binary="${command%% *}"
+  conditions="$(unit_values "${PRUNE_SERVICE}" Unit ConditionPathExists | tr '\n' ' ')"
+  # A ConditionPathExists= that has drifted off ExecStart='s binary is the worst
+  # of the failure modes available here: systemd treats an unmet condition as
+  # success, so the unit is skipped silently on every boot and every timer
+  # firing, with nothing red anywhere to notice.
+  assert_eq "ConditionPathExists= guards exactly the binary ExecStart= runs" \
+    "${binary} " "${conditions}"
+}
+
+test_service_execstart_command_line_prunes_a_fixture_esp() {
+  local command binary rest esp
+  command="$(execstart_command "$(unit_values "${PRUNE_SERVICE}" Service ExecStart)")"
+  binary="${command%% *}"
+  rest="${command#"${binary}"}"
+  esp="$(new_esp unit-execstart current stale)"
+  write_bls_entry "${esp}" arch current
+  # Unquoted on purpose: these are the words systemd would split the ExecStart=
+  # line into, and running the unit's actual argument list is the point. It is
+  # empty in the committed tree; adding `--dry-run` to the unit would make the
+  # assertions below fail rather than silently turn the prune into a no-op.
+  # shellcheck disable=SC2086
+  run_prune "${esp}" ${rest}
+  assert_eq "the ExecStart= command line exits 0" "0" "${RUN_STATUS}"
+  assert_dir_absent "the ExecStart= command line removes the unreferenced deployment" \
+    "${esp}/EFI/Linux/stale"
+  assert_dir_exists "the ExecStart= command line keeps the referenced deployment" \
+    "${esp}/EFI/Linux/current"
+}
+
+test_service_is_oneshot_so_before_means_finished() {
+  # Type=simple would report the unit started the moment it forks, and
+  # `Before=bootc-fetch-apply-updates.service` would then only order the *start*
+  # of the prune before the updater -- bootc would be free to stage a new
+  # deployment into the ESP while the prune is still deleting from it.
+  assert_eq "the service is Type=oneshot" \
+    "oneshot" "$(unit_values "${PRUNE_SERVICE}" Service Type)"
+}
+
+test_service_orders_itself_before_the_unit_its_dropin_extends() {
+  local dropin_unit
+  dropin_unit="$(basename "${FETCH_DROPIN_DIR}")"
+  dropin_unit="${dropin_unit%.d}"
+  # The directory name is the only thing that binds the drop-in to a unit, and
+  # nothing else in the tree spells that unit name except the Before= below.
+  # Rename either one alone and the two stop describing the same ordering.
+  assert_eq "Before= names the unit the drop-in directory extends" \
+    "${dropin_unit}" "$(unit_values "${PRUNE_SERVICE}" Unit Before)"
+}
+
+test_dropin_pulls_in_and_waits_for_the_prune_service() {
+  local service_unit
+  service_unit="$(basename "${PRUNE_SERVICE}")"
+  check "the drop-in that hooks bootc's updater exists" \
+    "$(file_exists_result "${FETCH_DROPIN}")" "missing ${FETCH_DROPIN}"
+  assert_eq "the drop-in pulls in the prune service by its shipped filename" \
+    "${service_unit}" "$(unit_values "${FETCH_DROPIN}" Unit Wants)"
+  # Wants= alone only co-starts the two. Without After= the updater may stage a
+  # deployment while the prune is still running.
+  assert_eq "the drop-in orders the updater after the prune service" \
+    "${service_unit}" "$(unit_values "${FETCH_DROPIN}" Unit After)"
+}
+
+test_timer_triggers_the_prune_service() {
+  local triggered
+  triggered="$(unit_values "${PRUNE_TIMER}" Timer Unit)"
+  # With no Unit= the timer triggers the service of the same stem, so the
+  # binding is the filename and nothing states it anywhere.
+  [[ -n "${triggered}" ]] || triggered="$(basename "${PRUNE_TIMER}" .timer).service"
+  assert_eq "the timer triggers the prune service" \
+    "$(basename "${PRUNE_SERVICE}")" "${triggered}"
+  check "the unit the timer triggers is shipped in the same directory" \
+    "$(file_exists_result "${UNIT_DIR}/${triggered}")" \
+    "missing ${UNIT_DIR}/${triggered}"
+  check "the timer schedules at least one trigger" \
+    "$([[ -n "$(unit_values "${PRUNE_TIMER}" Timer OnBootSec)$(unit_values "${PRUNE_TIMER}" Timer OnUnitActiveSec)$(unit_values "${PRUNE_TIMER}" Timer OnCalendar)" ]] && printf 0 || printf 1)" \
+    "no OnBootSec=, OnUnitActiveSec= or OnCalendar= in ${PRUNE_TIMER}"
+}
+
+test_containerfile_enables_the_timer_where_its_install_section_asks() {
+  local line count src dst wanted_by
+  line="$(grep -E '^[[:space:]]*ln -sf [^ ]+\.timer ' "${CONTAINERFILE}" \
+    | grep -F "$(basename "${PRUNE_TIMER}")")"
+  count="$(printf '%s\n' "${line}" | grep -c .)"
+  assert_eq "the Containerfile symlinks the prune timer exactly once" "1" "${count}"
+  read -r _ _ src dst _ <<<"${line}"
+  assert_eq "the symlink source is the timer file this repo ships" \
+    "${PRUNE_TIMER}" "$(shipped_path_for "${src}")"
+  assert_eq "the symlink keeps the timer's own name" \
+    "$(basename "${src}")" "$(basename "${dst}")"
+  # This is the join nothing else makes. The dangling-symlink scan in the
+  # Containerfile checks that the *source* resolves; it says nothing about the
+  # directory the link is placed in. Enable the timer under some other target's
+  # .wants and the link still resolves, the build still passes, and the timer
+  # is pulled in by a target that may never be reached -- or, with
+  # WantedBy= edited instead, `systemctl enable` and this hand-written symlink
+  # stop agreeing about where the unit belongs.
+  wanted_by="$(unit_values "${PRUNE_TIMER}" Install WantedBy)"
+  assert_eq "the timer is enabled under the target its [Install] section names" \
+    "/usr/lib/systemd/system/${wanted_by}.wants" "$(dirname "${dst}")"
+}
+
+test_unit_directives_sit_in_the_sections_systemd_reads() {
+  # A directive under the wrong heading is not a typo systemd forgives: it is
+  # either a fatal load error or -- for a key that happens to be valid in the
+  # section it landed in -- silently inert. `systemd-analyze verify` would say
+  # so, but only in the image build, which needs a container runtime.
+  assert_eq "ExecStart= is in [Service]" \
+    "Service" "$(unit_sections_for_key "${PRUNE_SERVICE}" ExecStart)"
+  assert_eq "ConditionPathExists= is in [Unit]" \
+    "Unit" "$(unit_sections_for_key "${PRUNE_SERVICE}" ConditionPathExists)"
+  assert_eq "Before= is in [Unit]" \
+    "Unit" "$(unit_sections_for_key "${PRUNE_SERVICE}" Before)"
+  assert_eq "the timer's WantedBy= is in [Install]" \
+    "Install" "$(unit_sections_for_key "${PRUNE_TIMER}" WantedBy)"
+  assert_eq "OnUnitActiveSec= is in [Timer]" \
+    "Timer" "$(unit_sections_for_key "${PRUNE_TIMER}" OnUnitActiveSec)"
+  assert_eq "the drop-in's Wants= is in [Unit]" \
+    "Unit" "$(unit_sections_for_key "${FETCH_DROPIN}" Wants)"
+}
+
 main() {
   local test_fn
   for test_fn in \
@@ -738,7 +992,16 @@ main() {
     test_non_esp_partition_type_is_not_genuine \
     test_removable_device_is_not_genuine \
     test_hotplug_device_is_not_genuine \
-    test_fixed_internal_esp_is_genuine; do
+    test_fixed_internal_esp_is_genuine \
+    test_service_execstart_runs_the_script_this_repo_ships \
+    test_service_condition_guards_the_path_execstart_uses \
+    test_service_execstart_command_line_prunes_a_fixture_esp \
+    test_service_is_oneshot_so_before_means_finished \
+    test_service_orders_itself_before_the_unit_its_dropin_extends \
+    test_dropin_pulls_in_and_waits_for_the_prune_service \
+    test_timer_triggers_the_prune_service \
+    test_containerfile_enables_the_timer_where_its_install_section_asks \
+    test_unit_directives_sit_in_the_sections_systemd_reads; do
     printf '# %s\n' "${test_fn}"
     "${test_fn}"
   done

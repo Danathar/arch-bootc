@@ -536,6 +536,49 @@ else
     "found: ${etc_wants//$'\n'/ | }"
 fi
 
+# `systemd-analyze verify` is the only thing that parses the unit files this
+# repo ships, and it runs from two places that disagree about how they pick
+# what to verify. The Containerfile derives the list (`find ... -maxdepth 1
+# -type f`), so it cannot go stale. The Justfile's `lint` recipe names the two
+# units literally, so a third unit file is verified by the image build and by
+# nothing a developer runs locally -- and `just lint` is what CONTRIBUTING.md
+# tells them to run before pushing.
+UNIT_SRC_DIR="system_files/usr/lib/systemd/system"
+shipped_units="$(find "${UNIT_SRC_DIR}" -maxdepth 1 -type f -exec basename {} \; \
+  | sort | tr '\n' ' ')"
+lint_units="$(grep -o 'systemd-analyze verify [^\\]*' "${JUSTFILE}" \
+  | sed 's/^systemd-analyze verify //' \
+  | tr ' ' '\n' | sed -n 's|^/usr/lib/systemd/system/||p' | sort | tr '\n' ' ')"
+assert_equal "\`just lint\` verifies exactly the unit files this repo ships" \
+  "${lint_units}" "${shipped_units}"
+
+# The other half of that pair: if the image build ever grows a literal list too,
+# both copies go stale together and nothing is left to notice.
+assert_present "the image build derives its systemd-analyze list from the shipped units" \
+  "${CONTAINERFILE}" 'find /tmp/shipped-units -maxdepth 1 -type f' \
+  "the build no longer computes the unit list, so a new unit file can be skipped silently"
+
+# `-maxdepth 1 -type f` means neither list reaches a drop-in, and a drop-in
+# directory named for a unit that does not exist is not an error anywhere: not
+# at build time, not at boot. It simply never applies. The directory name is the
+# entire binding, so require that something else in the tree spells the unit it
+# claims to extend -- the prune drop-in is bound by `Before=` in
+# arch-bootc-prune-esp.service, the brew drop-in by the verification step in the
+# Containerfile.
+while IFS= read -r dropin_dir; do
+  [[ -n "${dropin_dir}" ]] || continue
+  dropin_unit="$(basename "${dropin_dir}")"
+  dropin_unit="${dropin_unit%.d}"
+  namers="$(grep -rlF -- "${dropin_unit}" "${CONTAINERFILE}" "${UNIT_SRC_DIR}" \
+    | grep -v "^${dropin_dir}/" | tr '\n' ' ')"
+  if [[ -n "${namers}" ]]; then
+    pass "the ${dropin_unit} drop-in extends a unit this tree names elsewhere"
+  else
+    fail "the ${dropin_unit} drop-in extends a unit this tree names elsewhere" \
+      "nothing outside ${dropin_dir} mentions ${dropin_unit}, so the drop-in may apply to nothing"
+  fi
+done < <(find "${UNIT_SRC_DIR}" -mindepth 1 -maxdepth 1 -type d -name '*.d' | sort)
+
 # ---------------------------------------------------------------------------
 group "Workflow hygiene (docs/quality.md: zizmor findings that are easy to reintroduce)"
 
