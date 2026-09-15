@@ -1675,6 +1675,304 @@ assert_contains "the automation table still names the carve-out" \
   "$(grep -E '^\| Renovate carve-out \|' "${RISK_TIERS_DOC}")" \
   'Major `bootc-dev/bootc` bumps never automerge'
 
+# --- .github's agent instructions against the policy they delegate to -------
+#
+# Three hand-written files tell a coding agent, or a human opening a pull
+# request, what this repository will not accept: `.github/copilot-instructions.md`,
+# `.github/pull_request_template.md`, and the prompt files under
+# `.github/prompts/`. None of them was opened by anything. `git grep` for
+# either of the first two across tests/ finds only the *path strings* the
+# risk-tiers section above tiers; nothing reads their contents, and
+# check-coverage.sh counts traced lines in shipped shell, so Markdown is
+# outside what it can ever see.
+#
+# The claims are checkable because none of them is prose about intent. Every
+# one is a pointer: at an AGENTS.md section, at a `just` recipe, at a control
+# that exists in the Containerfile, at the set of build flavors. Each pointer
+# can dangle without anything turning red -- rename the `lint` recipe and
+# copilot-instructions.md goes on forbidding a command that no longer exists,
+# move a safeguard and the template goes on asking for an attestation about
+# nothing.
+#
+# Only the join is asserted here. That the security controls themselves are
+# present and active in the Containerfile is already tests/check-invariants.sh's
+# job, and it checks it more strictly than this file would -- it strips comment
+# lines first, so the *explanation* of a deleted control cannot satisfy it.
+# What nothing covered is that `.github/` still names what that file guards.
+
+COPILOT_INSTRUCTIONS="${REPO_ROOT}/.github/copilot-instructions.md"
+PR_TEMPLATE="${REPO_ROOT}/.github/pull_request_template.md"
+PROMPTS_DIR="${REPO_ROOT}/.github/prompts"
+AGENTS_DOC="${REPO_ROOT}/AGENTS.md"
+JUSTFILE="${REPO_ROOT}/Justfile"
+
+# Like doc_section() above, but for any file and any heading depth: the body
+# ends at the next heading of the same level or shallower. AGENTS.md's
+# load-bearing sections are a mix of `##` and `###`, and a `###`-scoped
+# extractor that stopped only at `##` would swallow the sibling subsections
+# after it and make a "the section still says X" assertion pass on text that
+# belongs to a different section.
+md_section() { # file heading_regex
+  awk -v want="$2" '
+    !inside && $0 ~ want {
+      inside = 1
+      match($0, /^#+/)
+      level = RLENGTH
+      next
+    }
+    inside && /^#+ / {
+      match($0, /^#+/)
+      if (RLENGTH <= level) inside = 0
+    }
+    inside
+  ' "$1"
+}
+
+# These files are hard-wrapped prose, so a phrase this section looks for is as
+# likely to straddle a line break as not -- `container signature policy` is
+# split across lines 11 and 12 of copilot-instructions.md today. Matching the
+# raw text would make each assertion depend on where the wrap happens to fall,
+# which is both fragile and the wrong thing to assert: a reflow is not drift.
+# Every run of whitespace collapses to one space first, so what is matched is
+# the sentence rather than its layout.
+flatten() { # text
+  printf '%s' "$1" | tr '\n' ' ' | tr -s '[:space:]' ' '
+}
+
+COPILOT_TEXT="$(flatten "$(cat "${COPILOT_INSTRUCTIONS}")")"
+assert_extracted ".github/copilot-instructions.md is still readable" "${COPILOT_TEXT}"
+# shellcheck disable=SC2016
+assert_contains "copilot-instructions.md still delegates to AGENTS.md" \
+  "${COPILOT_TEXT}" '`AGENTS.md`'
+
+# The delegation is not a bare pointer: the file enumerates what it expects to
+# find in AGENTS.md, and a reader who follows it looks for those things by
+# name. Both directions are checked, so deleting the promise passes no more
+# quietly than deleting the section it promises. The headings are matched
+# anchored and whole, because `## Consent standard` and a hypothetical
+# `## Consent standard (deprecated)` are not the same section.
+DELEGATED_TOPICS=(
+  "consent gates|^## Consent standard$"
+  "image and VM safety|^## Container, image, and virtual machine safety$"
+  "security invariants|^### Do not weaken the image's security model$"
+  "validation requirements|^## Validation expectations$"
+  "completion reporting|^## Completion and cleanup$"
+)
+unpromised_topics=""
+unwritten_sections=""
+for entry in "${DELEGATED_TOPICS[@]}"; do
+  topic="${entry%%|*}"
+  heading="${entry#*|}"
+  [[ "${COPILOT_TEXT}" == *"${topic}"* ]] || unpromised_topics+="[${topic}] "
+  grep -qE -- "${heading}" "${AGENTS_DOC}" || unwritten_sections+="[${heading}] "
+done
+assert_equal "copilot-instructions.md still names every AGENTS.md topic it delegates" \
+  "" "${unpromised_topics}"
+assert_equal "every topic copilot-instructions.md delegates is still a section of AGENTS.md" \
+  "" "${unwritten_sections}"
+
+# The four safeguards it forbids weakening, each joined to the thing in the
+# tree that implements it. A rename on either side leaves the instruction
+# addressed to nobody: an agent told never to weaken the "daily pacman cache
+# bust" cannot find it if the build argument is now called something else.
+#
+# `grep -qwF` rather than a substring test, for the reason the T3 loop above
+# gives: `PACMAN_CACHE_BUST` is a prefix of `PACMAN_CACHE_BUSTER`, and a
+# substring match would survive exactly the rename this is here to catch.
+#
+# And it reads the Containerfile with its full-line comments stripped, for the
+# reason tests/check-invariants.sh gives at length: every one of these controls
+# is described in a rationale comment using the same words as the instruction
+# that implements it, so a grep over the raw file is satisfied by the
+# *explanation* of a control that has been rewritten. Rewriting `passwd
+# --expire root` as `passwd -e root` leaves the comment above it untouched and
+# was the one mutation this loop let through before the strip.
+CONTAINERFILE_ACTIVE="$(grep -v '^[[:space:]]*#' "${CONTAINERFILE}")"
+SAFEGUARD_ANCHORS=(
+  "default-root-password safeguards|Containerfile|passwd --expire"
+  "container signature policy|Containerfile|/etc/pki/containers/arch-bootc.pub"
+  "daily pacman cache bust|Containerfile|PACMAN_CACHE_BUST"
+  "systemd enablement layout|Containerfile|/usr/lib/systemd/system/multi-user.target.wants"
+)
+unguarded_safeguards=""
+dangling_anchors=""
+for entry in "${SAFEGUARD_ANCHORS[@]}"; do
+  safeguard="${entry%%|*}"
+  rest="${entry#*|}"
+  anchor="${rest#*|}"
+  [[ "${COPILOT_TEXT}" == *"${safeguard}"* ]] || unguarded_safeguards+="[${safeguard}] "
+  printf '%s\n' "${CONTAINERFILE_ACTIVE}" | grep -qwF -- "${anchor}" ||
+    dangling_anchors+="[${anchor}] "
+done
+assert_equal "copilot-instructions.md still names every safeguard it forbids weakening" \
+  "" "${unguarded_safeguards}"
+assert_equal "every safeguard copilot-instructions.md names is still built into the image" \
+  "" "${dangling_anchors}"
+
+# `cosign.pub` is the other half of the signature policy -- the repository-root
+# key that the COPY above installs -- and the policy file that requires a valid
+# signature for this namespace. Neither is a Containerfile literal, so they are
+# checked as committed paths.
+for required in cosign.pub system_files/etc/containers/policy.json; do
+  check "${required} is still committed, so the signature policy resolves" \
+    "$([[ -f "${REPO_ROOT}/${required}" ]] && echo 0 || echo 1)" \
+    "${required} is missing"
+done
+
+# The three actions copilot-instructions.md says not to run unauthorized. The
+# first is a `just` recipe by name; the other two are consent gates in
+# AGENTS.md's numbered list, which is what "the authorization required by
+# `AGENTS.md`" resolves to.
+# shellcheck disable=SC2016
+assert_contains "copilot-instructions.md still gates \`just lint\`" \
+  "${COPILOT_TEXT}" '`just lint`'
+assert_equal "the Justfile still has the lint recipe copilot-instructions.md gates" \
+  "lint" "$(sed -nE 's/^(lint):.*/\1/p' "${JUSTFILE}")"
+VALIDATION_SECTION="$(flatten "$(md_section "${AGENTS_DOC}" '^## Validation expectations$')")"
+assert_extracted "AGENTS.md's validation section is still readable" "${VALIDATION_SECTION}"
+assert_contains "AGENTS.md's validation section still prescribes \`just lint\`" \
+  "${VALIDATION_SECTION}" "just lint"
+
+CONSENT_SECTION="$(flatten "$(md_section "${AGENTS_DOC}" '^## Consent standard$')")"
+assert_extracted "AGENTS.md's consent section is still readable" "${CONSENT_SECTION}"
+for gate in "Run a local image build." \
+  "Install an image to a disk file, create a virtual machine, or boot one."; do
+  assert_contains "AGENTS.md still gates: ${gate}" "${CONSENT_SECTION}" "${gate}"
+done
+
+# "Preserve the explanatory comments in `Containerfile`" is the one instruction
+# whose subject cannot be pinned to a single string, because it is about all of
+# them. The floor below is a collapse detector rather than a style rule: the
+# file is over half comments today, and the failure mode the instruction exists
+# to prevent is a rewrite that strips the rationale wholesale while the build
+# stays green.
+containerfile_comments="$(grep -c '^[[:space:]]*#' "${CONTAINERFILE}")"
+check "the Containerfile still carries its explanatory comments" \
+  "$((containerfile_comments >= 200 ? 0 : 1))" \
+  "only ${containerfile_comments} comment lines remain"
+assert_extracted "AGENTS.md still explains why those comments are load-bearing" \
+  "$(md_section "${AGENTS_DOC}" '^### The comments are part of the product$')"
+
+# --- the pull request template -----------------------------------------------
+#
+# Same class of claim, aimed at a human instead. The template is the only place
+# a contributor is asked to attest to anything, and GitHub renders it into
+# every new pull request body without validating a word of it.
+
+PR_TEMPLATE_TEXT="$(flatten "$(cat "${PR_TEMPLATE}")")"
+assert_extracted ".github/pull_request_template.md is still readable" "${PR_TEMPLATE_TEXT}"
+
+# Every box ships unchecked. A `- [x]` committed into the template is an
+# attestation nobody made, pre-ticked in every pull request from then on, and
+# it is invisible in the rendered diff of a body nobody re-reads.
+template_boxes="$(grep -cE '^[[:space:]]*- \[[ xX]\] ' "${PR_TEMPLATE}")"
+check "the template still asks for checkbox attestations" \
+  "$((template_boxes > 0 ? 0 : 1))" "no checkboxes were found"
+assert_equal "no checkbox ships pre-ticked" \
+  "" "$(grep -nE '^[[:space:]]*- \[[^ ]\] ' "${PR_TEMPLATE}")"
+
+# The instructional comments are HTML comments, which GitHub hides. An
+# unbalanced one does not error: it swallows the rest of the template, or
+# spills the instructions into the visible body. Either way the author sees
+# something other than the form.
+template_opens="$(grep -o '<!--' "${PR_TEMPLATE}" | wc -l)"
+template_closes="$(grep -o -- '-->' "${PR_TEMPLATE}" | wc -l)"
+assert_equal "every HTML comment in the template is closed" \
+  "${template_opens}" "${template_closes}"
+
+# The template's attestations, joined to what they are about.
+# shellcheck disable=SC2016
+assert_contains "the template still asks for \`git diff --check\`" \
+  "${PR_TEMPLATE_TEXT}" '`git diff --check`'
+assert_contains "AGENTS.md still prescribes the command the template asks about" \
+  "${VALIDATION_SECTION}" "git diff --check"
+assert_contains "the template still asks about the root-login safeguards" \
+  "${PR_TEMPLATE_TEXT}" "root-login safeguards"
+assert_contains "the template still asks about the signature policy" \
+  "${PR_TEMPLATE_TEXT}" "image signature policy"
+# shellcheck disable=SC2016
+assert_contains "the template still asks about the Containerfile rationale comments" \
+  "${PR_TEMPLATE_TEXT}" '`Containerfile` rationale comments'
+
+# "Every affected flavor was validated" is only an answerable question while
+# the flavors are a fixed, discoverable set. They are defined in three places
+# that nothing joined: the per-flavor package lists, build.yml's matrices, and
+# the AGENTS.md section that says a flavor's evidence does not transfer. A
+# fourth flavor added to the matrix and not to the package lists -- or the
+# reverse -- makes the attestation ambiguous rather than false, which is worse.
+assert_contains "the template still asks for per-flavor evidence" \
+  "${PR_TEMPLATE_TEXT}" "Every affected flavor was validated"
+package_list_flavors="$(git -C "${REPO_ROOT}" ls-files 'packages-*.txt' |
+  sed -E 's#^packages-(.*)\.txt$#\1#' | LC_ALL=C sort | tr '\n' ' ')"
+assert_equal "the per-flavor package lists still define three flavors" \
+  "base kde xfce " "${package_list_flavors}"
+# Every `flavor:` matrix in build.yml, normalised and deduplicated. Collecting
+# all of them rather than one job's is deliberate: the publish job and the
+# package-retention job each declare their own, and a flavor added to one and
+# not the other publishes images nobody prunes.
+build_matrix_flavors="$(grep -oE 'flavor: \[[^]]*\]' "${BUILD_WORKFLOW}" |
+  sed -E 's/^flavor: \[//; s/\]$//' | tr ',' '\n' |
+  sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//' | LC_ALL=C sort -u | tr '\n' ' ')"
+assert_extracted "build.yml still declares a flavor matrix" "${build_matrix_flavors}"
+assert_equal "build.yml's flavor matrices are the package lists' flavors" \
+  "${package_list_flavors}" "${build_matrix_flavors}"
+FLAVOR_SECTION="$(md_section "${AGENTS_DOC}" '^### Flavors are separate paths$')"
+assert_extracted "AGENTS.md still explains why flavor evidence does not transfer" \
+  "${FLAVOR_SECTION}"
+unnamed_flavors=""
+for flavor in ${package_list_flavors}; do
+  printf '%s\n' "${FLAVOR_SECTION}" | grep -qwF -- "${flavor}" ||
+    unnamed_flavors+="${flavor} "
+done
+assert_equal "AGENTS.md's flavor section still names every flavor that is built" \
+  "" "${unnamed_flavors}"
+
+# --- .github/prompts ---------------------------------------------------------
+#
+# A prompt file is only a prompt file if its name ends `.prompt.md` and it
+# opens with YAML front matter carrying a `description`. Get either wrong and
+# the editor does not report an error -- the prompt simply never appears in the
+# picker, which is indistinguishable from nobody having reached for it.
+
+shopt -s nullglob
+prompt_files=("${PROMPTS_DIR}"/*)
+shopt -u nullglob
+check ".github/prompts still holds at least one prompt" \
+  "$(( ${#prompt_files[@]} > 0 ? 0 : 1 ))" "the directory is empty"
+
+misnamed_prompts=""
+undescribed_prompts=""
+undelegated_prompts=""
+for prompt_file in "${prompt_files[@]}"; do
+  prompt_name="$(basename -- "${prompt_file}")"
+  [[ "${prompt_name}" == *.prompt.md ]] || misnamed_prompts+="${prompt_name} "
+  # Front matter is the first `---` line and everything up to the next one, and
+  # it only counts when the first `---` is line 1: a blank line above it and
+  # the block is body text that renders as a horizontal rule.
+  front_matter="$(awk 'NR == 1 && $0 != "---" { exit } NR == 1 { next } /^---$/ { exit } { print }' \
+    "${prompt_file}")"
+  [[ -n "$(printf '%s\n' "${front_matter}" | sed -nE 's/^description:[[:space:]]*(.+)$/\1/p')" ]] ||
+    undescribed_prompts+="${prompt_name} "
+  grep -qwF -- "AGENTS.md" "${prompt_file}" || undelegated_prompts+="${prompt_name} "
+done
+assert_equal "every file in .github/prompts is named <name>.prompt.md" \
+  "" "${misnamed_prompts}"
+assert_equal "every prompt opens with front matter carrying a description" \
+  "" "${undescribed_prompts}"
+assert_equal "every prompt still delegates to AGENTS.md" "" "${undelegated_prompts}"
+
+# The triage prompt's first step is AGENTS.md's preflight by name, and its last
+# is the repository's stop-before-external-action rule. Both are sections of
+# AGENTS.md, so the prompt is a pointer into it in the same way
+# copilot-instructions.md is.
+TRIAGE_PROMPT="$(flatten "$(cat "${PROMPTS_DIR}/triage-repository-issue.prompt.md")")"
+assert_extracted "the triage prompt is still readable" "${TRIAGE_PROMPT}"
+assert_contains "the triage prompt still opens with the mandatory preflight" \
+  "${TRIAGE_PROMPT}" "mandatory preflight"
+assert_extracted "AGENTS.md still has the preflight the triage prompt invokes" \
+  "$(md_section "${AGENTS_DOC}" '^## Mandatory preflight$')"
+
+
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
   printf 'FAILED %d of %d assertion(s)\n' "${failures}" "${tests_run}" >&2
