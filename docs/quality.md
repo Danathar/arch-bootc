@@ -108,6 +108,25 @@ test file escapes linting until you add it to both. That is not hypothetical:
 `tests/test-ostree-pkg-diff-db.sh` reached `main` in the `Justfile` list but not
 the CI one, and went ungated in CI until it was noticed in review.
 
+**The test manifest.** `tests/run-tests.sh` finds its test files by glob, and
+`.claude/settings.json` allow-lists `./tests/run-tests.sh` and `just test`
+without a prompt. Writing one file into `tests/` was therefore enough to execute
+anything that file's `deny` and `ask` arrays exist to gate — the `podman` and
+`buildah` prune and remove set, the `virsh … destroy`/`undefine`/`pool-delete`/
+`vol-wipe` set, `git reset --hard`, `git clean`, `git push --force`, `sudo`,
+`gh pr merge` — with no confirmation, through a command marked safe in the same
+file. `tests/test-manifest` is what the glob is checked against: the run refuses
+to start when the two disagree in either direction, and
+`tests/check-invariants.sh` fails on the same mismatch statically, before
+anything in `tests/` is executed.
+
+It is not a sandbox and does not claim to be. Whoever can write a test file can
+write a line in the manifest too. What it removes is the silent case — adding to
+what an allow-listed command runs is now an edit to a committed list, visible in
+`git diff` and gated in CI, rather than a file appearing in a directory nothing
+reads. The manifest is only ever compared as text; the glob's own results are
+what execute, so a line in it cannot become a command.
+
 **The three-flavor build.** `base`, `kde`, and `xfce` each build from the
 `Containerfile`, and each re-runs `bootc container lint`, `systemd-analyze
 verify` on the shipped units, and a dangling-symlink check. A successful build

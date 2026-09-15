@@ -18,6 +18,7 @@ set -euo pipefail
 # rather than that the host is modest. See docs/ci-cd.md.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+MANIFEST="${SCRIPT_DIR}/test-manifest"
 WORK_DIR="$(mktemp -d)"
 OUTPUT_FILE="${WORK_DIR}/test-output"
 
@@ -31,6 +32,62 @@ test_files=("${SCRIPT_DIR}"/test-*.sh "${SCRIPT_DIR}"/e2e/test-*.sh)
 
 if (( ${#test_files[@]} == 0 )); then
   echo "error: no test files found in ${SCRIPT_DIR}" >&2
+  exit 1
+fi
+
+# What the glob found has to match tests/test-manifest before anything runs.
+#
+# This command is allow-listed without a prompt in .claude/settings.json, and up
+# to here it executed whatever the glob returned. That made one write into
+# tests/ enough to run anything the same file's `deny` and `ask` entries exist
+# to gate -- the `podman`/`buildah` prune and remove set, the `virsh ...
+# destroy`/`undefine`/`pool-*`/`vol-wipe` set, `git reset --hard`, `git clean`,
+# `git push --force`, `sudo`, `gh pr merge` -- with no prompt, using a command
+# the same file marks safe. Those entries are the mechanical half of the rule
+# AGENTS.md states in prose: every existing container, image, VM, pool, block
+# device and untracked file is user data.
+#
+# It does not make the runner a sandbox and is not claimed to: whoever can write
+# a test file can write a line here too. What it removes is the silent case.
+# Adding to what an allow-listed command executes is now an edit to a committed
+# list -- visible in `git diff`, and gated by tests/check-invariants.sh -- rather
+# than a file appearing in a directory nothing reads.
+#
+# The comparison is text against text, and the *glob's* results are what run
+# below. No path is ever read out of the manifest and executed, so a line in it
+# cannot become a command no matter what it says.
+if [[ ! -f "${MANIFEST}" ]]; then
+  echo "error: ${MANIFEST} is missing, so there is nothing to check the" >&2
+  echo "discovered test files against. Restore it rather than deleting the check." >&2
+  exit 1
+fi
+
+discovered=()
+for test_file in "${test_files[@]}"; do
+  discovered+=("${test_file#"${SCRIPT_DIR}/"}")
+done
+
+listed=()
+while IFS= read -r manifest_line; do
+  manifest_line="${manifest_line%%#*}"
+  manifest_line="${manifest_line#"${manifest_line%%[![:space:]]*}"}"
+  manifest_line="${manifest_line%"${manifest_line##*[![:space:]]}"}"
+  [[ -n "${manifest_line}" ]] || continue
+  listed+=("${manifest_line}")
+done <"${MANIFEST}"
+
+printf '%s\n' "${discovered[@]}" | LC_ALL=C sort >"${WORK_DIR}/discovered"
+printf '%s\n' "${listed[@]+"${listed[@]}"}" | LC_ALL=C sort >"${WORK_DIR}/listed"
+
+if [[ "$(cat "${WORK_DIR}/discovered")" != "$(cat "${WORK_DIR}/listed")" ]]; then
+  echo "error: the test files in ${SCRIPT_DIR} do not match ${MANIFEST}:" >&2
+  grep -vxF -f "${WORK_DIR}/listed" "${WORK_DIR}/discovered" |
+    sed 's/^/  unlisted: /' >&2 || true
+  grep -vxF -f "${WORK_DIR}/discovered" "${WORK_DIR}/listed" |
+    sed 's/^/  missing:  /' >&2 || true
+  echo "Read an unlisted file before adding it: this runner executes it, and" >&2
+  echo "running this runner needs no confirmation. Remove a stale line instead" >&2
+  echo "of restoring a file that was deleted on purpose." >&2
   exit 1
 fi
 

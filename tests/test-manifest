@@ -1,0 +1,30 @@
+# Every test file tests/run-tests.sh is allowed to execute, one path per line,
+# relative to tests/. Blank lines and `#` comments are ignored.
+#
+# run-tests.sh still discovers test files by glob; this list is what the glob is
+# checked against. The run refuses to start when the two disagree in either
+# direction -- a file on disk that nobody listed, or a listed file that is gone.
+#
+# Why a second list rather than the glob alone: `./tests/run-tests.sh` is
+# allow-listed without a prompt in .claude/settings.json, and a glob executes
+# whatever it finds. That made writing one file into tests/ enough to run
+# anything that file's `deny` and `ask` entries exist to gate -- `podman system
+# prune`, the `virsh ... undefine` set, `git push --force`, `sudo` -- with no
+# prompt at all. Adding a test file is now a visible, reviewable edit to a
+# committed list instead of a silent addition to what an allow-listed command
+# executes.
+#
+# Nothing here is ever run as a path. The entries are compared against the glob
+# as text and the glob's own results are what execute, so a line in this file
+# cannot become a command.
+
+e2e/test-quickstart-dry-run.sh
+test-homebrew-profile.sh
+test-homebrew-shell-integration.sh
+test-nightly-compliance.sh
+test-ostree-pkg-diff-db.sh
+test-ostree-pkg-diff.sh
+test-pr-review-state.sh
+test-prune-esp.sh
+test-prune-package-versions.sh
+test-quickstart-baremetal.sh

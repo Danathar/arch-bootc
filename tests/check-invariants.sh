@@ -946,6 +946,87 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Test execution allow-list (.claude/settings.json allows ./tests/run-tests.sh unprompted)"
+
+# The lint lists above are about coverage. This group is about consent.
+#
+# `Bash(./tests/run-tests.sh)` and `Bash(just test)` are in the `allow` array of
+# .claude/settings.json, so both run without a prompt, and run-tests.sh reaches
+# its test files by glob. Writing one file into tests/ was therefore enough to
+# execute anything the same file's `deny` and `ask` arrays exist to gate --
+# `podman system prune`, `buildah rm --all`, the `virsh ... destroy`/`undefine`/
+# `pool-delete`/`vol-wipe` set, `git reset --hard`, `git clean`,
+# `git push --force`, `sudo`, `gh pr merge` -- with no confirmation, through a
+# command that file marks safe. Those entries are how AGENTS.md's "treat every
+# container, image, VM, pool, block device and untracked file as user data" is
+# actually enforced; prose does not stop a subprocess.
+#
+# tests/test-manifest is what the glob is now checked against, and these
+# assertions are the static half of that check: the runner still refuses at
+# runtime, but a mismatch fails CI here too, without waiting for a test file to
+# be executed first.
+TEST_MANIFEST="tests/test-manifest"
+RUN_TESTS="tests/run-tests.sh"
+
+if [[ -f "${TEST_MANIFEST}" ]]; then
+  pass "${TEST_MANIFEST} exists"
+else
+  fail "${TEST_MANIFEST} exists" "the runner has nothing to check its glob against"
+fi
+
+assert_present "run-tests.sh refuses a test file that is not in the manifest" \
+  "${RUN_TESTS}" 'do not match \$\{MANIFEST\}' \
+  "an unlisted file in tests/ must stop the run, not be executed by it"
+
+assert_present "run-tests.sh refuses to run at all when the manifest is missing" \
+  "${RUN_TESTS}" 'is missing, so there is nothing to check the' \
+  "deleting the list must not be the way to opt out of it"
+
+shopt -s nullglob
+discovered_tests=(tests/test-*.sh tests/e2e/test-*.sh)
+shopt -u nullglob
+
+manifest_entries=()
+if [[ -f "${TEST_MANIFEST}" ]]; then
+  while IFS= read -r manifest_line; do
+    manifest_line="${manifest_line%%#*}"
+    manifest_line="${manifest_line#"${manifest_line%%[![:space:]]*}"}"
+    manifest_line="${manifest_line%"${manifest_line##*[![:space:]]}"}"
+    [[ -n "${manifest_line}" ]] || continue
+    manifest_entries+=("${manifest_line}")
+  done <"${TEST_MANIFEST}"
+fi
+
+unlisted_tests=""
+for discovered_test in "${discovered_tests[@]+"${discovered_tests[@]}"}"; do
+  listed_test="${discovered_test#tests/}"
+  found_test=""
+  for manifest_entry in "${manifest_entries[@]+"${manifest_entries[@]}"}"; do
+    [[ "${manifest_entry}" == "${listed_test}" ]] && found_test="yes" && break
+  done
+  [[ -n "${found_test}" ]] || unlisted_tests+="${listed_test} "
+done
+
+if [[ -z "${unlisted_tests}" ]]; then
+  pass "every test file in tests/ is listed in ${TEST_MANIFEST}"
+else
+  fail "every test file in tests/ is listed in ${TEST_MANIFEST}" \
+    "unlisted: ${unlisted_tests}"
+fi
+
+stale_entries=""
+for manifest_entry in "${manifest_entries[@]+"${manifest_entries[@]}"}"; do
+  [[ -f "tests/${manifest_entry}" ]] || stale_entries+="${manifest_entry} "
+done
+
+if [[ -z "${stale_entries}" ]]; then
+  pass "every ${TEST_MANIFEST} entry names a test file that exists"
+else
+  fail "every ${TEST_MANIFEST} entry names a test file that exists" \
+    "no such file: ${stale_entries}"
+fi
+
+# ---------------------------------------------------------------------------
 group "Renovate pin tracking (docs/renovate.md: 'nothing will fail; updates just stop arriving')"
 
 # Every version pin in this tree that is not a container reference or an action
