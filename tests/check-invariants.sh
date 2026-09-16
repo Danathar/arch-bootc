@@ -1063,10 +1063,16 @@ group "Read boundary on allowed Bash (.claude/settings.json: an allowed command 
 #   * The shell rewrites the command before git sees it. `--no-'index'` and
 #     `--no-\index` reach git as `--no-index` while a substring test on the
 #     spelling that was typed finds neither.
+#   * `--` does not end the mode. Git's own scan consumes a leading `--` and
+#     applies the two-operand test to what follows, so
+#     `git diff -- /dev/null ./cosign.key` prints the file too. Only an operand
+#     before the `--` stops that scan (`git diff HEAD -- path` is safe).
 #
 # So the hook resolves the operands instead: two operands where any one of them
 # is not a revision is the plain-file form, which is what separates
-# `git diff main feature` from `git diff /dev/null ./cosign.key`.
+# `git diff main feature` from `git diff /dev/null ./cosign.key`. After a bare
+# `--`, where no word can be a revision, it applies git's own test: two or more
+# words with any one outside the working tree.
 #
 # The hook below is extracted with jq and *run*, not grepped. A hook asserted
 # by grep is a hook asserted by its own comment: the string can be present and
@@ -1100,6 +1106,9 @@ if ((settings_readable)); then
   # And again with no flag at all, which is the form the first version of this
   # hook missed. Run from inside the checkout, the way the agent would.
   implicit_output="$(git diff /dev/null "${no_index_dir}/fake.key" 2>/dev/null)"
+  # And behind a bare `--`, which a version of the hook read as the start of
+  # repository pathspecs and stopped inspecting.
+  dashdash_output="$(git diff -- /dev/null "${no_index_dir}/fake.key" 2>/dev/null)"
   rm -rf "${no_index_dir}"
   if grep -q '^+SECRET-LINE-1$' <<<"${no_index_output}"; then
     pass "git diff --no-index prints the contents of a plain file outside the index"
@@ -1113,6 +1122,13 @@ if ((settings_readable)); then
   else
     fail "git diff prints the same contents with no --no-index flag present" \
       "this git no longer enters the mode implicitly; re-derive the operand check in the hook"
+  fi
+
+  if grep -q '^+SECRET-LINE-1$' <<<"${dashdash_output}"; then
+    pass "git diff prints the same contents with the two paths behind a bare --"
+  else
+    fail "git diff prints the same contents with the two paths behind a bare --" \
+      "this git no longer enters the mode behind --; re-derive the after-dashdash check in the hook"
   fi
 
   # The hook's rationale is that these three entries stay exactly as they are.
@@ -1224,6 +1240,20 @@ if ((settings_readable)); then
   assert_hook_refuses "the hook refuses the flagless form behind another command" \
     'ls -l && git diff /dev/null ./cosign.key'
 
+  # The same mode behind a bare `--`. Git consumes a leading `--` and applies
+  # its two-operand test to the words after it, so treating them as pathspecs
+  # that never open a plain file let this exact form through once.
+  assert_hook_refuses "the hook refuses the two-path form behind a bare --" \
+    'git diff -- /dev/null ./cosign.key'
+  assert_hook_refuses "the hook refuses the -- form after another flag" \
+    'git diff --stat -- /dev/null ./.env'
+  assert_hook_refuses "the hook refuses the -- form reached outside the checkout" \
+    'git diff -- /dev/null /home/someone/.ssh/id_ed25519'
+  assert_hook_refuses "the hook refuses the -- form with one operand inside the checkout" \
+    'git diff -- ./AGENTS.md /home/someone/.ssh/id_ed25519'
+  assert_hook_refuses "the hook refuses the -- form that climbs out of the checkout" \
+    'git diff -- ../outside ./cosign.key'
+
   # Spellings the shell rewrites before git sees them. Each of these reaches
   # git as --no-index while the literal string is absent from the command.
   assert_hook_refuses "the hook refuses a quoted spelling of the flag" \
@@ -1248,6 +1278,12 @@ if ((settings_readable)); then
   assert_hook_permits "a two-revision diff is still unprompted" 'git diff HEAD HEAD'
   assert_hook_permits "a diff of one tracked path is still unprompted" 'git diff ./AGENTS.md'
   assert_hook_permits "a pathspec after -- is still unprompted" 'git diff -- ./cosign.key'
+  # Two pathspecs inside the working tree are an ordinary diff: git's own
+  # test only enters the plain-file mode when one of them lies outside it.
+  assert_hook_permits "two pathspecs after -- inside the checkout are still unprompted" \
+    'git diff -- ./AGENTS.md ./tests/'
+  assert_hook_permits "a revision before -- keeps later pathspecs unprompted" \
+    'git diff HEAD -- ./AGENTS.md ./tests/'
   assert_hook_permits "the word diff outside a git call is not a git diff" \
     'grep diff a.txt b.txt'
 
