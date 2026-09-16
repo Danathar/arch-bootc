@@ -1311,6 +1311,408 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Installation runbook (docs/installation.md is a hand copy of the Justfile, the Containerfile targets and scripts/quickstart.sh)"
+
+# docs/installation.md is the document a new user follows, and every literal in
+# it -- recipe names, `BUILD_*` variables, the default disk size, the flavor
+# suffixes, the published image names, the exact `bootc install to-disk` flag
+# set, and the list of things the quickstart refuses to do -- is a hand copy of
+# something else in this tree. Nothing read it: it is not shell, so
+# tests/check-coverage.sh cannot see it, and no test file mentioned it. A
+# renamed recipe, a different default, or a guardrail deleted from
+# scripts/quickstart.sh left the documented procedure describing a repository
+# that no longer exists, with every check still green.
+#
+# What follows joins the doc to the things it claims, in both directions where
+# a one-way check would pass on an empty extraction.
+
+INSTALL_DOC="docs/installation.md"
+QUICKSTART="scripts/quickstart.sh"
+
+# Commands the doc actually tells a reader to run: fenced blocks plus inline
+# code spans. Prose is excluded deliberately -- "this project uses `just` as a
+# command runner" is not an instruction to run a recipe named `as`.
+install_doc_commands="$( {
+  awk '/^```/ { in_block = !in_block; next } in_block' "${INSTALL_DOC}"
+  # The backticks are markdown, not command substitution.
+  # shellcheck disable=SC2016
+  grep -o '`[^`]*`' "${INSTALL_DOC}" | tr -d '`'
+} )"
+
+# Recipe names the Justfile defines. `:=` assignments are variables, not
+# recipes, and recipe bodies are indented, so an unindented name followed by a
+# `:` is the whole grammar that matters here.
+justfile_recipes="$(grep -v ':=' "${JUSTFILE}" |
+  sed -n 's/^\([a-z][a-zA-Z0-9_-]*\)\([[:space:]][^:]*\)\{0,1\}:.*$/\1/p' | sort -u)"
+documented_recipes="$(grep -Eo '(^|[^[:alnum:]_.-])just [a-z][a-zA-Z0-9-]*' <<<"${install_doc_commands}" |
+  sed 's/.*just //' | sort -u)"
+
+# The load-bearing subset has to still be named, or deleting the lines that
+# name a recipe would satisfy the "every documented recipe exists" check by
+# documenting nothing at all.
+missing_from_doc=""
+for recipe in build-base build-containerfile build-xfce generate-bootable-image quickstart; do
+  grep -qx -- "${recipe}" <<<"${documented_recipes}" || missing_from_doc+="${recipe} "
+done
+if [[ -z "${missing_from_doc}" ]]; then
+  pass "the installation runbook still names the build, image and quickstart recipes"
+else
+  fail "the installation runbook still names the build, image and quickstart recipes" \
+    "${INSTALL_DOC} no longer runs: ${missing_from_doc}"
+fi
+
+undefined_recipes=""
+while IFS= read -r recipe; do
+  [[ -n "${recipe}" ]] || continue
+  grep -qx -- "${recipe}" <<<"${justfile_recipes}" || undefined_recipes+="${recipe} "
+done <<<"${documented_recipes}"
+if [[ -z "${undefined_recipes}" ]]; then
+  pass "every \`just\` recipe docs/installation.md tells a reader to run is defined in the Justfile"
+else
+  fail "every \`just\` recipe docs/installation.md tells a reader to run is defined in the Justfile" \
+    "documented but not a recipe: ${undefined_recipes}"
+fi
+
+# `BUILD_*` knobs. The Justfile reads them through env(); a renamed variable
+# leaves the documented override silently doing nothing, because `just` accepts
+# an unknown environment variable without complaint.
+documented_build_env="$(grep -Eo 'BUILD_[A-Z_]+' "${INSTALL_DOC}" | sort -u)"
+unread_build_env=""
+while IFS= read -r var; do
+  [[ -n "${var}" ]] || continue
+  grep -q "env(\"${var}\"" "${JUSTFILE}" || unread_build_env+="${var} "
+done <<<"${documented_build_env}"
+if [[ -z "${unread_build_env}" ]]; then
+  pass "every BUILD_* override docs/installation.md documents is read by the Justfile"
+else
+  fail "every BUILD_* override docs/installation.md documents is read by the Justfile" \
+    "documented but never read: ${unread_build_env}"
+fi
+
+for var in BUILD_DISK_SIZE BUILD_FLAVOR; do
+  if grep -qx -- "${var}" <<<"${documented_build_env}"; then
+    pass "docs/installation.md still documents ${var}"
+  else
+    fail "docs/installation.md still documents ${var}" \
+      "the override exists in the Justfile but the runbook no longer mentions it"
+  fi
+done
+
+# Disk size. The doc's `truncate` line, the qcow2 filename it uses from there
+# on, and the Justfile default are three copies of one number.
+just_disk_size="$(sed -n 's/^disk_size[[:space:]]*:=[[:space:]]*env("BUILD_DISK_SIZE",[[:space:]]*"\([^"]*\)").*/\1/p' "${JUSTFILE}")"
+doc_truncate_size="$(grep -Eo 'truncate -s [0-9]+[A-Za-z]?' "${INSTALL_DOC}" | awk '{ print $3 }' | sort -u | tr '\n' ' ')"
+doc_truncate_size="${doc_truncate_size% }"
+if [[ -z "${just_disk_size}" ]]; then
+  fail "the Justfile still defaults the generated disk size" "no disk_size := env(\"BUILD_DISK_SIZE\", ...) line"
+else
+  assert_equal "docs/installation.md creates the raw disk at the Justfile's default size" \
+    "${doc_truncate_size}" "${just_disk_size}"
+  doc_qcow_size="$(grep -Eo 'arch-bootc-[0-9]+[a-z]?\.qcow2' "${INSTALL_DOC}" | sed 's/^arch-bootc-//; s/\.qcow2$//' | sort -u | tr '\n' ' ')"
+  doc_qcow_size="${doc_qcow_size% }"
+  assert_equal "the qcow2 filename docs/installation.md carries forward names that same size" \
+    "${doc_qcow_size}" "${just_disk_size,,}"
+  # The quickstart prompts for the same default, so a reader who takes the
+  # guided path lands on the disk the manual path describes.
+  quickstart_disk_default="$(sed -n 's/^[[:space:]]*ask DISK_SIZE .*"\([0-9]*[A-Za-z]\)"[[:space:]]*$/\1/p' "${QUICKSTART}")"
+  assert_equal "scripts/quickstart.sh offers the same default disk size" \
+    "${quickstart_disk_default}" "${just_disk_size}"
+fi
+
+# Flavors. The doc names three published images; the Containerfile defines the
+# targets and .github/workflows/build.yml builds the matrix. All three lists
+# are maintained by hand.
+containerfile_flavors="$(sed -n 's/^FROM base-core AS \([a-z0-9-]*\).*/\1/p' "${CONTAINERFILE}" | sort -u | tr '\n' ' ')"
+containerfile_flavors="${containerfile_flavors% }"
+workflow_flavors="$(sed -n 's/^[[:space:]]*flavor:[[:space:]]*\[\(.*\)\].*/\1/p' "${BUILD_WORKFLOW}" |
+  tr -d ' ' | tr ',' '\n' | sed '/^$/d' | sort -u | tr '\n' ' ')"
+workflow_flavors="${workflow_flavors% }"
+doc_flavors="$(grep -Eo 'arch-bootc-[a-z]+' "${INSTALL_DOC}" | sed 's/^arch-bootc-//' | sort -u | tr '\n' ' ')"
+doc_flavors="${doc_flavors% }"
+if [[ -z "${containerfile_flavors}" || -z "${workflow_flavors}" || -z "${doc_flavors}" ]]; then
+  fail "the flavor list can be read from the Containerfile, the build workflow and the runbook" \
+    "Containerfile: '${containerfile_flavors}', workflow: '${workflow_flavors}', doc: '${doc_flavors}'"
+else
+  assert_equal "the build workflow builds exactly the Containerfile's flavor targets" \
+    "${workflow_flavors}" "${containerfile_flavors}"
+  assert_equal "docs/installation.md names exactly the published flavors" \
+    "${doc_flavors}" "${workflow_flavors}"
+fi
+
+# Local tag vs published name. This asymmetry is the one thing in the doc most
+# likely to be "tidied" into consistency: a locally built kde image is
+# *unsuffixed* (`arch-bootc:latest`), while every published image -- kde
+# included -- carries its flavor suffix.
+assert_present "the Justfile leaves the kde flavor's local tag unsuffixed" \
+  "${JUSTFILE}" 'image_ref[[:space:]]*:=[[:space:]]*if flavor == "kde"' \
+  "docs/installation.md tells the reader a local kde build is arch-bootc:latest"
+just_image_name="$(sed -n 's/^image_name[[:space:]]*:=[[:space:]]*env("BUILD_IMAGE_NAME",[[:space:]]*"\([^"]*\)").*/\1/p' "${JUSTFILE}")"
+just_image_tag="$(sed -n 's/^image_tag[[:space:]]*:=[[:space:]]*env("BUILD_IMAGE_TAG",[[:space:]]*"\([^"]*\)").*/\1/p' "${JUSTFILE}")"
+if [[ -z "${just_image_name}" || -z "${just_image_tag}" ]]; then
+  fail "the Justfile defaults the local image name and tag" \
+    "name: '${just_image_name}', tag: '${just_image_tag}'"
+elif grep -qF -- "${just_image_name}:${just_image_tag}" "${INSTALL_DOC}"; then
+  pass "docs/installation.md names the local kde tag the Justfile actually builds"
+else
+  fail "docs/installation.md names the local kde tag the Justfile actually builds" \
+    "the runbook never mentions ${just_image_name}:${just_image_tag}"
+fi
+
+# build.yml publishes ${IMAGE_NAME}-${flavor} for every flavor, so an
+# unsuffixed ghcr.io reference in the runbook points at a package that is never
+# pushed -- a 404 for the reader, on the very first command of Path A.
+assert_absent "docs/installation.md never points at an unsuffixed published image" \
+  "${INSTALL_DOC}" 'ghcr\.io/[^ /]+/arch-bootc:' \
+  "the workflow publishes arch-bootc-<flavor>; an unsuffixed ghcr.io tag does not exist"
+assert_present "the build workflow still suffixes the published image with the flavor" \
+  "${BUILD_WORKFLOW}" 'IMAGE_NAME=\$\{IMAGE_NAME,,\}-\$\{\{ matrix\.flavor \}\}'
+
+# The `bootc install to-disk` flag set. The doc prints it twice (to a file via
+# loopback, and straight at a device), the Justfile runs the first form and
+# scripts/quickstart.sh runs both. Flags here are not cosmetic: dropping
+# --wipe, --composefs-backend or --bootloader changes what gets installed.
+#
+# Continuation lines are joined first, then everything from `bootc install
+# to-disk` onwards is read, so the surrounding `podman run` flags are not
+# mistaken for installer flags.
+bootc_install_flags() {
+  local want="$1" invocation flags
+  sed -e 's/^[[:space:]]*#.*$//' -e ':a' -e '/\\$/N' -e 's/\\\n[[:space:]]*/ /' -e 'ta' |
+    grep -o 'bootc install to-disk.*' |
+    while IFS= read -r invocation; do
+      flags="$(grep -Eo -- '--[a-z-]+' <<<"${invocation}" | sort -u | tr '\n' ' ')"
+      flags="${flags% }"
+      [[ -n "${flags}" ]] || continue
+      case "${flags}" in
+        *--via-loopback*) [[ "${want}" == "loopback" ]] && printf '%s\n' "${flags}" ;;
+        *) [[ "${want}" == "device" ]] && printf '%s\n' "${flags}" ;;
+      esac
+    done | sort -u | tr '\n' '/'
+}
+
+doc_loopback_flags="$(printf '%s\n' "${install_doc_commands}" | bootc_install_flags loopback)"
+doc_device_flags="$(printf '%s\n' "${install_doc_commands}" | bootc_install_flags device)"
+just_loopback_flags="$(bootc_install_flags loopback <"${JUSTFILE}")"
+quickstart_loopback_flags="$(bootc_install_flags loopback <"${QUICKSTART}")"
+quickstart_device_flags="$(bootc_install_flags device <"${QUICKSTART}")"
+
+if [[ -z "${doc_loopback_flags}" || -z "${doc_device_flags}" ]]; then
+  fail "docs/installation.md still prints both bootc install forms" \
+    "loopback: '${doc_loopback_flags}', device: '${doc_device_flags}'"
+else
+  assert_equal "the documented loopback install runs the flags \`just generate-bootable-image\` runs" \
+    "${doc_loopback_flags}" "${just_loopback_flags}"
+  assert_equal "the documented loopback install runs the flags the quickstart runs" \
+    "${doc_loopback_flags}" "${quickstart_loopback_flags}"
+  assert_equal "the documented bare-metal install runs the flags the quickstart runs" \
+    "${doc_device_flags}" "${quickstart_device_flags}"
+fi
+
+# --via-loopback is a guardrail, not a detail: the doc promises image *files*
+# are only ever installed through it, and the difference between the two forms
+# above is exactly that promise.
+if [[ "${doc_device_flags}" == *"--via-loopback"* ]]; then
+  fail "the documented bare-metal install writes at the device, not through a loop device" \
+    "--via-loopback appeared in the device form"
+else
+  pass "the documented bare-metal install writes at the device, not through a loop device"
+fi
+
+# The filesystem the installer is told to create is spelled out in the doc and
+# defaulted in the Justfile.
+just_filesystem="$(sed -n 's/^filesystem[[:space:]]*:=[[:space:]]*env("BUILD_FILESYSTEM",[[:space:]]*"\([^"]*\)").*/\1/p' "${JUSTFILE}")"
+doc_filesystem="$(grep -Eo '\-\-filesystem [a-z0-9]+' "${INSTALL_DOC}" | awk '{ print $2 }' | sort -u | tr '\n' ' ')"
+doc_filesystem="${doc_filesystem% }"
+quickstart_filesystem="$(grep -Eo '\-\-filesystem [a-z0-9]+' "${QUICKSTART}" | awk '{ print $2 }' | sort -u | tr '\n' ' ')"
+quickstart_filesystem="${quickstart_filesystem% }"
+if [[ -z "${just_filesystem}" ]]; then
+  fail "the Justfile defaults the installed filesystem" "no filesystem := env(\"BUILD_FILESYSTEM\", ...) line"
+else
+  assert_equal "docs/installation.md installs the filesystem the Justfile defaults to" \
+    "${doc_filesystem}" "${just_filesystem}"
+  assert_equal "scripts/quickstart.sh installs that same filesystem" \
+    "${quickstart_filesystem}" "${just_filesystem}"
+fi
+
+# ---------------------------------------------------------------------------
+group "Quickstart guardrails (docs/installation.md: 'enforced in code rather than left to you to remember')"
+
+# Each assertion below is one sentence of the doc's "What it refuses to do"
+# list. The doc is the only place that states these as promises, so a guardrail
+# deleted from scripts/quickstart.sh leaves the promise standing alone.
+
+assert_present "the quickstart refuses a disk image on tmpfs or ramfs" \
+  "${QUICKSTART}" 'tmpfs\|ramfs\)' \
+  "docs/installation.md: 'Refuses to put a multi-GB disk image on tmpfs'"
+tmpfs_guard_calls="$(grep -c 'assert_not_tmpfs' "${QUICKSTART}")"
+if ((tmpfs_guard_calls >= 2)); then
+  pass "the tmpfs guard is called, not merely defined"
+else
+  fail "the tmpfs guard is called, not merely defined" \
+    "assert_not_tmpfs appears ${tmpfs_guard_calls} time(s); a definition with no call enforces nothing"
+fi
+
+assert_present "the quickstart checks a VM name against both libvirt connections" \
+  "${QUICKSTART}" 'for conn in "qemu:///session" "qemu:///system"'
+assert_present "an unreadable libvirt inventory fails closed" \
+  "${QUICKSTART}" 'could not inventory VMs on' \
+  "docs/installation.md: 'An unreadable inventory fails closed; it never destroys, undefines or recreates an existing VM'"
+assert_absent "the quickstart never mutates qemu:///system" \
+  "${QUICKSTART}" 'qemu:///system.*(destroy|undefine|define |create|pool-|vol-|--connect)' \
+  "docs/installation.md: 'It performs a read-only name-collision check against qemu:///system, but never modifies that shared connection'"
+
+assert_present "the quickstart snapshots session storage pools before creating a VM" \
+  "${QUICKSTART}" 'list_session_pools'
+assert_absent "the quickstart never removes a storage pool itself" \
+  "${QUICKSTART}" 'run[[:space:]]+(sudo[[:space:]]+)?virsh[^|;&]*pool-(destroy|undefine|delete)' \
+  "docs/installation.md: 'it never removes a pool automatically' -- the cleanup commands are printed for the reader to run"
+
+assert_present "a bare-metal target is refused when it backs the running system" \
+  "${QUICKSTART}" 'backs this running system'
+assert_present "a bare-metal target is refused when anything on it is mounted" \
+  "${QUICKSTART}" 'has mounted partitions or active swap'
+assert_present "the reader retypes the resolved device path" \
+  "${QUICKSTART}" 'Retype the resolved device path'
+assert_present "the reader then types ERASE in capitals" \
+  "${QUICKSTART}" '"ERASE"'
+
+# The signature families the doc names by initialism, joined to the blkid
+# strings the script actually greps for. A family dropped from that -E list is
+# a disk the script stops refusing, and the doc still promises it does.
+doc_signature_families="$(grep -Eo '(ZFS|LVM|RAID|LUKS)( / (ZFS|LVM|RAID|LUKS))+' "${INSTALL_DOC}" |
+  head -1 | tr '/' '\n' | tr -d ' ' | sed '/^$/d' | sort -u)"
+quickstart_signature_tokens="$(grep -Eo "grep -Ew '[^']+'" "${QUICKSTART}" | head -1 | tr "'" '\n' |
+  grep -F '_' | tr '|' '\n' | sed '/^$/d')"
+if [[ -z "${doc_signature_families}" || -z "${quickstart_signature_tokens}" ]]; then
+  fail "the refused storage signatures can be read from both the runbook and the quickstart" \
+    "doc: '${doc_signature_families//$'\n'/ }', quickstart: '${quickstart_signature_tokens//$'\n'/ }'"
+else
+  unrefused_families=""
+  while IFS= read -r family; do
+    [[ -n "${family}" ]] || continue
+    grep -qi -- "${family}" <<<"${quickstart_signature_tokens}" || unrefused_families+="${family} "
+  done <<<"${doc_signature_families}"
+  if [[ -z "${unrefused_families}" ]]; then
+    pass "every storage-signature family docs/installation.md promises is refused is one the quickstart greps for"
+  else
+    fail "every storage-signature family docs/installation.md promises is refused is one the quickstart greps for" \
+      "promised but not matched by scripts/quickstart.sh: ${unrefused_families}"
+  fi
+fi
+
+# "It captures the device identity and repeats every safety check after pulling
+# the image, immediately before --wipe." Pull, then re-check, then install: the
+# order is the claim, because a check that runs only before a minutes-long pull
+# is a check against a stale view of the disk.
+baremetal_body_start="$(grep -n '^flow_baremetal()' "${QUICKSTART}" | head -1 | cut -d: -f1)"
+if [[ -z "${baremetal_body_start}" ]]; then
+  fail "scripts/quickstart.sh still has a bare-metal flow" "no flow_baremetal() definition"
+else
+  baremetal_body="$(tail -n "+${baremetal_body_start}" "${QUICKSTART}" | sed -n '1,/^}$/p')"
+  prepare_line="$(grep -n '^[[:space:]]*prepare_image$' <<<"${baremetal_body}" | head -1 | cut -d: -f1)"
+  identity_line="$(grep -n 'assert_target_identity "' <<<"${baremetal_body}" | head -1 | cut -d: -f1)"
+  revalidate_line="$(grep -n 'validate_baremetal_target "' <<<"${baremetal_body}" | tail -1 | cut -d: -f1)"
+  install_line="$(grep -n 'bootc install to-disk' <<<"${baremetal_body}" | head -1 | cut -d: -f1)"
+  if [[ -z "${prepare_line}" || -z "${identity_line}" || -z "${revalidate_line}" || -z "${install_line}" ]]; then
+    fail "the bare-metal flow pulls, re-checks, then installs" \
+      "prepare_image: '${prepare_line}', identity: '${identity_line}', revalidate: '${revalidate_line}', install: '${install_line}'"
+  elif ((prepare_line < identity_line && identity_line < install_line && revalidate_line > prepare_line && revalidate_line < install_line)); then
+    pass "the bare-metal flow re-checks the target identity and the target itself after pulling the image, before installing"
+  else
+    fail "the bare-metal flow re-checks the target identity and the target itself after pulling the image, before installing" \
+      "order was prepare_image:${prepare_line} identity:${identity_line} revalidate:${revalidate_line} install:${install_line}"
+  fi
+fi
+
+# "For VM installs, one of xorriso, genisoimage, or mkisofs is also required."
+# Both directions: a tool the script would accept but the doc does not list
+# sends a reader installing something they do not need, and a tool the doc
+# lists that the script no longer accepts fails after they installed it.
+# The backticks are markdown, not command substitution: the doc has to name
+# each tool as code, so prose mentioning one in passing is not counted.
+# shellcheck disable=SC2016
+doc_iso_tools="$(grep -Eo '`(xorriso|genisoimage|mkisofs)`' "${INSTALL_DOC}" | tr -d '`' | sort -u | tr '\n' ' ')"
+doc_iso_tools="${doc_iso_tools% }"
+quickstart_iso_tools="$(sed -n 's/^[[:space:]]*for candidate in \(.*\); do$/\1/p' "${QUICKSTART}" |
+  head -1 | tr ' ' '\n' | sed '/^$/d' | sort -u | tr '\n' ' ')"
+quickstart_iso_tools="${quickstart_iso_tools% }"
+if [[ -z "${quickstart_iso_tools}" ]]; then
+  fail "scripts/quickstart.sh still searches for a seed-ISO tool" "no 'for candidate in ...' loop found"
+else
+  assert_equal "docs/installation.md lists exactly the seed-ISO tools the quickstart accepts" \
+    "${doc_iso_tools}" "${quickstart_iso_tools}"
+fi
+
+# "The quickstart checks all required tools before changing storage." Every
+# need_cmd and the ISO-tool search have to come before the first mutation in
+# the VM flow, or the reader loses a partly written disk image to a missing
+# tool.
+vm_body_start="$(grep -n '^flow_vm()' "${QUICKSTART}" | head -1 | cut -d: -f1)"
+if [[ -z "${vm_body_start}" ]]; then
+  fail "scripts/quickstart.sh still has a VM flow" "no flow_vm() definition"
+else
+  vm_body="$(tail -n "+${vm_body_start}" "${QUICKSTART}" | sed -n '1,/^}$/p')"
+  last_tool_check="$(grep -n 'need_cmd \|find_iso_tool' <<<"${vm_body}" | tail -1 | cut -d: -f1)"
+  first_mutation="$(grep -n '^[[:space:]]*run \|^[[:space:]]*confirm ' <<<"${vm_body}" | head -1 | cut -d: -f1)"
+  if [[ -z "${last_tool_check}" || -z "${first_mutation}" ]]; then
+    fail "the VM flow checks its tools before touching storage" \
+      "last tool check: '${last_tool_check}', first mutation: '${first_mutation}'"
+  else
+    assert_equal "the VM flow checks every required tool before the first mutating step" \
+      "$((last_tool_check < first_mutation))" "1"
+  fi
+fi
+
+# --dry-run is documented as performing the same read-only validation while
+# creating nothing. `run` is the single chokepoint that makes that true.
+assert_present "scripts/quickstart.sh accepts --dry-run" \
+  "${QUICKSTART}" '\-\-dry-run\) DRY_RUN=1'
+assert_present "--dry-run prints a mutating command instead of running it" \
+  "${QUICKSTART}" 'DRY_RUN.*-eq 1' \
+  "docs/installation.md: '--dry-run ... does not create, modify, or delete resources'"
+
+# ---------------------------------------------------------------------------
+group "Cross-document links (docs/installation.md hands the reader to three other documents)"
+
+# Every relative link in the runbook, and every anchor on one. A heading
+# renamed in vm-workflow.md or first-boot.md silently turns the hand-off into a
+# link that lands at the top of the page -- or, for a renamed file, at a 404.
+doc_link_failures=""
+doc_links_checked=0
+while IFS= read -r link; do
+  [[ -n "${link}" ]] || continue
+  target="${link%%#*}"
+  anchor="${link#*#}"
+  [[ "${link}" == *#* ]] || anchor=""
+  if [[ -n "${target}" ]]; then
+    target_file="docs/${target}"
+  else
+    target_file="${INSTALL_DOC}"
+  fi
+  doc_links_checked=$((doc_links_checked + 1))
+  if [[ ! -f "${target_file}" ]]; then
+    doc_link_failures+="${link} (no such file) "
+    continue
+  fi
+  [[ -n "${anchor}" ]] || continue
+  # GitHub's slug: lowercase, drop anything that is not a letter, digit, space
+  # or hyphen, then spaces to hyphens. Explicit <a id="..."> anchors count too.
+  slugs="$(grep -E '^#{1,6} ' "${target_file}" | sed -E 's/^#{1,6} //' |
+    tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9 -]//g; s/ /-/g')"
+  slugs+=$'\n'"$(grep -o 'id="[^"]*"' "${target_file}" | sed 's/^id="//; s/"$//')"
+  grep -qx -- "${anchor}" <<<"${slugs}" || doc_link_failures+="${link} (no such anchor) "
+done < <(grep -oE '\]\([^):]*\)' "${INSTALL_DOC}" | sed 's/^](//; s/)$//' | sort -u)
+
+if ((doc_links_checked == 0)); then
+  fail "docs/installation.md still links to the documents it hands off to" \
+    "no relative links found; the hand-off to vm-workflow.md and first-boot.md is gone"
+elif [[ -z "${doc_link_failures}" ]]; then
+  pass "every relative link and anchor in docs/installation.md resolves"
+else
+  fail "every relative link and anchor in docs/installation.md resolves" "${doc_link_failures}"
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then
   printf 'invariants: %d of %d check(s) failed\n' "${failures}" "${checks_run}" >&2
