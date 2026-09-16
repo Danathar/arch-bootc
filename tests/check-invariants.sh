@@ -1677,40 +1677,417 @@ group "Cross-document links (docs/installation.md hands the reader to three othe
 # Every relative link in the runbook, and every anchor on one. A heading
 # renamed in vm-workflow.md or first-boot.md silently turns the hand-off into a
 # link that lands at the top of the page -- or, for a renamed file, at a 404.
-doc_link_failures=""
-doc_links_checked=0
-while IFS= read -r link; do
-  [[ -n "${link}" ]] || continue
-  target="${link%%#*}"
-  anchor="${link#*#}"
-  [[ "${link}" == *#* ]] || anchor=""
-  if [[ -n "${target}" ]]; then
-    target_file="docs/${target}"
-  else
-    target_file="${INSTALL_DOC}"
-  fi
-  doc_links_checked=$((doc_links_checked + 1))
-  if [[ ! -f "${target_file}" ]]; then
-    doc_link_failures+="${link} (no such file) "
-    continue
-  fi
-  [[ -n "${anchor}" ]] || continue
-  # GitHub's slug: lowercase, drop anything that is not a letter, digit, space
-  # or hyphen, then spaces to hyphens. Explicit <a id="..."> anchors count too.
-  slugs="$(grep -E '^#{1,6} ' "${target_file}" | sed -E 's/^#{1,6} //' |
-    tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9 -]//g; s/ /-/g')"
-  slugs+=$'\n'"$(grep -o 'id="[^"]*"' "${target_file}" | sed 's/^id="//; s/"$//')"
-  grep -qx -- "${anchor}" <<<"${slugs}" || doc_link_failures+="${link} (no such anchor) "
-done < <(grep -oE '\]\([^):]*\)' "${INSTALL_DOC}" | sed 's/^](//; s/)$//' | sort -u)
+#
+# The empty case is a failure, not a pass: a document whose hand-offs were all
+# deleted has nothing left to resolve, and "every link resolves" would be
+# vacuously true of it.
+assert_doc_links_resolve() {
+  local doc="$1" empty_note="$2"
+  local doc_dir="${doc%/*}"
+  local link target anchor target_file slugs
+  local doc_link_failures="" doc_links_checked=0
+  while IFS= read -r link; do
+    [[ -n "${link}" ]] || continue
+    target="${link%%#*}"
+    anchor="${link#*#}"
+    [[ "${link}" == *#* ]] || anchor=""
+    if [[ -n "${target}" ]]; then
+      target_file="${doc_dir}/${target}"
+    else
+      target_file="${doc}"
+    fi
+    doc_links_checked=$((doc_links_checked + 1))
+    if [[ ! -f "${target_file}" ]]; then
+      doc_link_failures+="${link} (no such file) "
+      continue
+    fi
+    [[ -n "${anchor}" ]] || continue
+    # GitHub's slug: lowercase, drop anything that is not a letter, digit, space
+    # or hyphen, then spaces to hyphens. Explicit <a id="..."> anchors count too.
+    slugs="$(grep -E '^#{1,6} ' "${target_file}" | sed -E 's/^#{1,6} //' |
+      tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9 -]//g; s/ /-/g')"
+    slugs+=$'\n'"$(grep -o 'id="[^"]*"' "${target_file}" | sed 's/^id="//; s/"$//')"
+    grep -qx -- "${anchor}" <<<"${slugs}" || doc_link_failures+="${link} (no such anchor) "
+  done < <(grep -oE '\]\([^):]*\)' "${doc}" | sed 's/^](//; s/)$//' | sort -u)
 
-if ((doc_links_checked == 0)); then
-  fail "docs/installation.md still links to the documents it hands off to" \
-    "no relative links found; the hand-off to vm-workflow.md and first-boot.md is gone"
-elif [[ -z "${doc_link_failures}" ]]; then
-  pass "every relative link and anchor in docs/installation.md resolves"
+  if ((doc_links_checked == 0)); then
+    fail "${doc} still links to the documents it hands off to" "${empty_note}"
+  elif [[ -z "${doc_link_failures}" ]]; then
+    pass "every relative link and anchor in ${doc} resolves"
+  else
+    fail "every relative link and anchor in ${doc} resolves" "${doc_link_failures}"
+  fi
+}
+
+assert_doc_links_resolve "${INSTALL_DOC}" \
+  "no relative links found; the hand-off to vm-workflow.md and first-boot.md is gone"
+
+# ---------------------------------------------------------------------------
+group "Day-2 runbook (docs/updating.md is a hand copy of the bootc pin, the published images, packages-base.txt and ostree-pkg-diff)"
+
+# docs/updating.md is what an operator reads after the machine is already
+# installed: the image to `bootc switch` to, the bootc version that fixes a
+# composefs GC failure, which package ships `crun`, whether this repository
+# ships an /etc/containers/storage.conf, and what `ostree-pkg-diff` does to the
+# deployments it compares. Nothing read it. It is not shell, so
+# tests/check-coverage.sh cannot see it, and no test file mentioned it.
+#
+# Two of its claims are live: `BOOTC_VERSION` is bumped by Renovate on a
+# schedule, and the flavor matrix decides which image names exist at all. The
+# rest are one-way copies that a change elsewhere silences rather than breaks.
+# Every assertion below joins the doc to the thing it is a copy of.
+
+UPDATING_DOC="docs/updating.md"
+PKG_DIFF="system_files/usr/bin/ostree-pkg-diff"
+
+# Fenced blocks by info string. The doc uses ```bash for commands the reader
+# runs and ```text for output and file content it reads, and the two carry
+# different obligations -- the `driver`/`runroot`/`graphroot` triple appears in
+# both, once as "these values mean the file is redundant" and once as "write
+# this file yourself", so a single undifferentiated extraction would conflate
+# the check with the fix.
+updating_fenced() {
+  local want="$1"
+  awk -v want="${want}" '
+    /^```/ { if (in_block) { in_block = 0 } else { in_block = (substr($0, 4) == want) } ; next }
+    in_block' "${UPDATING_DOC}"
+}
+
+# Section headings, fenced blocks excluded: a `# comment` inside a ```bash
+# block is a shell comment, not a Markdown heading.
+updating_headings="$(awk '/^```/ { in_block = !in_block; next } !in_block && /^#{1,6} /' "${UPDATING_DOC}")"
+
+if [[ ! -f "${UPDATING_DOC}" ]]; then
+  fail "the day-2 runbook exists" "${UPDATING_DOC} is missing; README.md's documentation table links to it"
 else
-  fail "every relative link and anchor in docs/installation.md resolves" "${doc_link_failures}"
+  # README.md's table is the only index of what this document covers. Assert the
+  # three subjects it advertises are still sections here, or every extraction
+  # below starts passing by finding nothing to check.
+  missing_sections=""
+  while IFS= read -r want; do
+    grep -qi -- "${want}" <<<"${updating_headings}" || missing_sections+="${want}; "
+  done <<'SECTIONS'
+Updating Installed Systems
+composefs garbage collection
+rootless podman
+Comparing packages between deployments
+SECTIONS
+  if [[ -z "${missing_sections}" ]]; then
+    pass "docs/updating.md still has the sections README.md's table advertises"
+  else
+    fail "docs/updating.md still has the sections README.md's table advertises" \
+      "no heading matches: ${missing_sections}"
+  fi
 fi
+
+# --- The image the reader is told to switch to ------------------------------
+#
+# Same trap as the installation runbook, one command later: build.yml publishes
+# ${IMAGE_NAME}-${flavor}, so a `bootc switch` at an unsuffixed or unknown-flavor
+# reference sends an already-installed machine at a package that was never
+# pushed.
+doc_switch_refs="$(grep -Eo 'bootc switch ghcr\.io/[^ `]+' "${UPDATING_DOC}" | sed 's/^bootc switch //' | sort -u)"
+if [[ -z "${doc_switch_refs}" ]]; then
+  fail "docs/updating.md still tells the reader how to switch an installed system" \
+    "no 'bootc switch ghcr.io/...' command found"
+elif [[ -z "${workflow_flavors}" ]]; then
+  fail "the published flavors can be read from ${BUILD_WORKFLOW}" "the flavor matrix extraction is empty"
+else
+  unpublished_refs=""
+  while IFS= read -r ref; do
+    [[ -n "${ref}" ]] || continue
+    image="${ref##*/}"
+    flavor="${image%%:*}"
+    flavor="${flavor#arch-bootc-}"
+    tag="${image##*:}"
+    grep -qw -- "${flavor}" <<<"${workflow_flavors}" || unpublished_refs+="${ref} (flavor '${flavor}' is not in the build matrix) "
+    [[ "${tag}" == "${image}" ]] && unpublished_refs+="${ref} (no tag) "
+  done <<<"${doc_switch_refs}"
+  if [[ -z "${unpublished_refs}" ]]; then
+    pass "every image docs/updating.md switches an installed system to is a flavor the build publishes"
+  else
+    fail "every image docs/updating.md switches an installed system to is a flavor the build publishes" \
+      "${unpublished_refs}"
+  fi
+fi
+
+assert_absent "docs/updating.md never switches to an unsuffixed published image" \
+  "${UPDATING_DOC}" 'ghcr\.io/[^ /]+/arch-bootc:' \
+  "the workflow publishes arch-bootc-<flavor>; an unsuffixed ghcr.io tag does not exist"
+
+# The tag. build.yml repoints DEFAULT_TAG on every publish, and that is the tag
+# an operator should be tracking; a doc that names a dated tag instead pins a
+# machine to one build forever.
+workflow_default_tag="$(sed -n 's/^[[:space:]]*DEFAULT_TAG:[[:space:]]*"\{0,1\}\([A-Za-z0-9._-]*\)"\{0,1\}[[:space:]]*$/\1/p' "${BUILD_WORKFLOW}" | head -1)"
+doc_switch_tags="$(while IFS= read -r ref; do [[ -n "${ref}" ]] && printf '%s\n' "${ref##*:}"; done <<<"${doc_switch_refs}" | sort -u | tr '\n' ' ')"
+doc_switch_tags="${doc_switch_tags% }"
+if [[ -z "${workflow_default_tag}" ]]; then
+  fail "the build workflow still defines DEFAULT_TAG" "no DEFAULT_TAG: line in ${BUILD_WORKFLOW}"
+else
+  assert_equal "docs/updating.md switches to the tag the build workflow repoints on every publish" \
+    "${doc_switch_tags}" "${workflow_default_tag}"
+fi
+
+# --- The bootc pin the composefs section depends on -------------------------
+#
+# "Fix -- build `bootc vX.Y.Z` or newer" is the whole point of that section,
+# and the sentence after it ("This image builds bootc well past that version")
+# is a claim about ARG BOOTC_VERSION. Renovate bumps that ARG on its own
+# schedule, so this is the one join here that can be broken by an automerged
+# pull request: a pin moved back below the fix version silently turns the
+# troubleshooting section into an instruction to do what the image already
+# fails to do.
+# The backticks are markdown, not command substitution.
+# shellcheck disable=SC2016
+doc_bootc_fix="$(grep -Eo 'build `bootc v[0-9]+\.[0-9]+\.[0-9]+` or newer' "${UPDATING_DOC}" |
+  grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+containerfile_bootc="$(sed -n 's/^ARG BOOTC_VERSION=\(v[0-9][0-9.]*\)[[:space:]]*$/\1/p' "${CONTAINERFILE}" | head -1)"
+if [[ -z "${doc_bootc_fix}" || -z "${containerfile_bootc}" ]]; then
+  fail "the composefs fix version can be read from the runbook and the Containerfile" \
+    "doc: '${doc_bootc_fix}', Containerfile: '${containerfile_bootc}'"
+else
+  # sort -V puts the older version first; equal is fine, older is not.
+  oldest="$(printf '%s\n%s\n' "${doc_bootc_fix#v}" "${containerfile_bootc#v}" | sort -V | head -1)"
+  if [[ "${containerfile_bootc#v}" == "${doc_bootc_fix#v}" || "${oldest}" == "${doc_bootc_fix#v}" ]]; then
+    pass "the Containerfile's BOOTC_VERSION is at or past the version docs/updating.md names as the composefs GC fix"
+  else
+    fail "the Containerfile's BOOTC_VERSION is at or past the version docs/updating.md names as the composefs GC fix" \
+      "the runbook says ${doc_bootc_fix} or newer; the Containerfile pins ${containerfile_bootc}"
+  fi
+fi
+
+# The same section's first sentence: "This image installs with the native
+# composefs backend." Both halves of that are in this tree -- the installer
+# flag, and the prepare-root.conf the image ships -- and the read-only /sysroot
+# the recovery steps warn about is the second half of the same file.
+#
+# Continuation lines are joined first, and an invocation with no flags at all
+# is dropped: `info "This runs bootc install to-disk inside the image itself"`
+# is prose the quickstart prints, not an installer command.
+install_invocation_flags() {
+  local invocation flags
+  sed -e 's/^[[:space:]]*#.*$//' -e ':a' -e '/\\$/N' -e 's/\\\n[[:space:]]*/ /' -e 'ta' |
+    grep -o 'bootc install to-disk.*' |
+    while IFS= read -r invocation; do
+      flags="$(grep -Eo -- '--[a-z-]+' <<<"${invocation}" | sort -u | tr '\n' ' ')"
+      [[ -n "${flags}" ]] || continue
+      printf '%s\n' "${flags}"
+    done
+}
+tree_install_flags="$( { install_invocation_flags <"${JUSTFILE}"; install_invocation_flags <"${QUICKSTART}"; } )"
+composefs_installs="$(grep -c . <<<"${tree_install_flags}")"
+[[ -n "${tree_install_flags}" ]] || composefs_installs=0
+composefs_backend="$(grep -c -- '--composefs-backend' <<<"${tree_install_flags}")"
+[[ -n "${tree_install_flags}" ]] || composefs_backend=0
+if ((composefs_installs == 0)); then
+  fail "the tree still installs with the composefs backend docs/updating.md describes" \
+    "no 'bootc install to-disk' invocation in ${JUSTFILE} or ${QUICKSTART}"
+else
+  assert_equal "every bootc install in the tree uses the native composefs backend docs/updating.md assumes" \
+    "${composefs_backend}" "${composefs_installs}"
+fi
+assert_present "the image ships a prepare-root.conf that enables composefs" \
+  "${CONTAINERFILE}" '\[composefs\]\\nenabled = yes' \
+  "docs/updating.md: 'This image installs with the native composefs backend'"
+assert_present "that same prepare-root.conf mounts /sysroot read-only" \
+  "${CONTAINERFILE}" '\[sysroot\]\\nreadonly = true' \
+  "docs/updating.md: '/sysroot is mounted read-only; bootc remounts it rw during its own operations'"
+
+# --- The rootless-podman section --------------------------------------------
+#
+# "crun is installed (it is in packages-base.txt)" is the sentence that tells a
+# reader the missing-runtime message is a lie. Both directions: crun moved to a
+# flavor package list would make the doc name the wrong file, and crun dropped
+# entirely would make the whole section wrong.
+crun_package_files="$(for f in packages-*.txt; do grep -qx 'crun' "${f}" && printf '%s ' "${f}"; done)"
+crun_package_files="${crun_package_files% }"
+if [[ -z "${crun_package_files}" ]]; then
+  fail "crun is still installed in the base package set" \
+    "docs/updating.md tells the reader crun is present; no packages-*.txt lists it"
+else
+  assert_equal "docs/updating.md names the package list that actually installs crun" \
+    "${crun_package_files}" "packages-base.txt"
+  if grep -qF -- "${crun_package_files}" "${UPDATING_DOC}"; then
+    pass "docs/updating.md still points the reader at ${crun_package_files}"
+  else
+    fail "docs/updating.md still points the reader at ${crun_package_files}" \
+      "the section no longer names the file that proves crun is installed"
+  fi
+fi
+
+# "Neither this repository nor the pinned Arch base image creates the file --
+# ... so a fresh install is unaffected." This repository's half of that is
+# assertable, and it is worth asserting: system_files/etc/containers already
+# exists, so adding a storage.conf beside policy.json is a one-file change that
+# would redirect rootless podman at root's storage on every fresh install --
+# the exact failure this section exists to explain, reintroduced by the image.
+if [[ -e "system_files/etc/containers/storage.conf" ]]; then
+  fail "the image ships no /etc/containers/storage.conf" \
+    "docs/updating.md tells the reader a fresh install is unaffected; system_files/etc/containers/storage.conf exists"
+else
+  pass "the image ships no /etc/containers/storage.conf"
+fi
+assert_absent_in "nothing in the build writes /etc/containers/storage.conf" \
+  '/etc/containers/storage\.conf' "${CONTAINERFILE}" "${JUSTFILE}" "${QUICKSTART}"
+
+# The "safe to remove only if all three values match these exactly" block is a
+# deletion gate: the doc's own reasoning is that those values are podman's
+# built-in rootful defaults, so removing a file that pins them changes nothing.
+# The evidence it offers for what those defaults are is the debug output it
+# printed earlier in the same section. If the two drift apart, the doc tells a
+# reader to delete a file on the strength of numbers it never showed them.
+safe_to_remove="$(updating_fenced text | grep -E '^(driver|runroot|graphroot) = ')"
+debug_graphroot="$(grep -Eo 'Using graph root [^ ]+' "${UPDATING_DOC}" | awk '{ print $4 }' | head -1)"
+debug_runroot="$(grep -Eo 'Using run root [^ ]+' "${UPDATING_DOC}" | awk '{ print $4 }' | head -1)"
+safe_graphroot="$(sed -n 's/^graphroot = "\(.*\)"$/\1/p' <<<"${safe_to_remove}" | head -1)"
+safe_runroot="$(sed -n 's/^runroot = "\(.*\)"$/\1/p' <<<"${safe_to_remove}" | head -1)"
+if [[ -z "${debug_graphroot}" || -z "${debug_runroot}" || -z "${safe_graphroot}" || -z "${safe_runroot}" ]]; then
+  fail "docs/updating.md still shows both the observed storage paths and the safe-to-remove values" \
+    "observed: '${debug_graphroot}' '${debug_runroot}', safe-to-remove: '${safe_graphroot}' '${safe_runroot}'"
+else
+  assert_equal "the graphroot docs/updating.md calls safe to remove is the one its own debug output showed" \
+    "${safe_graphroot}" "${debug_graphroot}"
+  assert_equal "the runroot docs/updating.md calls safe to remove is the one its own debug output showed" \
+    "${safe_runroot}" "${debug_runroot}"
+fi
+
+# The per-user override is the branch for readers who must not touch /etc, and
+# it is the one command in this document that writes a file. Its correctness is
+# entirely in its quoting: the doc says the delimiter is unquoted "so $(id -u)
+# and $HOME expand as you run it", and warns in the next paragraph not to
+# hardcode 1000. A tidied-up `<<'EOF'` writes a storage.conf containing the
+# literal characters `$(id -u)`, and a hardcoded uid writes one pointing into
+# another user's runtime directory -- reproducing the permission-denied failure
+# this whole section is about.
+override_block="$(updating_fenced bash | awk '/^cat > .*containers\/storage\.conf/ { emit = 1 } emit { print } emit && /^EOF$/ { exit }')"
+if [[ -z "${override_block}" ]]; then
+  fail "docs/updating.md still offers the per-user storage.conf override" \
+    "no 'cat > ~/.config/containers/storage.conf' heredoc found"
+else
+  if grep -qE "^cat > [^|;&]*<<[[:space:]]*EOF$" <<<"${override_block}"; then
+    pass "the per-user override's heredoc delimiter is unquoted, so \$(id -u) and \$HOME expand"
+  else
+    fail "the per-user override's heredoc delimiter is unquoted, so \$(id -u) and \$HOME expand" \
+      "a quoted delimiter writes the literal text instead: ${override_block%%$'\n'*}"
+  fi
+  # `$(id -u)` and `$HOME` as written, not a uid or a path someone filled in.
+  # `$(id -u)` and `$HOME` are the literal text the doc must carry, not
+  # something for this script to expand.
+  # shellcheck disable=SC2016
+  if grep -q 'runroot = "/run/user/\$(id -u)/containers"' <<<"${override_block}" &&
+    grep -q 'graphroot = "\$HOME/' <<<"${override_block}"; then
+    pass "the per-user override derives both paths from the running user, not a hardcoded uid"
+  else
+    fail "the per-user override derives both paths from the running user, not a hardcoded uid" \
+      "docs/updating.md: 'Do not hardcode 1000'; the block reads: ${override_block//$'\n'/ | }"
+  fi
+fi
+
+# --- ostree-pkg-diff --------------------------------------------------------
+#
+# The last section is three sentences, and each one is a promise about a script
+# in this tree. The command name is the only copy of the installed path outside
+# system_files/, and the two behavioral claims -- it self-elevates, and it is
+# read-only -- are the reason an operator is willing to run it on a machine
+# they care about.
+#
+# Every command the document tells the reader to run, taken from the ```bash
+# blocks: the first word of each unindented line, `sudo` stripped, heredoc
+# bodies skipped (the storage.conf the reader writes is content, not commands).
+# Anything that is not part of a base Arch install has to be a file this
+# repository ships into a PATH directory -- which is what makes a renamed or
+# deleted helper a red run instead of a reader typing a command that does not
+# exist.
+base_system_commands="bootc cat find grep mkdir mv pacman podman reboot systemctl"
+doc_run_commands="$(updating_fenced bash |
+  awk '
+    /<<[[:space:]]*'"'"'*EOF/ { in_heredoc = 1; next }
+    in_heredoc { if ($0 == "EOF") { in_heredoc = 0 } ; next }
+    /^[[:space:]]/ || /^#/ || /^$/ { next }
+    { sub(/^sudo[[:space:]]+/, ""); print $1 }' | sort -u)"
+if [[ -z "${doc_run_commands}" ]]; then
+  fail "docs/updating.md still tells the reader commands to run" "no command found in any bash block"
+else
+  unshipped_commands=""
+  shipped_commands=""
+  while IFS= read -r cmd; do
+    [[ -n "${cmd}" ]] || continue
+    grep -qw -- "${cmd}" <<<"${base_system_commands}" && continue
+    if [[ -x "system_files/usr/bin/${cmd}" ]]; then
+      shipped_commands+="${cmd} "
+    else
+      unshipped_commands+="${cmd} "
+    fi
+  done <<<"${doc_run_commands}"
+  if [[ -z "${unshipped_commands}" ]]; then
+    pass "every command docs/updating.md tells the reader to run is a base-system tool or is shipped in system_files/usr/bin"
+  else
+    fail "every command docs/updating.md tells the reader to run is a base-system tool or is shipped in system_files/usr/bin" \
+      "not shipped and not a base-system command: ${unshipped_commands}"
+  fi
+  # And the other direction, or deleting the section that runs it would leave
+  # the check above satisfied by a document that runs nothing of ours.
+  if [[ -n "${shipped_commands}" ]]; then
+    pass "docs/updating.md still runs a command this repository ships: ${shipped_commands% }"
+  else
+    fail "docs/updating.md still runs a command this repository ships" \
+      "no command in any bash block resolves to system_files/usr/bin; the day-2 tooling section runs nothing"
+  fi
+fi
+
+assert_present "ostree-pkg-diff self-elevates instead of requiring the reader to type sudo" \
+  "${PKG_DIFF}" '\$\{EUID\}" -ne 0' \
+  "docs/updating.md: 'The command self-elevates with sudo when needed'"
+# The literal text of the exec line, not an expansion of this script's own $0.
+# shellcheck disable=SC2016
+assert_present "the self-elevation re-executes this script, so the whole run is privileged" \
+  "${PKG_DIFF}" 'exec sudo bash "\$0" "\$@"'
+
+# "It mounts both deployments read-only and never modifies anything on disk."
+# Both deployments: two mounts, and a count is what makes "both" checkable.
+# Read-only: every one of them carries `ro`, which is the option that stops a
+# diff of a rollback deployment from being able to damage it.
+pkg_diff_mounts="$(grep -En '(^|[^[:alnum:]_-])mount[[:space:]]' "${PKG_DIFF}" | grep -v '^[0-9]*:[[:space:]]*#' |
+  grep -v 'umount\|mountpoint')"
+pkg_diff_mount_count="$(grep -c . <<<"${pkg_diff_mounts}")"
+[[ -n "${pkg_diff_mounts}" ]] || pkg_diff_mount_count=0
+if ((pkg_diff_mount_count < 2)); then
+  fail "ostree-pkg-diff mounts both deployments" \
+    "docs/updating.md says both; found ${pkg_diff_mount_count} mount command(s)"
+else
+  pass "ostree-pkg-diff mounts both deployments"
+  writable_mounts="$(grep -Ev -- '-o [^ ]*(^|,)ro(,|$|[^a-z])|-o [^ ]*,ro |-o ro' <<<"${pkg_diff_mounts}" |
+    grep -Ev -- "-o [a-z,]*\bro\b")"
+  if [[ -z "${writable_mounts}" ]]; then
+    pass "every deployment ostree-pkg-diff mounts is mounted read-only"
+  else
+    fail "every deployment ostree-pkg-diff mounts is mounted read-only" \
+      "docs/updating.md: 'it mounts both deployments read-only': ${writable_mounts//$'\n'/ | }"
+  fi
+fi
+assert_absent "ostree-pkg-diff never mounts or remounts anything writable" \
+  "${PKG_DIFF}" '-o[[:space:]][a-z,]*rw' \
+  "docs/updating.md: 'The tool is read-only ... never modifies anything on disk'"
+
+# "between the running deployment and the previous deployment" -- the booted
+# one and its rollback, not an arbitrary pair.
+for accessor in status_booted_os status_booted_boot; do
+  assert_present "ostree-pkg-diff reads the booted deployment's ${accessor#status_booted_} from ostree admin status" \
+    "${PKG_DIFF}" "${accessor}\(\)"
+done
+assert_present "ostree-pkg-diff prefers the deployment ostree itself marks as the rollback" \
+  "${PKG_DIFF}" '\\\(rollback\\\)' \
+  "docs/updating.md: 'between the running deployment and the previous deployment'"
+
+# ---------------------------------------------------------------------------
+group "Cross-document links (docs/updating.md hands the reader to the Renovate reference)"
+
+# The composefs section's fix is "see BOOTC_VERSION in the Containerfile, kept
+# current by [Renovate](renovate.md)" -- the version assertion above is only
+# reassuring because something keeps that pin moving, and this link is the
+# doc's own pointer at what that something is.
+assert_doc_links_resolve "${UPDATING_DOC}" \
+  "no relative links found; the pointer at the Renovate reference is gone"
 
 # ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
