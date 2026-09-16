@@ -143,16 +143,30 @@ must be described as such.
 - **An allowed Bash command must not read what `Read(...)` denies.** Those deny
   rules gate the Read tool; they have nothing to say about what an allowed Bash
   command then opens. `Bash(git diff*)` is allowed with no prompt, and
-  `git diff --no-index <a> <b>` compares two paths as *plain files* — untracked,
-  gitignored, or outside the checkout entirely — printing their contents as `+`
-  lines. No permission pattern closes that, because patterns match by command
-  prefix and flags may appear in any order. A `PreToolUse` hook in
-  `.claude/settings.json` is handed the whole command string and refuses any
-  Bash command containing `--no-index`, which has no abbreviated spelling.
-  `tests/check-invariants.sh` extracts that hook with `jq` and **runs** it, on
-  the orderings a prefix rule would miss and on the ordinary diffs that must
-  stay unprompted. It is still not a sandbox: a hook keyed on a string is
-  defeated by a command that does not contain that string.
+  `git diff <a> <b>` in its two-path mode compares the operands as *plain
+  files* — untracked, gitignored, or outside the checkout entirely — printing
+  their contents as `+` lines. No permission pattern closes that, because
+  patterns match by command prefix and flags may appear in any order.
+
+  `.claude/hooks/gate-git-diff.sh`, wired in as a `PreToolUse` hook on Bash, is
+  handed the whole command and refuses that form. It looks at the invocation
+  rather than at the text, which matters twice over: the mode needs **no flag**
+  — git enters it on its own once two operands are given and one of them is not
+  repository content, so `git diff /dev/null ./cosign.key` reads the file with
+  `--no-index` nowhere in the command — and the shell rewrites the command
+  before git sees it, so `--no-'index'` arrives as `--no-index` while the typed
+  spelling contains no such string. The hook therefore resolves the operands:
+  two operands where any one of them is not a revision is the plain-file form.
+  It also fails closed, refusing rather than passing the call through when `jq`
+  is missing or the payload will not parse, because these settings run on
+  contributor hosts and not only on the `jq`-equipped CI runner.
+
+  `tests/check-invariants.sh` extracts the hook with `jq` and **runs** it — on
+  the flag orderings a prefix rule would miss, on the flagless and requoted
+  forms, with `jq` off `PATH`, and on the ordinary diffs that must stay
+  unprompted. It is still not a sandbox: a command that builds its arguments at
+  runtime, or that leaves the repository first, is outside what this can see,
+  and nothing bounds what a command reads once it has started.
 - Workflow permissions are declared explicitly and minimally per job. A workflow
   that needs `packages: write` says so in that job only; it does not get it at
   the workflow level for convenience.

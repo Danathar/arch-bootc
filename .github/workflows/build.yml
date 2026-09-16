@@ -61,6 +61,7 @@ jobs:
             /mnt/tests/run-tests.sh \
             /mnt/tests/check-coverage.sh \
             /mnt/tests/check-invariants.sh \
+            /mnt/.claude/hooks/gate-git-diff.sh \
             /mnt/tests/tune-coverage.sh \
             /mnt/tests/test-prune-esp.sh \
             /mnt/tests/test-homebrew-profile.sh \

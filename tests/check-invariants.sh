@@ -1036,32 +1036,48 @@ group "Read boundary on allowed Bash (.claude/settings.json: an allowed command 
 # paths -- `Read(./cosign.key)`, `Read(./.env)`, `Read(./**/*.pem)`,
 # `Read(./**/id_ed25519)` -- and allows, with no prompt, `Bash(git diff*)`.
 #
-# `git diff --no-index <a> <b>` compares two paths as plain files rather than as
-# repository content. It works on untracked files, on gitignored files, and on
-# paths outside the checkout entirely, and it prints their contents as `+`
-# lines. The two halves are not the same tool: the deny rules gate the Read
-# tool and have nothing to say about what an allowed Bash command then opens,
-# so they are not weakened here -- they are simply never consulted.
-# `cat ./cosign.key` would prompt; `git diff --no-index -- /dev/null
-# ./cosign.key` would not.
+# `git diff <a> <b>` in its two-path mode compares the operands as plain files
+# rather than as repository content. It works on untracked files, on gitignored
+# files, and on paths outside the checkout entirely, and it prints their
+# contents as `+` lines. The two halves are not the same tool: the deny rules
+# gate the Read tool and have nothing to say about what an allowed Bash command
+# then opens, so they are not weakened here -- they are simply never consulted.
+# `cat ./cosign.key` would prompt; the diff form would not.
 #
 # No permission pattern closes that, because patterns match by command prefix
 # and flags may appear in any order: `Bash(git diff --no-index*)` matches one
 # spelling and misses `git diff --stat --no-index ...` and
 # `git --no-pager diff --no-index ...`, and a rule that looks like a control
 # while gating one argument ordering is worse than no rule. A `PreToolUse` hook
-# is handed the whole command string, so it can match the flag wherever it
-# appears; `--no-index` has no abbreviated spelling, since `--no-inde` and
-# shorter are ambiguous against `--no-indent-heuristic`.
+# is handed the whole command, so it can look at the invocation rather than at
+# a prefix of it.
+#
+# Two ways a hook that merely searched the command string for `--no-index`
+# still let the read through, both asserted below because both were once true
+# of the hook in this repository:
+#
+#   * The mode needs no flag. Git enters it on its own when two operands are
+#     given and either one is not repository content, so
+#     `git diff /dev/null ./cosign.key` prints the file with `--no-index`
+#     nowhere in the command.
+#   * The shell rewrites the command before git sees it. `--no-'index'` and
+#     `--no-\index` reach git as `--no-index` while a substring test on the
+#     spelling that was typed finds neither.
+#
+# So the hook resolves the operands instead: two operands where any one of them
+# is not a revision is the plain-file form, which is what separates
+# `git diff main feature` from `git diff /dev/null ./cosign.key`.
 #
 # The hook below is extracted with jq and *run*, not grepped. A hook asserted
 # by grep is a hook asserted by its own comment: the string can be present and
-# the hook still never refuse anything.
+# the hook still never refuse anything. It is also run with jq off PATH, since
+# a gate that reads its input with a tool it does not check for is a gate that
+# disappears on any host that lacks it.
 #
-# What this cannot see: a hook keyed on a string is defeated by a command that
-# does not contain that string, and nothing bounds what a command reads once it
-# has started. This re-gates the one pre-approved command that reaches past the
-# deny list; it is not a sandbox.
+# What this cannot see: a command that builds its arguments at runtime
+# (`git diff $x $y`), one that leaves the repository first, and anything a
+# command reads once it has started. This re-gates the one pre-approved command
+# that reaches past the deny list; it is not a sandbox.
 CLAUDE_SETTINGS=".claude/settings.json"
 
 settings_readable=0
@@ -1081,12 +1097,22 @@ if ((settings_readable)); then
   no_index_dir="$(mktemp -d)"
   printf 'SECRET-LINE-1\nSECRET-LINE-2\n' >"${no_index_dir}/fake.key"
   no_index_output="$(git diff --no-index -- /dev/null "${no_index_dir}/fake.key" 2>/dev/null)"
+  # And again with no flag at all, which is the form the first version of this
+  # hook missed. Run from inside the checkout, the way the agent would.
+  implicit_output="$(git diff /dev/null "${no_index_dir}/fake.key" 2>/dev/null)"
   rm -rf "${no_index_dir}"
   if grep -q '^+SECRET-LINE-1$' <<<"${no_index_output}"; then
     pass "git diff --no-index prints the contents of a plain file outside the index"
   else
     fail "git diff --no-index prints the contents of a plain file outside the index" \
       "this git no longer reads the path that way; re-derive what the hook below is for"
+  fi
+
+  if grep -q '^+SECRET-LINE-1$' <<<"${implicit_output}"; then
+    pass "git diff prints the same contents with no --no-index flag present"
+  else
+    fail "git diff prints the same contents with no --no-index flag present" \
+      "this git no longer enters the mode implicitly; re-derive the operand check in the hook"
   fi
 
   # The hook's rationale is that these three entries stay exactly as they are.
@@ -1187,6 +1213,24 @@ if ((settings_readable)); then
   assert_hook_refuses "the hook refuses the flag reached outside the checkout" \
     'git diff --no-color --no-index -- /dev/null /home/someone/.ssh/id_ed25519'
 
+  # The flagless form. Git enters the same mode on its own, so a gate that only
+  # matched the flag string left the disclosure route exactly as it found it.
+  assert_hook_refuses "the hook refuses the two-path form with no flag at all" \
+    'git diff /dev/null ./cosign.key'
+  assert_hook_refuses "the hook refuses the flagless form reached outside the checkout" \
+    'git diff /dev/null /home/someone/.ssh/id_ed25519'
+  assert_hook_refuses "the hook refuses two bare operands that are not revisions" \
+    'git diff cosign.key .env'
+  assert_hook_refuses "the hook refuses the flagless form behind another command" \
+    'ls -l && git diff /dev/null ./cosign.key'
+
+  # Spellings the shell rewrites before git sees them. Each of these reaches
+  # git as --no-index while the literal string is absent from the command.
+  assert_hook_refuses "the hook refuses a quoted spelling of the flag" \
+    "git diff --no-'index' -- /dev/null ./cosign.key"
+  assert_hook_refuses "the hook refuses a backslash spelling of the flag" \
+    'git diff --no-\index -- /dev/null ./cosign.key'
+
   # And has not quietly traded the allow rule back for a prompt: the ordinary
   # reads this repository does all day must stay silent.
   assert_hook_permits "an ordinary git diff is still unprompted" 'git diff'
@@ -1194,6 +1238,18 @@ if ((settings_readable)); then
   assert_hook_permits "a scoped diff against history is still unprompted" \
     'git diff HEAD~1 -- system_files/'
   assert_hook_permits "git status --short is still unprompted" 'git status --short'
+  # Two operands are the plain-file form unless both resolve as revisions, so
+  # the check is against the repository, not against the shape of the word. A
+  # name that is not a revision here is treated as a path and refused, which is
+  # the conservative side of that call.
+  # HEAD twice rather than HEAD~1 or a branch name: CI checks out at depth 1,
+  # where neither of those resolves, and the point of the assertion is that two
+  # revisions are permitted, not which two.
+  assert_hook_permits "a two-revision diff is still unprompted" 'git diff HEAD HEAD'
+  assert_hook_permits "a diff of one tracked path is still unprompted" 'git diff ./AGENTS.md'
+  assert_hook_permits "a pathspec after -- is still unprompted" 'git diff -- ./cosign.key'
+  assert_hook_permits "the word diff outside a git call is not a git diff" \
+    'grep diff a.txt b.txt'
 
   # PreToolUse fires for every Bash call, so a payload shaped differently from
   # the expected one must not block the session.
@@ -1202,6 +1258,54 @@ if ((settings_readable)); then
     '{"tool_input":{}}'
   assert_hook_payload_permits "an empty command does not block the session" \
     '{"tool_input":{"command":""}}'
+  # Fail closed on a host that cannot inspect the payload. These hooks run
+  # wherever a contributor runs Claude Code, not only on the jq-equipped CI
+  # runner, and AGENTS.md requires that a control of this kind fail closed
+  # rather than wave the call through when a dependency is missing.
+  no_jq_dir="$(mktemp -d)"
+  for no_jq_tool in bash env git cat; do
+    no_jq_path="$(command -v "${no_jq_tool}" 2>/dev/null)" || continue
+    ln -sf "${no_jq_path}" "${no_jq_dir}/${no_jq_tool}"
+  done
+
+  no_jq_status=0
+  no_jq_stderr=""
+  for hook_command in "${bash_hooks[@]+"${bash_hooks[@]}"}"; do
+    no_jq_payload="$(jq -nc '{tool_name: "Bash", tool_input: {command: "git diff --no-index -- /dev/null ./cosign.key"}}')"
+    no_jq_err="$(printf '%s' "${no_jq_payload}" | PATH="${no_jq_dir}" bash -c "${hook_command}" 2>&1 >/dev/null)"
+    no_jq_rc=$?
+    ((no_jq_rc > no_jq_status)) && no_jq_status="${no_jq_rc}"
+    [[ -n "${no_jq_err}" ]] && no_jq_stderr+="${no_jq_err} "
+  done
+  rm -rf "${no_jq_dir}"
+
+  if ((no_jq_status == 2)) && [[ -n "${no_jq_stderr}" ]]; then
+    pass "the hook refuses rather than passing the call through when jq is missing"
+  else
+    fail "the hook refuses rather than passing the call through when jq is missing" \
+      "exit ${no_jq_status} with stderr '${no_jq_stderr:-<none>}'; a missing dependency silently disables the gate"
+  fi
+
+  # A malformed payload is the same case: the hook cannot tell what the call
+  # does, so it must not decide that it is safe.
+  run_bash_hooks 'not json at all'
+  if ((hook_status == 2)) && [[ -n "${hook_stderr}" ]]; then
+    pass "the hook refuses a payload it cannot parse"
+  else
+    fail "the hook refuses a payload it cannot parse" \
+      "exit ${hook_status} with stderr '${hook_stderr:-<none>}'; an unparseable payload passed uninspected"
+  fi
+
+  # The hook is a file in the repository now, so the settings entry pointing at
+  # a path that does not exist, or at one nothing can execute, is a way for
+  # every assertion above to keep passing against a gate that never runs.
+  if [[ -x .claude/hooks/gate-git-diff.sh ]]; then
+    pass ".claude/hooks/gate-git-diff.sh exists and is executable"
+  else
+    fail ".claude/hooks/gate-git-diff.sh exists and is executable" \
+      "the settings entry names a hook that cannot run, so Bash calls go uninspected"
+  fi
+
 fi
 
 # ---------------------------------------------------------------------------
