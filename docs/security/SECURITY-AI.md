@@ -140,6 +140,19 @@ must be described as such.
 - `.claude/settings.json` denies reading `cosign.key` and similar private-key
   shapes. That is a backstop for the obvious spelling, not a sandbox — the
   policy is what binds, not the pattern list.
+- **An allowed Bash command must not read what `Read(...)` denies.** Those deny
+  rules gate the Read tool; they have nothing to say about what an allowed Bash
+  command then opens. `Bash(git diff*)` is allowed with no prompt, and
+  `git diff --no-index <a> <b>` compares two paths as *plain files* — untracked,
+  gitignored, or outside the checkout entirely — printing their contents as `+`
+  lines. No permission pattern closes that, because patterns match by command
+  prefix and flags may appear in any order. A `PreToolUse` hook in
+  `.claude/settings.json` is handed the whole command string and refuses any
+  Bash command containing `--no-index`, which has no abbreviated spelling.
+  `tests/check-invariants.sh` extracts that hook with `jq` and **runs** it, on
+  the orderings a prefix rule would miss and on the ordinary diffs that must
+  stay unprompted. It is still not a sandbox: a hook keyed on a string is
+  defeated by a command that does not contain that string.
 - Workflow permissions are declared explicitly and minimally per job. A workflow
   that needs `packages: write` says so in that job only; it does not get it at
   the workflow level for convenience.

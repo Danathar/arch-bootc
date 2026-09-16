@@ -174,7 +174,11 @@ hard failure on a mismatch, `PACMAN_CACHE_BUST` still preceding the first
 `pacman -Syu`, the absence of third-party package sources, the systemd
 enablement layout, SHA-pinned actions with `persist-credentials: false` and
 `timeout-minutes`, and — the one that had already gone wrong — that every shell
-file appears in **both** hand-maintained ShellCheck lists.
+file appears in **both** hand-maintained ShellCheck lists. It also *runs* the
+`PreToolUse` hook in `.claude/settings.json` that keeps an allow-listed
+`git diff` from reading, via `--no-index`, the files the `Read(...)` deny rules
+name; the hook is extracted with `jq` and executed rather than grepped for,
+since a hook asserted by grep is a hook asserted by its own comment.
 
 It exists because a build proves the image *builds*, and an image that has
 quietly lost `pam_wheel.so use_uid` builds perfectly well. It runs in the build

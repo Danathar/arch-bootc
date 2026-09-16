@@ -1027,6 +1027,184 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Read boundary on allowed Bash (.claude/settings.json: an allowed command must not read what Read(...) denies)"
+
+# The group above is about what an allowed command may *execute*. This one is
+# about what an allowed command may *read*.
+#
+# .claude/settings.json denies the Read tool this repository's secret-shaped
+# paths -- `Read(./cosign.key)`, `Read(./.env)`, `Read(./**/*.pem)`,
+# `Read(./**/id_ed25519)` -- and allows, with no prompt, `Bash(git diff*)`.
+#
+# `git diff --no-index <a> <b>` compares two paths as plain files rather than as
+# repository content. It works on untracked files, on gitignored files, and on
+# paths outside the checkout entirely, and it prints their contents as `+`
+# lines. The two halves are not the same tool: the deny rules gate the Read
+# tool and have nothing to say about what an allowed Bash command then opens,
+# so they are not weakened here -- they are simply never consulted.
+# `cat ./cosign.key` would prompt; `git diff --no-index -- /dev/null
+# ./cosign.key` would not.
+#
+# No permission pattern closes that, because patterns match by command prefix
+# and flags may appear in any order: `Bash(git diff --no-index*)` matches one
+# spelling and misses `git diff --stat --no-index ...` and
+# `git --no-pager diff --no-index ...`, and a rule that looks like a control
+# while gating one argument ordering is worse than no rule. A `PreToolUse` hook
+# is handed the whole command string, so it can match the flag wherever it
+# appears; `--no-index` has no abbreviated spelling, since `--no-inde` and
+# shorter are ambiguous against `--no-indent-heuristic`.
+#
+# The hook below is extracted with jq and *run*, not grepped. A hook asserted
+# by grep is a hook asserted by its own comment: the string can be present and
+# the hook still never refuse anything.
+#
+# What this cannot see: a hook keyed on a string is defeated by a command that
+# does not contain that string, and nothing bounds what a command reads once it
+# has started. This re-gates the one pre-approved command that reaches past the
+# deny list; it is not a sandbox.
+CLAUDE_SETTINGS=".claude/settings.json"
+
+settings_readable=0
+if ! command -v jq >/dev/null 2>&1; then
+  fail "jq is available to read ${CLAUDE_SETTINGS}" \
+    "jq is not on PATH, so none of the permission invariants below could run"
+elif ! jq -e 'type == "object"' "${CLAUDE_SETTINGS}" >/dev/null 2>&1; then
+  fail "${CLAUDE_SETTINGS} parses as a JSON object" "jq could not parse ${CLAUDE_SETTINGS}"
+else
+  pass "${CLAUDE_SETTINGS} parses as a JSON object"
+  settings_readable=1
+fi
+
+if ((settings_readable)); then
+  # First, that the exposure is real rather than asserted. If this ever stops
+  # printing the fixture, the rest of the group is about nothing.
+  no_index_dir="$(mktemp -d)"
+  printf 'SECRET-LINE-1\nSECRET-LINE-2\n' >"${no_index_dir}/fake.key"
+  no_index_output="$(git diff --no-index -- /dev/null "${no_index_dir}/fake.key" 2>/dev/null)"
+  rm -rf "${no_index_dir}"
+  if grep -q '^+SECRET-LINE-1$' <<<"${no_index_output}"; then
+    pass "git diff --no-index prints the contents of a plain file outside the index"
+  else
+    fail "git diff --no-index prints the contents of a plain file outside the index" \
+      "this git no longer reads the path that way; re-derive what the hook below is for"
+  fi
+
+  # The hook's rationale is that these three entries stay exactly as they are.
+  # If Bash(git diff*) leaves the allow list the hook is redundant; if either
+  # Read deny rule goes, there is nothing left for the hook to be a route
+  # around.
+  assert_equal "Bash(git diff*) is still allowed without a prompt" \
+    "$(jq -r '[.permissions.allow[]? | select(. == "Bash(git diff*)")] | length' "${CLAUDE_SETTINGS}")" "1"
+
+  assert_equal "Read(./cosign.key) is still denied" \
+    "$(jq -r '[.permissions.deny[]? | select(. == "Read(./cosign.key)")] | length' "${CLAUDE_SETTINGS}")" "1"
+
+  assert_equal "Read(./.env) is still denied" \
+    "$(jq -r '[.permissions.deny[]? | select(. == "Read(./.env)")] | length' "${CLAUDE_SETTINGS}")" "1"
+
+  # A prefix deny for the flag would read as coverage while gating exactly one
+  # argument ordering. The hook is the control; a rule that looks like a second
+  # one is a liability.
+  no_index_deny="$(jq -r '[.permissions.deny[]? | select(test("--no-index"))] | join(" ")' "${CLAUDE_SETTINGS}")"
+  if [[ -z "${no_index_deny}" ]]; then
+    pass "no deny pattern claims to gate --no-index by prefix"
+  else
+    fail "no deny pattern claims to gate --no-index by prefix" \
+      "a prefix rule matches one flag ordering and reads as coverage: ${no_index_deny}"
+  fi
+
+  bash_hooks=()
+  while IFS= read -r hook_command; do
+    [[ -n "${hook_command}" ]] && bash_hooks+=("${hook_command}")
+  done < <(jq -r '.hooks.PreToolUse[]? | select(.matcher == "Bash") | .hooks[]? | select(.type == "command") | .command' "${CLAUDE_SETTINGS}")
+
+  if ((${#bash_hooks[@]} > 0)); then
+    pass "${CLAUDE_SETTINGS} declares a PreToolUse command hook on Bash"
+  else
+    fail "${CLAUDE_SETTINGS} declares a PreToolUse command hook on Bash" \
+      "nothing is handed the command string, so every flag ordering above is unprompted"
+  fi
+
+  # Runs every Bash PreToolUse hook against PAYLOAD on stdin, the way Claude
+  # Code invokes them. Exit status 2 is what Claude Code reads as "refuse this
+  # call and show stderr to the agent", so a refusal is the highest status seen
+  # plus the text the agent would be shown.
+  hook_status=0
+  hook_stderr=""
+  run_bash_hooks() {
+    local payload="$1"
+    local hook err rc
+    hook_status=0
+    hook_stderr=""
+    for hook in "${bash_hooks[@]+"${bash_hooks[@]}"}"; do
+      err="$(printf '%s' "${payload}" | bash -c "${hook}" 2>&1 >/dev/null)"
+      rc=$?
+      ((rc > hook_status)) && hook_status="${rc}"
+      [[ -n "${err}" ]] && hook_stderr+="${err} "
+    done
+    return 0
+  }
+
+  assert_hook_refuses() {
+    local description="$1" command="$2"
+    local payload
+    payload="$(jq -nc --arg c "${command}" '{tool_name: "Bash", tool_input: {command: $c}}')"
+    run_bash_hooks "${payload}"
+    if ((hook_status == 2)) && [[ -n "${hook_stderr}" ]]; then
+      pass "${description}"
+    else
+      fail "${description}" \
+        "exit ${hook_status} with stderr '${hook_stderr:-<none>}'; wanted exit 2 and an explanation"
+    fi
+  }
+
+  assert_hook_payload_permits() {
+    local description="$1" payload="$2"
+    run_bash_hooks "${payload}"
+    if ((hook_status == 0)) && [[ -z "${hook_stderr}" ]]; then
+      pass "${description}"
+    else
+      fail "${description}" \
+        "exit ${hook_status} with stderr '${hook_stderr:-<none>}'; wanted a silent exit 0"
+    fi
+  }
+
+  assert_hook_permits() {
+    local description="$1" command="$2"
+    local payload
+    payload="$(jq -nc --arg c "${command}" '{tool_name: "Bash", tool_input: {command: $c}}')"
+    assert_hook_payload_permits "${description}" "${payload}"
+  }
+
+  # The spelling the allow rule admits today, plus the orderings a prefix deny
+  # would miss.
+  assert_hook_refuses "the hook refuses git diff --no-index against ./cosign.key" \
+    'git diff --no-index -- /dev/null ./cosign.key'
+  assert_hook_refuses "the hook refuses the flag after another flag" \
+    'git diff --stat --no-index -- /dev/null ./.env'
+  assert_hook_refuses "the hook refuses the flag behind a git-level option" \
+    'git --no-pager diff --no-index -- /dev/null ./cosign.key'
+  assert_hook_refuses "the hook refuses the flag reached outside the checkout" \
+    'git diff --no-color --no-index -- /dev/null /home/someone/.ssh/id_ed25519'
+
+  # And has not quietly traded the allow rule back for a prompt: the ordinary
+  # reads this repository does all day must stay silent.
+  assert_hook_permits "an ordinary git diff is still unprompted" 'git diff'
+  assert_hook_permits "git diff --stat is still unprompted" 'git diff --stat'
+  assert_hook_permits "a scoped diff against history is still unprompted" \
+    'git diff HEAD~1 -- system_files/'
+  assert_hook_permits "git status --short is still unprompted" 'git status --short'
+
+  # PreToolUse fires for every Bash call, so a payload shaped differently from
+  # the expected one must not block the session.
+  assert_hook_payload_permits "an empty payload does not block the session" '{}'
+  assert_hook_payload_permits "a payload with no command does not block the session" \
+    '{"tool_input":{}}'
+  assert_hook_payload_permits "an empty command does not block the session" \
+    '{"tool_input":{"command":""}}'
+fi
+
+# ---------------------------------------------------------------------------
 group "Renovate pin tracking (docs/renovate.md: 'nothing will fail; updates just stop arriving')"
 
 # Every version pin in this tree that is not a container reference or an action

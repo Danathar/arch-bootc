@@ -102,5 +102,18 @@
       "Bash(findmnt *)",
       "Bash(df -T*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "c=$(jq -r \".tool_input.command // empty\"); case \"$c\" in *--no-index*) printf '%s\\n' 'blocked: git diff --no-index reads a path as a plain file, so it prints any file on disk -- cosign.key, a .env, a private key outside this repository -- past the Read(...) deny rules in .claude/settings.json. Describe such a file with ls -l or wc -c instead.' >&2; exit 2;; esac; exit 0"
+          }
+        ]
+      }
+    ]
   }
 }
