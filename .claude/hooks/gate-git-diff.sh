@@ -21,9 +21,19 @@
 #      `--no-\index` both reach git as `--no-index` while a substring test on
 #      the typed spelling finds neither.
 #
+#   3. `--` does not end the mode either. `git diff -- /dev/null ./cosign.key`
+#      prints the file: git's own scan (builtin/diff.c, cmd_diff) consumes a
+#      leading `--` and then applies the same two-operand test to whatever
+#      follows it. Only an operand *before* the `--` stops that scan, which is
+#      why `git diff HEAD -- path` can never be a plain-file read but
+#      `git diff -- a b` can. A version of this gate treated everything after
+#      `--` as a repository pathspec and let the first form through.
+#
 # So this looks at the operands git would actually receive, and refuses the
 # two-operand form unless every operand resolves as a revision -- which is what
 # separates `git diff main feature` from `git diff /dev/null ./cosign.key`.
+# After a bare `--` no word can be a revision, so there the test is git's own:
+# two or more words where any one lies outside the working tree.
 #
 # What it still cannot see, stated rather than implied: a command that builds
 # its arguments at runtime (`git diff $x $y`, `sh -c ...`), one that changes
@@ -66,10 +76,22 @@ esac
 
 read -r -a words <<<"${normalized}"
 
+# Git's path_inside_repo, approximately: the operand, made absolute and with
+# its `..` components folded, lies at or under the working tree. Anything this
+# cannot decide -- no working tree here, no realpath on the host -- counts as
+# outside, so the gate refuses rather than guesses.
+path_inside_worktree() {
+  local candidate toplevel
+  toplevel="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+  candidate="$(realpath -m -s -- "$1" 2>/dev/null)" || return 1
+  [[ "${candidate}" == "${toplevel}" || "${candidate}" == "${toplevel}"/* ]]
+}
+
 seen_git=0
 in_diff=0
 operands=0
 unresolved=0
+after_dashdash=0
 
 for word in "${words[@]+"${words[@]}"}"; do
   case "${word}" in
@@ -81,11 +103,26 @@ for word in "${words[@]+"${words[@]}"}"; do
   esac
 
   if ((in_diff)); then
-    # Everything after `--` is a pathspec, which git resolves against the
-    # repository and never opens as a plain file.
     if [[ "${word}" == "--" ]]; then
-      seen_git=0
-      in_diff=0
+      if ((operands > 0)); then
+        # A revision or path already stopped git's scan, so what follows is
+        # a pathspec resolved against the repository, never a plain file.
+        seen_git=0
+        in_diff=0
+      else
+        # Nothing preceded the `--`: git consumes it and applies the
+        # two-operand test to the words after it. Count those instead.
+        after_dashdash=1
+      fi
+      continue
+    fi
+    if ((after_dashdash)); then
+      # Git does not parse options here: `-x` after `--` is a path named -x.
+      ((operands++))
+      path_inside_worktree "${word}" || unresolved=1
+      if ((operands >= 2 && unresolved)); then
+        refuse "${DIFF_MSG}"
+      fi
       continue
     fi
     [[ "${word}" == -* ]] && continue
@@ -104,6 +141,7 @@ for word in "${words[@]+"${words[@]}"}"; do
       in_diff=1
       operands=0
       unresolved=0
+      after_dashdash=0
       continue
     fi
     seen_git=0

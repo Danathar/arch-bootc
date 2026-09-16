@@ -157,13 +157,19 @@ must be described as such.
   before git sees it, so `--no-'index'` arrives as `--no-index` while the typed
   spelling contains no such string. The hook therefore resolves the operands:
   two operands where any one of them is not a revision is the plain-file form.
+  A bare `--` does not end that mode either — git consumes a leading `--` and
+  applies the same two-operand test to what follows, so
+  `git diff -- /dev/null ./cosign.key` reads the file too — and there, where
+  no word can be a revision, the hook applies git's own test: two or more
+  words with any one outside the working tree. Only an operand *before* the
+  `--` stops git's scan, which is why `git diff HEAD -- path` stays unprompted.
   It also fails closed, refusing rather than passing the call through when `jq`
   is missing or the payload will not parse, because these settings run on
   contributor hosts and not only on the `jq`-equipped CI runner.
 
   `tests/check-invariants.sh` extracts the hook with `jq` and **runs** it — on
-  the flag orderings a prefix rule would miss, on the flagless and requoted
-  forms, with `jq` off `PATH`, and on the ordinary diffs that must stay
+  the flag orderings a prefix rule would miss, on the flagless, requoted, and
+  behind-`--` forms, with `jq` off `PATH`, and on the ordinary diffs that must stay
   unprompted. It is still not a sandbox: a command that builds its arguments at
   runtime, or that leaves the repository first, is outside what this can see,
   and nothing bounds what a command reads once it has started.
