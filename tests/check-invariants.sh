@@ -1067,6 +1067,14 @@ group "Read boundary on allowed Bash (.claude/settings.json: an allowed command 
 #     applies the two-operand test to what follows, so
 #     `git diff -- /dev/null ./cosign.key` prints the file too. Only an operand
 #     before the `--` stops that scan (`git diff HEAD -- path` is safe).
+#   * A lone `-` is an operand, not a flag: git reads it as stdin and counts it
+#     toward the same two-operand test, so `git diff /etc/shadow -` prints the
+#     file. Skipping every dash-prefixed word -- correct for `--stat` and `-U0`,
+#     which git would reject if they were not flags -- left the count one short
+#     of the refusal. `git diff ../<checkout>/cosign.key -` reaches a denied
+#     path inside this repository by the same route, because git's
+#     inside-the-repo test works on the spelling and a `..` that climbs out and
+#     back in reads as outside.
 #
 # So the hook resolves the operands instead: two operands where any one of them
 # is not a revision is the plain-file form, which is what separates
@@ -1109,6 +1117,11 @@ if ((settings_readable)); then
   # And behind a bare `--`, which a version of the hook read as the start of
   # repository pathspecs and stopped inspecting.
   dashdash_output="$(git diff -- /dev/null "${no_index_dir}/fake.key" 2>/dev/null)"
+  # And with the second operand written as `-`, which git reads as stdin and
+  # counts like any other operand. stdin is closed here so the fixture cannot
+  # block; the file's own lines are what git prints, on the `-` side of the
+  # comparison rather than the `+` side.
+  stdin_operand_output="$(git diff "${no_index_dir}/fake.key" - 2>/dev/null </dev/null)"
   rm -rf "${no_index_dir}"
   if grep -q '^+SECRET-LINE-1$' <<<"${no_index_output}"; then
     pass "git diff --no-index prints the contents of a plain file outside the index"
@@ -1129,6 +1142,13 @@ if ((settings_readable)); then
   else
     fail "git diff prints the same contents with the two paths behind a bare --" \
       "this git no longer enters the mode behind --; re-derive the after-dashdash check in the hook"
+  fi
+
+  if grep -q '^-SECRET-LINE-1$' <<<"${stdin_operand_output}"; then
+    pass "git diff prints the same contents when the second operand is the stdin dash"
+  else
+    fail "git diff prints the same contents when the second operand is the stdin dash" \
+      "this git no longer counts a lone - as an operand; re-derive why the operand scan stops skipping it"
   fi
 
   # The same again for the *write* primitive in the same command family, which
@@ -1357,6 +1377,24 @@ if ((settings_readable)); then
     'git diff -- ./AGENTS.md /home/someone/.ssh/id_ed25519'
   assert_hook_refuses "the hook refuses the -- form that climbs out of the checkout" \
     'git diff -- ../outside ./cosign.key'
+
+  # The stdin operand. `-` is the one word git diff counts as an operand and an
+  # option scan drops, so these forms reached the plain-file mode with the
+  # operand count stuck at one. The last of them is the same route back into a
+  # path the deny rules name: git's inside-the-repo test reads the spelling, so
+  # a `..` that leaves the checkout and returns to it counts as outside.
+  assert_hook_refuses "the hook refuses the stdin dash as the second operand" \
+    'git diff /etc/shadow -'
+  assert_hook_refuses "the hook refuses the stdin dash reached outside the checkout" \
+    'git diff /home/someone/.ssh/id_ed25519 -'
+  assert_hook_refuses "the hook refuses the stdin dash after another flag" \
+    'git diff --stat /etc/shadow -'
+  assert_hook_refuses "the hook refuses the stdin dash as the first operand" \
+    'git diff - /etc/shadow'
+  assert_hook_refuses "the hook refuses the stdin dash behind an unspaced &&" \
+    'ls&&git diff /etc/shadow -'
+  assert_hook_refuses "the hook refuses a denied path spelled as a climb out of the checkout" \
+    'git diff ../elsewhere/cosign.key -'
 
   # Spellings the shell rewrites before git sees them. Each of these reaches
   # git as --no-index while the literal string is absent from the command.

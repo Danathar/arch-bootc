@@ -29,7 +29,17 @@
 #      `git diff -- a b` can. A version of this gate treated everything after
 #      `--` as a repository pathspec and let the first form through.
 #
-#   4. Reading is only half of it. The same diff-generating family has a
+#   4. A lone `-` is an operand, not a flag. Git diff reads it as stdin and
+#      counts it toward the same two-operand test, so
+#      `git diff /etc/shadow -` prints the file. Skipping every dash-prefixed
+#      word -- which is right for `--stat`, `-U0` and the rest, since git
+#      rejects an unknown one -- left the operand count one short of the
+#      refusal, and `git diff ../<checkout>/cosign.key -` reached a denied
+#      path inside this repository too: git's own inside-the-repo test works
+#      on the spelling, so a `..` that climbs out and back in reads as
+#      outside.
+#
+#   5. Reading is only half of it. The same diff-generating family has a
 #      *write* primitive: `--output=FILE` sends the diff git would have printed
 #      to a path instead of stdout, so an allow-listed, unprompted call
 #      overwrites any file this uid can reach -- `cosign.pub`, which is the
@@ -194,7 +204,14 @@ for word in "${words[@]+"${words[@]}"}"; do
       fi
       continue
     fi
-    [[ "${word}" == -* ]] && continue
+    # `-` is not an option here. Git diff reads it as the stdin operand and
+    # counts it toward the same two-operand test, so `git diff /etc/shadow -`
+    # prints the file with one flagless operand and one dash -- while a scan
+    # that skips every dash-prefixed word saw a single operand and never
+    # reached the refusal. It is the one word git treats as an operand and
+    # this loop treated as an option: every other `-x` is a flag git would
+    # reject if it were not one.
+    [[ "${word}" == -* && "${word}" != "-" ]] && continue
     ((operands++))
     git rev-parse --verify --quiet "${word}^{commit}" >/dev/null 2>&1 || unresolved=1
     if ((operands >= 2 && unresolved)); then
