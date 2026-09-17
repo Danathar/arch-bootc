@@ -163,6 +163,12 @@ must be described as such.
   no word can be a revision, the hook applies git's own test: two or more
   words with any one outside the working tree. Only an operand *before* the
   `--` stops git's scan, which is why `git diff HEAD -- path` stays unprompted.
+  A lone `-` counts as one of those operands rather than as a flag — git reads
+  it as stdin — so `git diff /etc/shadow -` is the same disclosure with the
+  operand count hidden from anything that skips dash-prefixed words, and
+  `git diff ../<checkout>/cosign.key -` walks that route back to a path the
+  deny rules name, because git's inside-the-repo test reads the spelling and a
+  `..` that leaves the checkout and returns counts as outside.
   It also fails closed, refusing rather than passing the call through when `jq`
   is missing or the payload will not parse, because these settings run on
   contributor hosts and not only on the `jq`-equipped CI runner.
