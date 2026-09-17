@@ -101,6 +101,18 @@ case "${normalized}" in
 *--no-index*) refuse "${DIFF_MSG}" ;;
 esac
 
+# Shell operators need no whitespace around them, and this scan splits on
+# whitespace alone. `git log -1 && (git log -p --output=cosign.pub -1)`
+# tokenizes as `(git`, which is not the word `git`, so the second command was
+# never recognized as a git invocation and every test below stayed switched off
+# for it -- the hook exited 0 while the trust anchor was overwritten. The read
+# half had the same hole: `ls&&git diff /dev/null ./cosign.key`. Give each
+# operator character whitespace of its own, so a command written hard against
+# one is still a command here.
+for operator_char in '(' ')' ';' '&' '|' '`'; do
+  normalized="${normalized//"${operator_char}"/ ${operator_char} }"
+done
+
 read -r -a words <<<"${normalized}"
 
 # Git's path_inside_repo, approximately: the operand, made absolute and with
@@ -124,9 +136,16 @@ skip_git_option_value=0
 
 for word in "${words[@]+"${words[@]}"}"; do
   case "${word}" in
-  ';' | '&&' | '||' | '|' | '&' | '(' | ')')
+  ';' | '&&' | '||' | '|' | '&' | '(' | ')' | '`')
+    # The operand scan starts over at each command boundary. `in_git` does not:
+    # it latches for the rest of the command string. Splitting on operator
+    # characters above means one sitting inside an argument -- `git log
+    # --grep=a|b --output=cosign.pub -1` -- would otherwise end the git
+    # invocation as far as this scan is concerned and hand the write primitive
+    # back unwatched. The cost is refusing a `--output` that belongs to some
+    # later non-git command in the same string; the alternative is a bypass
+    # spelled with one pipe.
     seen_git=0
-    in_git=0
     in_diff=0
     skip_git_option_value=0
     continue

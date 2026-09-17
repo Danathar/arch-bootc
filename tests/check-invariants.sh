@@ -1414,6 +1414,36 @@ if ((settings_readable)); then
   assert_hook_refuses_naming "the hook refuses --output reached through git -C" \
     'git -C /tmp diff --output=/tmp/written' '--output=FILE'
 
+  # Shell operators need no whitespace around them, and this scan splits on
+  # whitespace. `git log -1 && (git log -p --output=cosign.pub -1)` tokenizes
+  # as `(git`, which is not the word `git`: the second command was not
+  # recognized as a git invocation at all, so every test above stayed switched
+  # off for it and the hook exited 0 while the trust anchor was overwritten.
+  assert_hook_refuses_naming "the hook refuses --output inside an attached subshell" \
+    'git log -1 && (git log -p --output=cosign.pub -1)' '--output=FILE'
+  assert_hook_refuses_naming "the hook refuses --output where the subshell opens the command" \
+    '(git log -p --output=cosign.pub -1)' '--output=FILE'
+  assert_hook_refuses_naming "the hook refuses --output behind an unspaced &&" \
+    'ls&&git log -p --output=cosign.pub -1' '--output=FILE'
+  assert_hook_refuses_naming "the hook refuses --output behind an unspaced ;" \
+    'ls;git log -p --output=cosign.pub -1' '--output=FILE'
+  # shellcheck disable=SC2016 # the literal $( is the point: this is the
+  # command string the hook is handed, not one this script expands.
+  assert_hook_refuses_naming "the hook refuses --output inside a command substitution" \
+    'echo $(git log -p --output=cosign.pub -1)' '--output=FILE'
+  # And an operator sitting inside an argument must not end the git invocation
+  # either, which is why the git latch is not cleared at a command boundary:
+  # the pipe here would otherwise hand the write primitive back unwatched.
+  assert_hook_refuses_naming "the hook refuses --output after an operator inside an argument" \
+    'git log --grep=a|b --output=cosign.pub -1' '--output=FILE'
+  # The read half had the same hole, with no flag and an ordinary path.
+  assert_hook_refuses "the hook refuses the plain-file form behind an unspaced &&" \
+    'ls&&git diff /dev/null ./cosign.key'
+  assert_hook_refuses "the hook refuses the plain-file form inside an attached subshell" \
+    '(git diff /dev/null ./cosign.key)'
+  assert_hook_refuses "the hook refuses the plain-file form behind a bare -- and an unspaced ;" \
+    'ls;git diff -- /dev/null ./cosign.key'
+
   # And has not quietly traded the allow rule back for a prompt: the ordinary
   # reads this repository does all day must stay silent.
   assert_hook_permits "an ordinary git diff is still unprompted" 'git diff'
@@ -1455,6 +1485,12 @@ if ((settings_readable)); then
   # this one is not on the allow list and prompts on its own account.
   assert_hook_permits "--output on a command that is not git is still unprompted" \
     'sort --output=/tmp/sorted packages-base.txt'
+  # Splitting on operator characters must not cost the chained reads this
+  # repository does all day: a command boundary restarts the operand scan.
+  assert_hook_permits "chained ordinary git reads are still unprompted" \
+    'git status && git log --oneline -5'
+  assert_hook_permits "an ordinary git read inside a subshell is still unprompted" \
+    '(git log -p -1)'
   # Two-token git global options, now that the scan follows them: an ordinary
   # diff behind one is still an ordinary diff.
   assert_hook_permits "a two-revision diff behind git -C is still unprompted" \

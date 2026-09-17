@@ -188,6 +188,18 @@ must be described as such.
   which the agent already reads. `--output-indicator-*` changes the marker
   character rather than the destination and stays permitted.
 
+  Both halves rest on finding the word `git`, and shell operators need no
+  whitespace around them: `git log -1 && (git log -p --output=cosign.pub -1)`
+  splits on whitespace into `(git`, which is not that word. A command written
+  hard against an operator was therefore not recognized as a git invocation at
+  all, and neither gate looked at it. The hook gives every operator character
+  whitespace of its own before it splits, and — because an operator can also
+  sit *inside* an argument, as in `git log --grep=a|b --output=cosign.pub` —
+  the `--output` refusal latches once the word `git` has been seen and holds
+  for the rest of the command string. That refuses a `--output` belonging to
+  some later non-git command in the same string; the alternative is a bypass
+  spelled with one pipe.
+
   `tests/check-invariants.sh` extracts the hook with `jq` and **runs** it — on
   the flag orderings a prefix rule would miss, on the flagless, requoted, and
   behind-`--` forms, on `--output` across `git diff`, `git log` and `git show`,
