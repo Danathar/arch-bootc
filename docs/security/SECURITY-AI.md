@@ -167,12 +167,50 @@ must be described as such.
   is missing or the payload will not parse, because these settings run on
   contributor hosts and not only on the `jq`-equipped CI runner.
 
+- **An allowed Bash command must not write what nothing gates either.** The
+  same diff-generating family has a write primitive: `--output=FILE` sends the
+  diff to the path it names instead of to stdout, so an allow-listed,
+  unprompted call overwrites any file this uid can reach — `cosign.pub`, which
+  is the signature trust anchor copied into the image, `.claude/settings.json`,
+  the hook itself, `~/.ssh/authorized_keys`. The deny rules are no help here
+  either: they gate the *Read* tool and say nothing about what an allowed Bash
+  command writes. Content arrives diff-framed rather than byte-clean, which
+  matters less than it sounds — the `+` lines carry whatever the caller
+  committed, and for a trust anchor corruption alone is the event.
+
+  The flag belongs to the machinery rather than to one subcommand, so
+  `Bash(git log*)` and `Bash(git show*)` reach it without the word `diff`
+  appearing anywhere. `git show` refuses it only for a *combined* diff — a
+  merge commit, and on git 2.39 only after truncating the file it was pointed
+  at — and writes an ordinary commit's diff in full. The hook therefore refuses
+  `--output` — both `--output=FILE` and the space form — anywhere in a git
+  invocation. Nothing legitimate needs it: diff, log and show print to stdout,
+  which the agent already reads. `--output-indicator-*` changes the marker
+  character rather than the destination and stays permitted.
+
+  Both halves rest on finding the word `git`, and shell operators need no
+  whitespace around them: `git log -1 && (git log -p --output=cosign.pub -1)`
+  splits on whitespace into `(git`, which is not that word. A command written
+  hard against an operator was therefore not recognized as a git invocation at
+  all, and neither gate looked at it. The hook gives every operator character
+  whitespace of its own before it splits, and — because an operator can also
+  sit *inside* an argument, as in `git log --grep=a|b --output=cosign.pub` —
+  the `--output` refusal latches once the word `git` has been seen and holds
+  for the rest of the command string. That refuses a `--output` belonging to
+  some later non-git command in the same string; the alternative is a bypass
+  spelled with one pipe.
+
   `tests/check-invariants.sh` extracts the hook with `jq` and **runs** it — on
   the flag orderings a prefix rule would miss, on the flagless, requoted, and
-  behind-`--` forms, with `jq` off `PATH`, and on the ordinary diffs that must stay
-  unprompted. It is still not a sandbox: a command that builds its arguments at
-  runtime, or that leaves the repository first, is outside what this can see,
-  and nothing bounds what a command reads once it has started.
+  behind-`--` forms, on `--output` across `git diff`, `git log` and `git show`,
+  with `jq` off `PATH`, and on the ordinary diffs that must stay unprompted.
+  The `--output` fixtures build a one-commit repository in a temporary
+  directory and show that commit's `+` lines replacing the contents of a file
+  next to it, so the refusals are asserted against a demonstrated exposure
+  rather than a described one. It is still not a
+  sandbox: a command that builds its arguments at runtime, or that leaves the
+  repository first, is outside what this can see, and nothing bounds what a
+  command reads or writes once it has started.
 - Workflow permissions are declared explicitly and minimally per job. A workflow
   that needs `packages: write` says so in that job only; it does not get it at
   the workflow level for convenience.
