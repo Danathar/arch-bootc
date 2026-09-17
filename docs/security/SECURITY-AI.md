@@ -180,20 +180,22 @@ must be described as such.
 
   The flag belongs to the machinery rather than to one subcommand, so
   `Bash(git log*)` and `Bash(git show*)` reach it without the word `diff`
-  appearing anywhere, and `git show` refuses it for a merge commit only *after*
-  truncating the file it was pointed at. The hook therefore refuses `--output`
-  — both `--output=FILE` and the space form — anywhere in a git invocation.
-  Nothing legitimate needs it: diff, log and show print to stdout, which the
-  agent already reads. `--output-indicator-*` changes the marker character
-  rather than the destination and stays permitted.
+  appearing anywhere. `git show` refuses it only for a *combined* diff — a
+  merge commit, and on git 2.39 only after truncating the file it was pointed
+  at — and writes an ordinary commit's diff in full. The hook therefore refuses
+  `--output` — both `--output=FILE` and the space form — anywhere in a git
+  invocation. Nothing legitimate needs it: diff, log and show print to stdout,
+  which the agent already reads. `--output-indicator-*` changes the marker
+  character rather than the destination and stays permitted.
 
   `tests/check-invariants.sh` extracts the hook with `jq` and **runs** it — on
   the flag orderings a prefix rule would miss, on the flagless, requoted, and
   behind-`--` forms, on `--output` across `git diff`, `git log` and `git show`,
   with `jq` off `PATH`, and on the ordinary diffs that must stay unprompted.
-  The `--output` fixtures write into a temporary directory and show the target
-  file's contents actually being replaced, so the refusals are asserted against
-  a demonstrated exposure rather than a described one. It is still not a
+  The `--output` fixtures build a one-commit repository in a temporary
+  directory and show that commit's `+` lines replacing the contents of a file
+  next to it, so the refusals are asserted against a demonstrated exposure
+  rather than a described one. It is still not a
   sandbox: a command that builds its arguments at runtime, or that leaves the
   repository first, is outside what this can see, and nothing bounds what a
   command reads or writes once it has started.

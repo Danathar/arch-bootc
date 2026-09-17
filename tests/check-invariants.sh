@@ -1144,15 +1144,31 @@ if ((settings_readable)); then
   printf 'ORIGINAL-CONTENT\n' >"${output_dir}/victim-log"
   printf 'ORIGINAL-CONTENT\n' >"${output_dir}/victim-show"
   git diff --output="${output_dir}/victim-diff" -- /dev/null "${output_dir}/fake.key" >/dev/null 2>&1
+
+  # git log and git show are run against a repository this fixture builds
+  # rather than against this checkout, and the difference is not fastidiousness:
+  # CI checks out a single grafted *merge* commit, and git refuses `--output`
+  # for a combined diff -- git 2.39 only after truncating the file it named,
+  # git 2.55 before opening it. Which of those a host does is not the property
+  # under test. One ordinary commit is, and it is also the shape the issue
+  # describes: author a commit, then write its diff over the target, so the `+`
+  # lines carry what the caller chose.
+  payload_repo="${output_dir}/repo"
+  git -c init.defaultBranch=main init --quiet "${payload_repo}" >/dev/null 2>&1
+  printf 'PAYLOAD-LINE-1\n' >"${payload_repo}/committed"
+  git -C "${payload_repo}" add committed >/dev/null 2>&1
+  git -C "${payload_repo}" -c user.name=invariants \
+    -c user.email=invariants@example.invalid -c commit.gpgsign=false \
+    commit --quiet -m fixture >/dev/null 2>&1
   # No `diff` anywhere in this one: git log carries the same flag, and the
   # operand scan in the hook only ever tracked the diff subcommand.
-  git log -p --output="${output_dir}/victim-log" -1 >/dev/null 2>&1
-  # And git show, which refuses the flag outright for a merge commit -- after
-  # opening and truncating the file it was pointed at, which is why "git show
-  # rejects --output" is not a reason to leave it ungated. Whether HEAD here is
-  # a merge decides which of write or truncate this fixture demonstrates; both
-  # destroy what the file held.
-  git show --output="${output_dir}/victim-show" HEAD >/dev/null 2>&1
+  git -C "${payload_repo}" log -p --output="${output_dir}/victim-log" -1 >/dev/null 2>&1
+  # And git show, which the issue reports as not writing at all. It does: it
+  # rejects the flag only for a combined diff, and writes an ordinary commit's
+  # diff in full -- which is why "git show rejects --output" is not a reason to
+  # leave it ungated.
+  git -C "${payload_repo}" show --output="${output_dir}/victim-show" HEAD >/dev/null 2>&1
+
   output_diff_written="$(cat "${output_dir}/victim-diff" 2>/dev/null)"
   output_log_written="$(cat "${output_dir}/victim-log" 2>/dev/null)"
   output_show_written="$(cat "${output_dir}/victim-show" 2>/dev/null)"
@@ -1165,18 +1181,18 @@ if ((settings_readable)); then
       "this git no longer redirects the diff to that path; re-derive the --output refusal in the hook"
   fi
 
-  if ! grep -q 'ORIGINAL-CONTENT' <<<"${output_log_written}"; then
-    pass "git log --output=FILE overwrites the file it names, with no git diff in the command"
+  if grep -q '^+PAYLOAD-LINE-1$' <<<"${output_log_written}"; then
+    pass "git log --output=FILE writes a committed payload over the file it names, with no git diff in the command"
   else
-    fail "git log --output=FILE overwrites the file it names, with no git diff in the command" \
-      "the file still holds what it held; re-derive why the refusal covers the whole git invocation"
+    fail "git log --output=FILE writes a committed payload over the file it names, with no git diff in the command" \
+      "the file does not hold the commit's + lines; re-derive why the refusal covers the whole git invocation"
   fi
 
-  if ! grep -q 'ORIGINAL-CONTENT' <<<"${output_show_written}"; then
-    pass "git show --output=FILE destroys the file it names even when git refuses the flag"
+  if grep -q '^+PAYLOAD-LINE-1$' <<<"${output_show_written}"; then
+    pass "git show --output=FILE writes a committed payload over the file it names"
   else
-    fail "git show --output=FILE destroys the file it names even when git refuses the flag" \
-      "this git no longer opens the path before rejecting the flag; re-derive the git show case"
+    fail "git show --output=FILE writes a committed payload over the file it names" \
+      "this git no longer accepts --output for an ordinary commit; re-derive the git show case"
   fi
 
   # The hook's rationale is that these three entries stay exactly as they are.

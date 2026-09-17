@@ -39,9 +39,10 @@
 #      writes. The operand scan below could not see it either, because it skips
 #      every dash-prefixed word, and it stops tracking git at the subcommand --
 #      `git log -p --output=FILE` and `git show --output=FILE` are allow-listed
-#      too and were never inspected at all. `git show` does refuse the flag for
-#      a merge commit, but only after truncating the file it named, so
-#      "git show rejects --output" is not a reason to leave it out.
+#      too and were never inspected at all. `git show` refuses the flag only
+#      for a *combined* diff -- a merge commit, and on git 2.39 only after
+#      truncating the file it named -- and writes an ordinary commit's diff in
+#      full, so "git show rejects --output" is not a reason to leave it out.
 #
 #      The content is diff-framed rather than byte-clean, which matters less
 #      than it sounds: the `+` lines carry whatever the caller committed, and
