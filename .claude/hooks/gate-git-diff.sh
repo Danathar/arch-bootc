@@ -29,17 +29,41 @@
 #      `git diff -- a b` can. A version of this gate treated everything after
 #      `--` as a repository pathspec and let the first form through.
 #
+#   4. Reading is only half of it. The same diff-generating family has a
+#      *write* primitive: `--output=FILE` sends the diff git would have printed
+#      to a path instead of stdout, so an allow-listed, unprompted call
+#      overwrites any file this uid can reach -- `cosign.pub`, which is the
+#      signature trust anchor copied into the image, `.claude/settings.json`,
+#      this hook, `~/.ssh/authorized_keys`. The deny rules are no help: they
+#      gate the *Read* tool and say nothing about what an allowed Bash command
+#      writes. The operand scan below could not see it either, because it skips
+#      every dash-prefixed word, and it stops tracking git at the subcommand --
+#      `git log -p --output=FILE` and `git show --output=FILE` are allow-listed
+#      too and were never inspected at all. `git show` does refuse the flag for
+#      a merge commit, but only after truncating the file it named, so
+#      "git show rejects --output" is not a reason to leave it out.
+#
+#      The content is diff-framed rather than byte-clean, which matters less
+#      than it sounds: the `+` lines carry whatever the caller committed, and
+#      for a trust anchor or a config file corruption alone is the event.
+#      Nothing legitimate needs it -- diff, log and show print to stdout, which
+#      the agent already reads -- so the refusal is the whole git invocation,
+#      not one subcommand. `--output-indicator-new` and its siblings change the
+#      marker character rather than the destination and stay permitted.
+#
 # So this looks at the operands git would actually receive, and refuses the
 # two-operand form unless every operand resolves as a revision -- which is what
 # separates `git diff main feature` from `git diff /dev/null ./cosign.key`.
 # After a bare `--` no word can be a revision, so there the test is git's own:
-# two or more words where any one lies outside the working tree.
+# two or more words where any one lies outside the working tree. The write
+# primitive needs none of that machinery: `--output` anywhere in a git
+# invocation is refused outright.
 #
 # What it still cannot see, stated rather than implied: a command that builds
 # its arguments at runtime (`git diff $x $y`, `sh -c ...`), one that changes
-# directory out of the repository first, and anything a command reads once it
-# has started. This re-gates the one pre-approved command that reaches past the
-# deny list; it is not a sandbox.
+# directory out of the repository first, and anything a command reads or writes
+# once it has started. This re-gates the pre-approved commands that reach past
+# the deny list; it is not a sandbox.
 
 set -uo pipefail
 
@@ -49,6 +73,8 @@ refuse() {
 }
 
 DIFF_MSG='blocked: this git diff would compare paths as plain files (git'"'"'s --no-index mode, which needs no flag once two operands are given), so it prints any file on disk -- cosign.key, a .env, a private key outside this repository -- past the Read(...) deny rules in .claude/settings.json. Describe such a file with ls -l or wc -c instead.'
+
+OUT_MSG='blocked: git --output=FILE (and the space form) writes this diff or log to the path it names instead of stdout, overwriting any file this uid can reach -- cosign.pub, .claude/settings.json, this hook, ~/.ssh/authorized_keys -- with no Read(...) or Write(...) deny rule in its way. git diff, git log and git show print to stdout; read that instead. --output-indicator-* is a different flag and is unaffected.'
 
 # Fail closed. This gate stands in front of the one pre-approved command that
 # can read a denied path, so a missing dependency must not quietly disable it:
@@ -88,19 +114,42 @@ path_inside_worktree() {
 }
 
 seen_git=0
+in_git=0
 in_diff=0
 operands=0
 unresolved=0
 after_dashdash=0
+skip_git_option_value=0
 
 for word in "${words[@]+"${words[@]}"}"; do
   case "${word}" in
   ';' | '&&' | '||' | '|' | '&' | '(' | ')')
     seen_git=0
+    in_git=0
     in_diff=0
+    skip_git_option_value=0
     continue
     ;;
   esac
+
+  # Scoped to the git invocation as a whole, and checked before anything
+  # below skips a dash-prefixed word: the write primitive belongs to the
+  # diff-generation machinery rather than to one subcommand, so `git log -p
+  # --output=FILE` and `git show --output=FILE` reach it without the word
+  # `diff` appearing anywhere. `--output=x` and a bare `--output` (the space
+  # form, whose path is the next word) are the two spellings; the pattern is
+  # anchored so `--output-indicator-new=%` does not match it.
+  #
+  # This is deliberately wider than the allow list: a `git commit -m` whose
+  # message happens to contain the word --output is refused too. That costs a
+  # rephrased commit message; the alternative is a list of which git
+  # subcommands accept the flag, and the subcommand this hook forgot is the
+  # hole.
+  if ((in_git)); then
+    case "${word}" in
+    --output | --output=*) refuse "${OUT_MSG}" ;;
+    esac
+  fi
 
   if ((in_diff)); then
     if [[ "${word}" == "--" ]]; then
@@ -135,6 +184,22 @@ for word in "${words[@]+"${words[@]}"}"; do
   fi
 
   if ((seen_git)); then
+    if ((skip_git_option_value)); then
+      # The value half of a two-token git global option. Without this the
+      # directory or setting is read as the subcommand, git is forgotten, and
+      # the operand scan never starts at all: `git -C / diff /dev/null
+      # etc/shadow` went through uninspected. No allow rule matches that
+      # spelling today, so it prompts -- but a gate whose coverage depends on
+      # an allow rule's exact prefix is one allow-list edit from silence.
+      skip_git_option_value=0
+      continue
+    fi
+    case "${word}" in
+    -C | -c | --git-dir | --work-tree | --namespace | --super-prefix | --config-env | --attr-source)
+      skip_git_option_value=1
+      continue
+      ;;
+    esac
     # git-level options such as --no-pager sit between `git` and the subcommand.
     [[ "${word}" == -* ]] && continue
     if [[ "${word}" == "diff" ]]; then
@@ -147,7 +212,10 @@ for word in "${words[@]+"${words[@]}"}"; do
     seen_git=0
   fi
 
-  [[ "${word}" == "git" ]] && seen_git=1
+  if [[ "${word}" == "git" ]]; then
+    seen_git=1
+    in_git=1
+  fi
 done
 
 exit 0

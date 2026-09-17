@@ -1131,6 +1131,54 @@ if ((settings_readable)); then
       "this git no longer enters the mode behind --; re-derive the after-dashdash check in the hook"
   fi
 
+  # The same again for the *write* primitive in the same command family, which
+  # is a separate exposure and not a variation on the one above. `--output=FILE`
+  # sends the diff to the path it names instead of to stdout, so an allowed,
+  # unprompted call overwrites any file this uid can reach -- `cosign.pub`, the
+  # signature trust anchor copied into the image, `.claude/settings.json`, the
+  # hook itself. Everything is written inside a temporary directory of this
+  # fixture's own; nothing in the checkout is touched.
+  output_dir="$(mktemp -d)"
+  printf 'SECRET-LINE-1\nSECRET-LINE-2\n' >"${output_dir}/fake.key"
+  printf 'ORIGINAL-CONTENT\n' >"${output_dir}/victim-diff"
+  printf 'ORIGINAL-CONTENT\n' >"${output_dir}/victim-log"
+  printf 'ORIGINAL-CONTENT\n' >"${output_dir}/victim-show"
+  git diff --output="${output_dir}/victim-diff" -- /dev/null "${output_dir}/fake.key" >/dev/null 2>&1
+  # No `diff` anywhere in this one: git log carries the same flag, and the
+  # operand scan in the hook only ever tracked the diff subcommand.
+  git log -p --output="${output_dir}/victim-log" -1 >/dev/null 2>&1
+  # And git show, which refuses the flag outright for a merge commit -- after
+  # opening and truncating the file it was pointed at, which is why "git show
+  # rejects --output" is not a reason to leave it ungated. Whether HEAD here is
+  # a merge decides which of write or truncate this fixture demonstrates; both
+  # destroy what the file held.
+  git show --output="${output_dir}/victim-show" HEAD >/dev/null 2>&1
+  output_diff_written="$(cat "${output_dir}/victim-diff" 2>/dev/null)"
+  output_log_written="$(cat "${output_dir}/victim-log" 2>/dev/null)"
+  output_show_written="$(cat "${output_dir}/victim-show" 2>/dev/null)"
+  rm -rf "${output_dir}"
+
+  if grep -q '^+SECRET-LINE-1$' <<<"${output_diff_written}"; then
+    pass "git diff --output=FILE writes content the caller chose over the file it names"
+  else
+    fail "git diff --output=FILE writes content the caller chose over the file it names" \
+      "this git no longer redirects the diff to that path; re-derive the --output refusal in the hook"
+  fi
+
+  if ! grep -q 'ORIGINAL-CONTENT' <<<"${output_log_written}"; then
+    pass "git log --output=FILE overwrites the file it names, with no git diff in the command"
+  else
+    fail "git log --output=FILE overwrites the file it names, with no git diff in the command" \
+      "the file still holds what it held; re-derive why the refusal covers the whole git invocation"
+  fi
+
+  if ! grep -q 'ORIGINAL-CONTENT' <<<"${output_show_written}"; then
+    pass "git show --output=FILE destroys the file it names even when git refuses the flag"
+  else
+    fail "git show --output=FILE destroys the file it names even when git refuses the flag" \
+      "this git no longer opens the path before rejecting the flag; re-derive the git show case"
+  fi
+
   # The hook's rationale is that these three entries stay exactly as they are.
   # If Bash(git diff*) leaves the allow list the hook is redundant; if either
   # Read deny rule goes, there is nothing left for the hook to be a route
@@ -1144,6 +1192,16 @@ if ((settings_readable)); then
   assert_equal "Read(./.env) is still denied" \
     "$(jq -r '[.permissions.deny[]? | select(. == "Read(./.env)")] | length' "${CLAUDE_SETTINGS}")" "1"
 
+  # And these two, which are what make the write above unprompted. They are
+  # separate entries from Bash(git diff*) and the write primitive reaches the
+  # same place through either of them, so each is asserted on its own rather
+  # than inferred from the diff rule.
+  assert_equal "Bash(git log*) is still allowed without a prompt" \
+    "$(jq -r '[.permissions.allow[]? | select(. == "Bash(git log*)")] | length' "${CLAUDE_SETTINGS}")" "1"
+
+  assert_equal "Bash(git show*) is still allowed without a prompt" \
+    "$(jq -r '[.permissions.allow[]? | select(. == "Bash(git show*)")] | length' "${CLAUDE_SETTINGS}")" "1"
+
   # A prefix deny for the flag would read as coverage while gating exactly one
   # argument ordering. The hook is the control; a rule that looks like a second
   # one is a liability.
@@ -1153,6 +1211,17 @@ if ((settings_readable)); then
   else
     fail "no deny pattern claims to gate --no-index by prefix" \
       "a prefix rule matches one flag ordering and reads as coverage: ${no_index_deny}"
+  fi
+
+  # The same argument for the write half: `Bash(git diff --output*)` would
+  # match one spelling of one subcommand and miss `git log -p --output=`,
+  # `git --no-pager diff --output=` and every other ordering.
+  output_deny="$(jq -r '[.permissions.deny[]? | select(test("--output"))] | join(" ")' "${CLAUDE_SETTINGS}")"
+  if [[ -z "${output_deny}" ]]; then
+    pass "no deny pattern claims to gate --output by prefix"
+  else
+    fail "no deny pattern claims to gate --output by prefix" \
+      "a prefix rule matches one flag ordering and reads as coverage: ${output_deny}"
   fi
 
   bash_hooks=()
@@ -1197,6 +1266,25 @@ if ((settings_readable)); then
     else
       fail "${description}" \
         "exit ${hook_status} with stderr '${hook_stderr:-<none>}'; wanted exit 2 and an explanation"
+    fi
+  }
+
+  # Exit 2 alone cannot tell this hook's two refusals apart, and the space form
+  # `git diff --output /tmp/x HEAD~1 HEAD` was already refused before there was
+  # a rule for it -- by accident, because the operand scan counted the path as
+  # a second unresolved operand. Asserting which refusal fired is what
+  # separates "refused for the stated reason" from "refused today, and
+  # permitted the moment that accident stops holding".
+  assert_hook_refuses_naming() {
+    local description="$1" command="$2" wanted="$3"
+    local payload
+    payload="$(jq -nc --arg c "${command}" '{tool_name: "Bash", tool_input: {command: $c}}')"
+    run_bash_hooks "${payload}"
+    if ((hook_status == 2)) && [[ "${hook_stderr}" == *"${wanted}"* ]]; then
+      pass "${description}"
+    else
+      fail "${description}" \
+        "exit ${hook_status} with stderr '${hook_stderr:-<none>}'; wanted exit 2 naming '${wanted}'"
     fi
   }
 
@@ -1261,6 +1349,55 @@ if ((settings_readable)); then
   assert_hook_refuses "the hook refuses a backslash spelling of the flag" \
     'git diff --no-\index -- /dev/null ./cosign.key'
 
+  # The write half of the same family. `--output=FILE` is a destination, not a
+  # filter, and the fixtures above show what it does to the file it names. The
+  # refusal is asserted by its message rather than by exit status alone,
+  # because the operand scan refuses some of these spellings for an unrelated
+  # reason that would stop holding if it were ever rewritten.
+  assert_hook_refuses_naming "the hook refuses git diff --output=FILE" \
+    'git diff --output=/tmp/written HEAD~1 HEAD' '--output=FILE'
+  assert_hook_refuses_naming "the hook refuses the space form of --output" \
+    'git diff --output /tmp/written HEAD~1 HEAD' '--output=FILE'
+  assert_hook_refuses_naming "the hook refuses --output behind a git-level option" \
+    'git --no-pager diff --output=/tmp/written' '--output=FILE'
+  assert_hook_refuses_naming "the hook refuses --output after another diff flag" \
+    'git diff --stat --output=/tmp/written' '--output=FILE'
+  # git log is outside the operand scan entirely -- it tracks the diff
+  # subcommand and nothing else -- so these two are the reason the refusal sits
+  # ahead of it and covers the whole git invocation.
+  assert_hook_refuses_naming "the hook refuses --output on git log" \
+    'git log -p --output=/tmp/written -1' '--output=FILE'
+  assert_hook_refuses_naming "the hook refuses the space form on git log" \
+    'git log -p --output /tmp/written -1' '--output=FILE'
+  assert_hook_refuses_naming "the hook refuses --output on git show" \
+    'git show --output=/tmp/written HEAD' '--output=FILE'
+  assert_hook_refuses_naming "the hook refuses --output behind another command" \
+    'ls -l && git log -p --output=/tmp/written -1' '--output=FILE'
+  # The shell rewrites this one exactly as it rewrites --no-'index'.
+  assert_hook_refuses_naming "the hook refuses a requoted spelling of --output" \
+    "git diff --out'put'=/tmp/written" '--output=FILE'
+  assert_hook_refuses_naming "the hook refuses --output written to the trust anchor" \
+    'git log -p --output=cosign.pub -1' '--output=FILE'
+
+  # A two-token git global option used to make the operand scan lose track of
+  # git altogether: the directory word was read as the subcommand, `seen_git`
+  # was cleared, and the scan below never started. Nothing auto-approves these
+  # spellings today -- no allow rule matches them, so they prompt -- but a gate
+  # whose coverage rests on an allow rule's exact prefix is one allow-list edit
+  # from silence.
+  assert_hook_refuses "the hook refuses the plain-file form reached through git -C" \
+    'git -C / diff /dev/null etc/shadow'
+  assert_hook_refuses "the hook refuses the plain-file form reached through --git-dir" \
+    'git --git-dir /tmp/elsewhere/.git diff /dev/null ./cosign.key'
+  assert_hook_refuses "the hook refuses the plain-file form reached through --work-tree" \
+    'git --work-tree /tmp/elsewhere diff /dev/null ./cosign.key'
+  assert_hook_refuses "the hook refuses the plain-file form behind git -c" \
+    'git -c core.pager=cat diff /dev/null ./cosign.key'
+  assert_hook_refuses "the hook refuses the plain-file form behind --namespace" \
+    'git --namespace ns diff /dev/null ./cosign.key'
+  assert_hook_refuses_naming "the hook refuses --output reached through git -C" \
+    'git -C /tmp diff --output=/tmp/written' '--output=FILE'
+
   # And has not quietly traded the allow rule back for a prompt: the ordinary
   # reads this repository does all day must stay silent.
   assert_hook_permits "an ordinary git diff is still unprompted" 'git diff'
@@ -1286,6 +1423,28 @@ if ((settings_readable)); then
     'git diff HEAD -- ./AGENTS.md ./tests/'
   assert_hook_permits "the word diff outside a git call is not a git diff" \
     'grep diff a.txt b.txt'
+  # Reading history is the whole point of the two commands the write refusal
+  # now also covers, so both must stay silent.
+  assert_hook_permits "an ordinary git log -p is still unprompted" 'git log -p -1'
+  assert_hook_permits "git show of a revision is still unprompted" 'git show HEAD'
+  # --output-indicator-* changes the character in column one, not where the
+  # output goes. It is not the write primitive and a gate that cannot tell the
+  # two apart would be refusing ordinary formatting.
+  assert_hook_permits "git diff --output-indicator-new is still unprompted" \
+    'git diff --output-indicator-new=%'
+  assert_hook_permits "git log --output-indicator-old is still unprompted" \
+    'git log --output-indicator-old=- -1'
+  # The refusal is scoped to git invocations. --output is an ordinary flag on
+  # other tools, and this hook is not a general write gate -- a command like
+  # this one is not on the allow list and prompts on its own account.
+  assert_hook_permits "--output on a command that is not git is still unprompted" \
+    'sort --output=/tmp/sorted packages-base.txt'
+  # Two-token git global options, now that the scan follows them: an ordinary
+  # diff behind one is still an ordinary diff.
+  assert_hook_permits "a two-revision diff behind git -C is still unprompted" \
+    'git -C . diff HEAD HEAD'
+  assert_hook_permits "git -c ... diff --stat is still unprompted" \
+    'git -c core.pager=cat diff --stat'
 
   # PreToolUse fires for every Bash call, so a payload shaped differently from
   # the expected one must not block the session.

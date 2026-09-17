@@ -176,9 +176,12 @@ enablement layout, SHA-pinned actions with `persist-credentials: false` and
 `timeout-minutes`, and — the one that had already gone wrong — that every shell
 file appears in **both** hand-maintained ShellCheck lists. It also *runs* the
 `PreToolUse` hook in `.claude/settings.json` that keeps an allow-listed
-`git diff` from reading, as a plain file, what the `Read(...)` deny rules name;
-the hook is extracted with `jq` and executed rather than grepped for, since a
-hook asserted by grep is a hook asserted by its own comment.
+`git diff` from reading, as a plain file, what the `Read(...)` deny rules name —
+and from *writing*, via `--output=FILE`, over any path this uid can reach,
+which is the same command family's other half and reaches `git log` and
+`git show` too; the hook is extracted with `jq` and executed rather than
+grepped for, since a hook asserted by grep is a hook asserted by its own
+comment.
 
 It exists because a build proves the image *builds*, and an image that has
 quietly lost `pam_wheel.so use_uid` builds perfectly well. It runs in the build
