@@ -2619,6 +2619,518 @@ assert_doc_links_resolve "${UPDATING_DOC}" \
   "no relative links found; the pointer at the Renovate reference is gone"
 
 # ---------------------------------------------------------------------------
+group "Process metrics (docs/metrics.md is a set of runnable gh/jq commands, a hand-recomputed snapshot, and four copies of the build machine)"
+
+# docs/metrics.md is not prose about intentions: it tells a reader to run nine
+# `gh ... --jq` commands and says every figure in it was produced that way.
+# Nothing read it. tests/check-coverage.sh traces shipped shell only, so a
+# Markdown file moves no percentage, and no test named it.
+#
+# Three separate things can rot here, and each is asserted below:
+#
+#   - The commands themselves. A jq program that no longer parses, or that
+#     reads a field the paired `--json` never requested, fails only in the
+#     reader's terminal -- and a filter reading an unrequested field does not
+#     even fail there, it silently computes over `null`.
+#   - The snapshot table. It is recomputed by hand, so its totals, its
+#     percentages and the prose that restates them are four copies of the same
+#     numbers with nothing keeping them equal.
+#   - The claims about the machine: the workflow it names, the branch it reads,
+#     the daily schedule plus PACMAN_CACHE_BUST it credits for genuinely fresh
+#     packages, the per-script floors it defers to, and its statement that
+#     nothing in this repository writes these numbers on a schedule.
+
+METRICS_DOC="docs/metrics.md"
+
+# Fenced blocks by info string, matching the extractor used for the runbooks
+# above. Only ```bash blocks are commands.
+metrics_fenced() {
+  local want="$1"
+  awk -v want="${want}" '
+    /^```/ { if (in_block) { in_block = 0 } else { in_block = (substr($0, 4) == want) } ; next }
+    in_block' "${METRICS_DOC}"
+}
+
+# Headings with fenced blocks excluded: `# Review comments per merged PR` is a
+# shell comment inside a ```bash block, not a Markdown heading.
+metrics_headings="$(awk '/^```/ { in_block = !in_block; next } !in_block && /^#{1,6} /' "${METRICS_DOC}")"
+
+if [[ ! -f "${METRICS_DOC}" ]]; then
+  fail "the metrics reference exists" "${METRICS_DOC} is missing; README.md's documentation table links to it"
+else
+
+# README.md's table advertises "PR acceptance, time to merge, and CI health".
+# Assert those are still sections, or every scoped extraction below starts
+# passing by extracting nothing.
+metrics_missing_sections=""
+while IFS= read -r want; do
+  grep -qi -- "${want}" <<<"${metrics_headings}" || metrics_missing_sections+="${want}; "
+done <<'METRICS_SECTIONS'
+^## PR acceptance
+^## Time to merge
+^## Review friction
+^## CI health
+^## Snapshot
+^## What is deliberately not measured
+METRICS_SECTIONS
+if [[ -z "${metrics_missing_sections}" ]]; then
+  pass "docs/metrics.md still has the sections README.md's table advertises"
+else
+  fail "docs/metrics.md still has the sections README.md's table advertises" \
+    "missing: ${metrics_missing_sections}"
+fi
+
+assert_present "README.md's documentation table still links to the metrics reference" \
+  "README.md" '\]\(docs/metrics\.md\)'
+
+assert_doc_links_resolve "${METRICS_DOC}" \
+  "no relative links found; the hand-off to quality.md is gone"
+
+# -- The commands -----------------------------------------------------------
+#
+# Every gh invocation in the document, as a (requested fields, jq program)
+# pair. Continuation lines are joined first; the jq programs themselves span
+# several physical lines inside their quotes, so the whole block set is read as
+# one string rather than line by line. A new invocation starts at each `gh`
+# token, which is what separates the `gh api` inside the review-friction loop
+# from the `gh pr list` that feeds it.
+metrics_jq_records() {
+  metrics_fenced bash | awk -v RS=$'\a' '
+    {
+      text = $0
+      sep = sprintf("%c", 2)
+      fieldsep = sprintf("%c", 3)
+      recsep = sprintf("%c", 4)
+      quote = sprintf("%c", 39)
+      gsub(/\\\n[ \t]*/, " ", text)
+      gsub(/(^|[ \t(\n])gh /, sep "&", text)
+      n = split(text, segment, sep)
+      for (i = 1; i <= n; i++) {
+        seg = segment[i]
+        jqre = "--jq " quote
+        if (!match(seg, jqre)) continue
+        rest = substr(seg, RSTART + RLENGTH)
+        end = index(rest, quote)
+        if (end == 0) continue
+        program = substr(rest, 1, end - 1)
+        fields = ""
+        if (match(seg, /--json [A-Za-z0-9,]+/))
+          fields = substr(seg, RSTART + 7, RLENGTH - 7)
+        printf "%s%s%s%s", fields, fieldsep, program, recsep
+      }
+    }
+  '
+}
+
+# Field names a jq program reads. Only the head of a dotted chain counts:
+# `.author.login` reads the `author` object gh was asked for, and `login` is a
+# key inside it rather than a second thing to request.
+metrics_program_fields() {
+  awk -v RS=$'\a' '
+    {
+      text = $0
+      while (match(text, /\.[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*/)) {
+        chain = substr(text, RSTART + 1, RLENGTH - 1)
+        split(chain, part, ".")
+        print part[1]
+        text = substr(text, RSTART + RLENGTH)
+      }
+    }
+  ' | sort -u
+}
+
+# A fixture shaped exactly like what `gh ... --json <fields>` returns: three
+# records, with the values varied so group_by, select and sort all have
+# something to do. An unrecognised field is a failure rather than a null,
+# because a null silently satisfies every assertion that follows.
+metrics_unknown_fields=""
+metrics_fixture() {
+  local fields="$1"
+  local -a requested
+  local i field value object out=""
+  local -a states=("MERGED" "CLOSED" "OPEN")
+  local -a logins=("app/renovate" "Danathar" "copilot-swe-agent")
+  local -a conclusions=("success" "failure" "success")
+  IFS=',' read -ra requested <<<"${fields}"
+  for i in 0 1 2; do
+    object=""
+    for field in "${requested[@]}"; do
+      case "${field}" in
+        state) value="\"${states[i]}\"" ;;
+        author) value="{\"login\":\"${logins[i]}\"}" ;;
+        createdAt) value="\"2026-09-0$((i + 1))T10:00:00Z\"" ;;
+        mergedAt) value="\"2026-09-0$((i + 1))T12:00:00Z\"" ;;
+        updatedAt) value="\"2026-09-0$((i + 1))T11:30:00Z\"" ;;
+        number | databaseId) value="$((100 + i))" ;;
+        conclusion) value="\"${conclusions[i]}\"" ;;
+        workflowName) value="\"Build container image\"" ;;
+        *)
+          metrics_unknown_fields+="${field} "
+          value="null"
+          ;;
+      esac
+      object+="\"${field}\":${value},"
+    done
+    out+="{${object%,}},"
+  done
+  printf '[%s]' "${out%,}"
+}
+
+# jq prints a string result with its quotes and with newlines escaped; the
+# programs here are laid out across several lines for readability, so compare
+# the values rather than the whitespace the document happens to use.
+metrics_norm() {
+  tr '\n' ' ' | sed 's/\\n/ /g; s/"//g' | tr -s ' ' | sed 's/^ //; s/ $//'
+}
+
+metrics_prs='[
+  {"state":"MERGED","author":{"login":"app/renovate"}},
+  {"state":"MERGED","author":{"login":"app/renovate"}},
+  {"state":"CLOSED","author":{"login":"app/renovate"}},
+  {"state":"MERGED","author":{"login":"Danathar"}},
+  {"state":"OPEN","author":{"login":"Danathar"}},
+  {"state":"CLOSED","author":{"login":"copilot-swe-agent"}}
+]'
+metrics_merged='[
+  {"createdAt":"2026-09-01T10:00:00Z","mergedAt":"2026-09-01T20:00:00Z","author":{"login":"app/renovate"}},
+  {"createdAt":"2026-09-02T10:00:00Z","mergedAt":"2026-09-02T11:00:00Z","author":{"login":"Danathar"}},
+  {"createdAt":"2026-09-03T10:00:00Z","mergedAt":"2026-09-03T12:00:00Z","author":{"login":"Danathar"}}
+]'
+metrics_runs='[
+  {"conclusion":"success","workflowName":"Build container image"},
+  {"conclusion":"failure","workflowName":"Build container image"},
+  {"conclusion":"success","workflowName":"Nightly compliance"}
+]'
+metrics_durations='[
+  {"databaseId":1,"createdAt":"2026-09-01T10:00:00Z","updatedAt":"2026-09-01T11:30:00Z"}
+]'
+
+metrics_programs=0
+metrics_value_checks=0
+metrics_broken=""
+metrics_unrequested=""
+while IFS= read -r -d $'\004' metrics_record; do
+  metrics_fields="${metrics_record%%$'\003'*}"
+  metrics_program="${metrics_record#*$'\003'}"
+  [[ -n "${metrics_program}" ]] || continue
+  metrics_programs=$((metrics_programs + 1))
+
+  # The program runs, against exactly the fields its own command requested.
+  if [[ -n "${metrics_fields}" ]]; then
+    metrics_out="$(metrics_fixture "${metrics_fields}" | jq "${metrics_program}" 2>&1)" ||
+      metrics_broken+="[${metrics_fields}] ${metrics_out//$'\n'/ } | "
+    [[ -n "${metrics_out}" ]] ||
+      metrics_broken+="[${metrics_fields}] produced no output | "
+
+    # Every field the filter reads was asked for. gh returns only the
+    # requested keys, so a filter that reads one more computes over null and
+    # reports a wrong number instead of an error.
+    while IFS= read -r metrics_read_field; do
+      [[ -n "${metrics_read_field}" ]] || continue
+      grep -qx -- "${metrics_read_field}" <<<"${metrics_fields//,/$'\n'}" ||
+        metrics_unrequested+="${metrics_read_field} (not in --json ${metrics_fields}) "
+    done < <(printf '%s' "${metrics_program}" | metrics_program_fields)
+  fi
+
+  # The headline figures, computed by the document's own filters.
+  metrics_sorted_fields="$(tr ',' '\n' <<<"${metrics_fields}" | sort | paste -sd, -)"
+  case "${metrics_sorted_fields}" in
+    state)
+      metrics_value_checks=$((metrics_value_checks + 1))
+      assert_equal "docs/metrics.md's PR-state breakdown counts each state" \
+        "$(jq "${metrics_program}" <<<"${metrics_prs}" | metrics_norm)" \
+        "CLOSED: 2 MERGED: 3 OPEN: 1"
+      ;;
+    author,state)
+      metrics_value_checks=$((metrics_value_checks + 1))
+      if [[ "${metrics_program}" == *'startswith("app/")'* ]]; then
+        assert_equal "docs/metrics.md's non-bot acceptance filter excludes app/ logins and nothing else" \
+          "$(jq -c "${metrics_program}" <<<"${metrics_prs}")" \
+          '{"total":3,"merged":1,"closed":1,"open":1}'
+      else
+        assert_equal "docs/metrics.md's per-author split totals each author's states" \
+          "$(jq "${metrics_program}" <<<"${metrics_prs}" | metrics_norm)" \
+          "Danathar: total 2, merged 1, closed 0 app/renovate: total 3, merged 2, closed 1 copilot-swe-agent: total 1, merged 0, closed 1"
+      fi
+      ;;
+    createdAt,mergedAt)
+      metrics_value_checks=$((metrics_value_checks + 1))
+      assert_equal "docs/metrics.md's time-to-merge reports the median and p90 in hours, not the mean" \
+        "$(jq -c "${metrics_program}" <<<"${metrics_merged}")" \
+        '{"count":3,"median":2,"p90":10}'
+      ;;
+    author,createdAt,mergedAt)
+      metrics_value_checks=$((metrics_value_checks + 1))
+      assert_equal "docs/metrics.md's review-latency median drops the bot PRs first" \
+        "$(jq -c "${metrics_program}" <<<"${metrics_merged}")" \
+        '{"count":2,"median":2}'
+      ;;
+    conclusion,workflowName)
+      metrics_value_checks=$((metrics_value_checks + 1))
+      assert_equal "docs/metrics.md's CI health counts successes per workflow" \
+        "$(jq "${metrics_program}" <<<"${metrics_runs}" | metrics_norm)" \
+        "Build container image: 1/2 green Nightly compliance: 1/1 green"
+      ;;
+    createdAt,databaseId,updatedAt)
+      metrics_value_checks=$((metrics_value_checks + 1))
+      assert_equal "docs/metrics.md's run-duration filter reports whole minutes" \
+        "$(jq "${metrics_program}" <<<"${metrics_durations}" | metrics_norm)" \
+        "90"
+      ;;
+  esac
+done < <(metrics_jq_records)
+
+assert_equal "every gh command in docs/metrics.md still carries a jq program" \
+  "${metrics_programs}" "9"
+assert_equal "every figure docs/metrics.md quotes is still computed by one of its own filters" \
+  "${metrics_value_checks}" "7"
+
+if [[ -z "${metrics_broken}" ]]; then
+  pass "every jq program in docs/metrics.md runs against the fields its command requests"
+else
+  fail "every jq program in docs/metrics.md runs against the fields its command requests" \
+    "${metrics_broken}"
+fi
+
+if [[ -z "${metrics_unknown_fields}" ]]; then
+  pass "every --json field docs/metrics.md requests has a fixture shape here"
+else
+  fail "every --json field docs/metrics.md requests has a fixture shape here" \
+    "unknown field(s): ${metrics_unknown_fields}-- add them to metrics_fixture or the filters run against null"
+fi
+
+if [[ -z "${metrics_unrequested}" ]]; then
+  pass "no jq program in docs/metrics.md reads a field its --json never requested"
+else
+  fail "no jq program in docs/metrics.md reads a field its --json never requested" \
+    "${metrics_unrequested}"
+fi
+
+# -- The claims about the machine -------------------------------------------
+
+# "gh run list --workflow <name>" matches on the workflow's `name:`, not its
+# filename, so renaming the workflow turns this command into an empty table
+# rather than an error.
+metrics_workflow_names="$(grep -oE -- '--workflow "[^"]+"' "${METRICS_DOC}" | sed 's/^--workflow "//; s/"$//' | sort -u)"
+if [[ -z "${metrics_workflow_names}" ]]; then
+  fail "docs/metrics.md still names a workflow to measure" \
+    "no --workflow argument found; the CI duration command is gone"
+else
+  metrics_missing_workflows=""
+  while IFS= read -r want; do
+    grep -qxF -- "name: ${want}" .github/workflows/*.y*ml || metrics_missing_workflows+="${want}; "
+  done <<<"${metrics_workflow_names}"
+  if [[ -z "${metrics_missing_workflows}" ]]; then
+    pass "every workflow docs/metrics.md measures by name exists under .github/workflows/"
+  else
+    fail "every workflow docs/metrics.md measures by name exists under .github/workflows/" \
+      "no workflow declares: ${metrics_missing_workflows}"
+  fi
+fi
+
+# "--branch main" is only the right question while main is what the workflows
+# build.
+metrics_branches="$(grep -oE -- '--branch [A-Za-z0-9._/-]+' "${METRICS_DOC}" | awk '{print $2}' | sort -u)"
+if [[ -z "${metrics_branches}" ]]; then
+  fail "docs/metrics.md still reads CI health from a branch" "no --branch argument found"
+else
+  metrics_missing_branches=""
+  while IFS= read -r want; do
+    awk -v want="${want}" '
+      /^  push:/ { in_push = 1; next }
+      in_push && /^  [a-z_]+:/ { in_push = 0 }
+      in_push && $0 ~ ("^      - " want "$") { found = 1 }
+      END { exit(found ? 0 : 1) }
+    ' "${BUILD_WORKFLOW}" || metrics_missing_branches+="${want}; "
+  done <<<"${metrics_branches}"
+  if [[ -z "${metrics_missing_branches}" ]]; then
+    pass "the branch docs/metrics.md measures is one the build workflow runs on push"
+  else
+    fail "the branch docs/metrics.md measures is one the build workflow runs on push" \
+      "${BUILD_WORKFLOW} does not build: ${metrics_missing_branches}"
+  fi
+fi
+
+# "the daily schedule plus PACMAN_CACHE_BUST mean every build genuinely pulls
+# today's packages" -- both halves, or the sentence is wrong in a way that
+# makes a rising failure rate look like a bad commit.
+metrics_cron="$(grep -oE -- '- cron: "[^"]+"' "${BUILD_WORKFLOW}" | sed 's/^- cron: "//; s/"$//')"
+if [[ -z "${metrics_cron}" ]]; then
+  fail "the build workflow still runs on a schedule" \
+    "docs/metrics.md: 'the daily schedule ... mean every build genuinely pulls today's packages'"
+elif [[ "$(awk '{print $3, $4, $5}' <<<"${metrics_cron}")" == "* * *" ]]; then
+  pass "the build workflow's schedule fires daily, as docs/metrics.md's CI-health reading assumes"
+else
+  fail "the build workflow's schedule fires daily, as docs/metrics.md's CI-health reading assumes" \
+    "cron '${metrics_cron}' restricts the day of month, month or weekday"
+fi
+
+assert_present "the build workflow still passes PACMAN_CACHE_BUST, which docs/metrics.md credits for fresh packages" \
+  "${BUILD_WORKFLOW}" 'PACMAN_CACHE_BUST=' \
+  "docs/metrics.md reads a rising failure rate as Arch moving, which only holds while the cache is busted per build"
+
+assert_present "the Containerfile still declares the PACMAN_CACHE_BUST argument the build passes" \
+  "${CONTAINERFILE}" '^ARG PACMAN_CACHE_BUST'
+
+# "The coverage floors in .coverage-thresholds.json already gate this per
+# script" -- the document's stated reason for not measuring test count. Every
+# key must still name a script that exists, or the floor gates nothing.
+metrics_thresholds=".coverage-thresholds.json"
+if [[ ! -f "${metrics_thresholds}" ]]; then
+  fail "the per-script coverage floors docs/metrics.md defers to exist" \
+    "${metrics_thresholds} is missing"
+else
+  metrics_missing_scripts=""
+  while IFS= read -r script; do
+    [[ -n "${script}" ]] || continue
+    [[ -f "${script}" ]] || metrics_missing_scripts+="${script}; "
+  done < <(jq -r 'keys[]' "${metrics_thresholds}")
+  if [[ -z "${metrics_missing_scripts}" ]]; then
+    pass "every script docs/metrics.md's coverage floors gate still exists"
+  else
+    fail "every script docs/metrics.md's coverage floors gate still exists" \
+      "${metrics_missing_scripts}"
+  fi
+  assert_present "the coverage floors are read by the checker CI runs, not just recorded" \
+    "tests/check-coverage.sh" 'coverage-thresholds\.json'
+fi
+
+# "There is no metrics service and no scheduled job writing numbers anywhere."
+# The scheduled jobs in this repository are nightly-compliance.yml and the
+# build itself; neither may acquire a step that regenerates this file.
+metrics_writers="$(grep -rl -- 'metrics\.md' .github scripts system_files Justfile 2>/dev/null)"
+if [[ -z "${metrics_writers}" ]]; then
+  pass "nothing in the build machine reads or rewrites docs/metrics.md, as the document states"
+else
+  fail "nothing in the build machine reads or rewrites docs/metrics.md, as the document states" \
+    "docs/metrics.md: 'no scheduled job writing numbers anywhere', but: ${metrics_writers//$'\n'/ | }"
+fi
+
+# "Bot PRs automerge on a green build" -- the reason the document tells a
+# reader to filter them out before calling the median a review latency.
+assert_present "Renovate still automerges, which is why docs/metrics.md reads bot time-to-merge as CI duration" \
+  "renovate.json" '"automerge": true'
+
+# -- The snapshot -----------------------------------------------------------
+#
+# Recomputed by hand, in four places that must agree: the table's counts, the
+# acceptance rates derived from them, the by-author line, and the prose below
+# the table that restates two of the figures in different units.
+metrics_row() {
+  grep -E "^\| $1 \|" "${METRICS_DOC}" | head -1 | awk -F'|' '{print $3}' | sed 's/^ *//; s/ *$//'
+}
+
+metrics_opened="$(metrics_row 'PRs opened, all time')"
+metrics_merged_count="$(metrics_row 'Merged')"
+metrics_closed_count="$(metrics_row 'Closed unmerged')"
+metrics_open_count="$(metrics_row 'Open')"
+
+if [[ "${metrics_opened}" =~ ^[0-9]+$ && "${metrics_merged_count}" =~ ^[0-9]+$ &&
+  "${metrics_closed_count}" =~ ^[0-9]+$ && "${metrics_open_count}" =~ ^[0-9]+$ ]]; then
+  assert_equal "docs/metrics.md's snapshot accounts for every PR it says was opened" \
+    "$((metrics_merged_count + metrics_closed_count + metrics_open_count))" \
+    "${metrics_opened}"
+
+  # The all-time commands are capped at --limit 200. A snapshot taken past the
+  # cap is silently a count of the most recent 200 PRs, not of all of them.
+  metrics_limit="$(grep -oE -- '--state all --limit [0-9]+' "${METRICS_DOC}" | awk '{print $NF}' | sort -n | head -1)"
+  if [[ -z "${metrics_limit}" ]]; then
+    fail "docs/metrics.md's all-time commands still carry a --limit" "no '--state all --limit N' found"
+  elif ((metrics_limit >= metrics_opened)); then
+    pass "docs/metrics.md's --limit still covers every PR its snapshot counts"
+  else
+    fail "docs/metrics.md's --limit still covers every PR its snapshot counts" \
+      "--limit ${metrics_limit} truncates a repository with ${metrics_opened} PRs; the snapshot would undercount"
+  fi
+else
+  fail "docs/metrics.md's snapshot table still reports whole PR counts" \
+    "opened='${metrics_opened}' merged='${metrics_merged_count}' closed='${metrics_closed_count}' open='${metrics_open_count}'"
+fi
+
+# "106 / 110 resolved (96%)" -- numerator, denominator and percentage, each
+# derivable from the counts above.
+metrics_rate_all="$(metrics_row 'Acceptance rate, all authors')"
+if [[ "${metrics_rate_all}" =~ ^([0-9]+)\ /\ ([0-9]+)\ resolved\ \(([0-9]+)%\)$ ]]; then
+  assert_equal "docs/metrics.md's all-author acceptance numerator is its own merged count" \
+    "${BASH_REMATCH[1]}" "${metrics_merged_count}"
+  assert_equal "docs/metrics.md's all-author acceptance denominator counts resolved PRs only" \
+    "${BASH_REMATCH[2]}" "$((metrics_merged_count + metrics_closed_count))"
+  assert_equal "docs/metrics.md's all-author acceptance percentage matches its own fraction" \
+    "${BASH_REMATCH[3]}" \
+    "$((BASH_REMATCH[1] * 100 / BASH_REMATCH[2]))"
+else
+  fail "docs/metrics.md records the all-author acceptance rate as 'N / M resolved (P%)'" \
+    "found '${metrics_rate_all}'"
+fi
+
+metrics_rate_nonbot="$(metrics_row 'Acceptance rate, excluding bots')"
+if [[ "${metrics_rate_nonbot}" =~ ^([0-9]+)\ /\ ([0-9]+)\ resolved\ \(([0-9]+)%\)$ ]]; then
+  assert_equal "docs/metrics.md's non-bot acceptance percentage matches its own fraction" \
+    "${BASH_REMATCH[3]}" \
+    "$((BASH_REMATCH[1] * 100 / BASH_REMATCH[2]))"
+  # The prose under the table restates this one in words.
+  assert_present "the caveat under the table restates the non-bot acceptance rate the table reports" \
+    "${METRICS_DOC}" "a ${BASH_REMATCH[3]}% non-bot acceptance rate" \
+    "the table and the paragraph explaining it disagree"
+else
+  fail "docs/metrics.md records the non-bot acceptance rate as 'N / M resolved (P%)'" \
+    "found '${metrics_rate_nonbot}'"
+fi
+
+# "By author: Renovate 81 (76 merged, 3 closed), ..." -- the same population,
+# split. Its parts must add back up to the table.
+metrics_author_totals=0
+metrics_author_merged=0
+metrics_author_closed=0
+metrics_author_entries=0
+while read -r total merged closed; do
+  metrics_author_entries=$((metrics_author_entries + 1))
+  metrics_author_totals=$((metrics_author_totals + total))
+  metrics_author_merged=$((metrics_author_merged + merged))
+  metrics_author_closed=$((metrics_author_closed + closed))
+done < <(grep -oE '[0-9]+ \([0-9]+ merged(, [0-9]+ closed)?\)' "${METRICS_DOC}" |
+  sed -E 's/^([0-9]+) \(([0-9]+) merged(, ([0-9]+) closed)?\)$/\1 \2 \4/' |
+  awk '{print $1, $2, ($3 == "" ? 0 : $3)}')
+
+if ((metrics_author_entries == 0)); then
+  fail "docs/metrics.md still splits its snapshot by author" \
+    "no 'N (M merged, C closed)' entries found; the by-author line is gone"
+else
+  assert_equal "docs/metrics.md's by-author totals add up to the PRs it says were opened" \
+    "${metrics_author_totals}" "${metrics_opened}"
+  assert_equal "docs/metrics.md's by-author merged counts add up to its merged row" \
+    "${metrics_author_merged}" "${metrics_merged_count}"
+  assert_equal "docs/metrics.md's by-author closed counts add up to its closed row" \
+    "${metrics_author_closed}" "${metrics_closed_count}"
+fi
+
+# "Median time to merge, excluding bots | ~0.4 h" against "The non-bot median
+# of about 24 minutes" three paragraphs later: same number, two units.
+metrics_median_hours="$(metrics_row 'Median time to merge, excluding bots' | tr -d '~h ')"
+metrics_median_minutes="$(grep -oE 'median of about [0-9]+ minutes' "${METRICS_DOC}" | awk '{print $4}')"
+if [[ "${metrics_median_hours}" =~ ^[0-9.]+$ && "${metrics_median_minutes}" =~ ^[0-9]+$ ]]; then
+  assert_equal "docs/metrics.md's non-bot median reads the same in hours and in minutes" \
+    "${metrics_median_minutes}" \
+    "$(awk -v h="${metrics_median_hours}" 'BEGIN { printf "%d", h * 60 + 0.5 }')"
+else
+  fail "docs/metrics.md states the non-bot median in both hours and minutes" \
+    "table='${metrics_median_hours}' prose='${metrics_median_minutes}'"
+fi
+
+# The snapshot is explicitly a dated hand recomputation. A date that does not
+# parse is a snapshot nobody can place, and one in the future is a typo.
+metrics_asof="$(grep -oE '^\*\*As of [0-9]{4}-[0-9]{2}-[0-9]{2}:\*\*$' "${METRICS_DOC}" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')"
+if [[ -z "${metrics_asof}" ]]; then
+  fail "docs/metrics.md dates its snapshot" \
+    "no '**As of YYYY-MM-DD:**' line; the table reads as current when it is not"
+elif [[ "${metrics_asof}" > "$(date -u +%F)" ]]; then
+  fail "docs/metrics.md's snapshot date is not in the future" "as of ${metrics_asof}"
+else
+  pass "docs/metrics.md dates its snapshot, and the date has passed"
+fi
+
+fi
+# ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then
   printf 'invariants: %d of %d check(s) failed\n' "${failures}" "${checks_run}" >&2
