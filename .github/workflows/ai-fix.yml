@@ -35,7 +35,7 @@ concurrency:
 jobs:
   work-order:
     name: Post a work order
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     # Only the label that means it, and never for a fork pull request: a fork's
     # GITHUB_TOKEN is read-only regardless of the permissions requested below,
