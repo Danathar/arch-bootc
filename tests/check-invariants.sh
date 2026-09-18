@@ -3168,6 +3168,371 @@ else
 fi
 
 fi
+
+# ---------------------------------------------------------------------------
+group "VM runbook (docs/vm-workflow.md is a hand copy of scripts/quickstart.sh's virt-install and of the guest-agent contract)"
+
+# docs/vm-workflow.md is the document a reader follows once a qcow2 exists. It
+# is prose around four things the tree owns: the `virt-install` invocation
+# scripts/quickstart.sh runs, the teardown pair that script prints, the disk
+# filename the Justfile's default size produces, and the guest-agent contract
+# the Containerfile deliberately leaves to a udev rule.
+#
+# Every one of those is a hand copy. `just quickstart` and this document create
+# the same VM by two different routes, so a flag changed in the script -- or a
+# feature index swapped in the firmware string -- leaves the document telling a
+# reader to build a different machine, and nothing here noticed. The document
+# also hands out a base64 blob to paste: if that stops decoding to what its own
+# sentence claims, the reader sets a password they cannot predict.
+
+VM_DOC="docs/vm-workflow.md"
+
+# Fenced blocks by info string: a `# comment` inside a ```bash block is shell,
+# and a value inside a ```json block would not be a command to run.
+vm_fenced() {
+  local want="$1"
+  awk -v want="${want}" '
+    /^```/ { if (in_block) { in_block = 0 } else { in_block = (substr($0, 4) == want) } ; next }
+    in_block' "${VM_DOC}"
+}
+
+# One `--flag value` per line from the first virt-install invocation on stdin.
+# Comments are dropped, backslash continuations are joined, a trailing `|| ...`
+# is cut off (the script's invocation captures its status that way), and quotes
+# are stripped so the script's `--disk "path=..."` compares against the
+# document's unquoted spelling.
+virt_install_options() {
+  sed -e 's/^[[:space:]]*#.*$//' -e ':a' -e '/\\$/N' -e 's/\\\n[[:space:]]*/ /' -e 'ta' |
+    grep -oE 'virt-install[[:space:]]+--.*' |
+    head -1 |
+    sed -e 's/^virt-install[[:space:]]*//' -e 's/[[:space:]]*||.*$//' -e 's/[[:space:]]*--/\n--/g' |
+    sed -e 's/[[:space:]]*$//' -e 's/"//g' |
+    grep '^--'
+}
+
+if [[ ! -f "${VM_DOC}" ]]; then
+  fail "the VM runbook exists" "${VM_DOC} is missing; README.md's documentation table links to it"
+else
+
+vm_headings="$(awk '/^```/ { in_block = !in_block; next } !in_block && /^#{1,6} /' "${VM_DOC}")"
+
+# README.md's table is the only index of what this document covers, and it
+# advertises both halves. Assert they are still sections here, or the
+# extractions below start passing by finding nothing to check.
+vm_missing_sections=""
+while IFS= read -r want; do
+  grep -qi -- "${want}" <<<"${vm_headings}" || vm_missing_sections+="${want}; "
+done <<'SECTIONS'
+Create VM
+Running commands in the VM from the host
+SECTIONS
+if [[ -z "${vm_missing_sections}" ]]; then
+  pass "docs/vm-workflow.md still has the sections README.md's table advertises"
+else
+  fail "docs/vm-workflow.md still has the sections README.md's table advertises" \
+    "missing: ${vm_missing_sections}"
+fi
+
+assert_present "README.md's documentation table still links to the VM runbook" \
+  "README.md" '\]\(docs/vm-workflow\.md\)'
+
+assert_doc_links_resolve "${VM_DOC}" \
+  "no relative links found; the hand-off to installation.md and first-boot.md is gone"
+
+# --- The virt-install invocation --------------------------------------------
+
+vm_doc_options="$(vm_fenced bash | virt_install_options)"
+vm_quickstart_options="$(virt_install_options <"${QUICKSTART}")"
+
+if [[ -z "${vm_doc_options}" ]]; then
+  fail "docs/vm-workflow.md still shows the reader a virt-install command" \
+    "no virt-install invocation in any \`\`\`bash block"
+elif [[ -z "${vm_quickstart_options}" ]]; then
+  fail "${QUICKSTART} still creates the VM with virt-install" \
+    "no virt-install invocation found; the document is a copy of nothing"
+else
+  # Same options, in both directions. The document omitting one the script
+  # passes is the interesting failure: `--import` or the firmware string
+  # dropped from the document produces a VM that installs from nothing, or one
+  # that refuses to boot an unsigned image.
+  vm_doc_option_names="$(cut -d' ' -f1 <<<"${vm_doc_options}" | sort -u | tr '\n' ' ')"
+  vm_quickstart_option_names="$(cut -d' ' -f1 <<<"${vm_quickstart_options}" | sort -u | tr '\n' ' ')"
+  assert_equal "docs/vm-workflow.md passes virt-install exactly the options ${QUICKSTART} passes" \
+    "${vm_doc_option_names}" "${vm_quickstart_option_names}"
+
+  # And the same values, for every option whose value is not the manual
+  # track's own. --name, --memory and --vcpus are prompted by the script and
+  # fixed in the document; --disk is the one place the two genuinely differ,
+  # because the script also attaches a cloud-init seed ISO and the document
+  # bootstraps through the guest agent instead. Everything else -- the
+  # connection, the CPU model, the network, the graphics stack, the firmware
+  # string, the osinfo id -- must read identically or the two routes produce
+  # different machines.
+  vm_shared_doc="$(grep -Ev '^--(name|memory|vcpus|disk)([[:space:]]|$)' <<<"${vm_doc_options}" | sort | tr '\n' '|')"
+  vm_shared_quickstart="$(grep -Ev '^--(name|memory|vcpus|disk)([[:space:]]|$)' <<<"${vm_quickstart_options}" | sort | tr '\n' '|')"
+  assert_equal "every virt-install option docs/vm-workflow.md shares with ${QUICKSTART} carries the same value" \
+    "${vm_shared_doc}" "${vm_shared_quickstart}"
+
+  vm_doc_name="$(grep '^--name ' <<<"${vm_doc_options}" | sed 's/^--name[[:space:]]*//')"
+  vm_doc_memory="$(grep '^--memory ' <<<"${vm_doc_options}" | sed 's/^--memory[[:space:]]*//')"
+  vm_doc_vcpus="$(grep '^--vcpus ' <<<"${vm_doc_options}" | sed 's/^--vcpus[[:space:]]*//')"
+  vm_doc_disk="$(grep '^--disk ' <<<"${vm_doc_options}" | sed 's/^--disk[[:space:]]*//')"
+
+  # The script prompts for memory with a default. The document states a figure
+  # instead, and it is the same one -- a reader following either route gets the
+  # same guest.
+  vm_quickstart_memory="$(sed -n 's/^[[:space:]]*ask VM_MEMORY "[^"]*" "\([^"]*\)".*/\1/p' "${QUICKSTART}" | head -1)"
+  assert_equal "the memory docs/vm-workflow.md gives the guest is ${QUICKSTART}'s default" \
+    "${vm_doc_memory}" "${vm_quickstart_memory}"
+
+  # The section's opening sentence restates the flags in units a reader reads
+  # rather than the ones virt-install takes. Both halves are hand-written.
+  if [[ "${vm_doc_memory}" =~ ^[0-9]+$ ]] && ((vm_doc_memory % 1024 == 0)); then
+    assert_equal "the RAM docs/vm-workflow.md's opening sentence promises is the --memory it passes" \
+      "$(grep -oE '[0-9]+GB RAM' "${VM_DOC}" | head -1)" "$((vm_doc_memory / 1024))GB RAM"
+  else
+    fail "the RAM docs/vm-workflow.md's opening sentence promises is the --memory it passes" \
+      "--memory '${vm_doc_memory}' is not a whole number of GiB"
+  fi
+  assert_equal "the vCPU count docs/vm-workflow.md's opening sentence promises is the --vcpus it passes" \
+    "$(grep -oE '[0-9]+ vCPU' "${VM_DOC}" | head -1)" "${vm_doc_vcpus} vCPU"
+
+  # --- The firmware string ---------------------------------------------------
+  #
+  # "UEFI, Secure Boot disabled" is one comma-separated `--boot` value, and the
+  # feature *indices* carry the meaning: feature0 and feature1 are positional
+  # slots, so swapping the two `name=` halves while leaving both `enabled=no`
+  # in place still reads as disabled to a skimming eye and turns Secure Boot
+  # back on. Resolve each feature by name and read that index's own flag.
+  vm_boot="$(grep '^--boot ' <<<"${vm_doc_options}" | sed 's/^--boot[[:space:]]*//')"
+  vm_boot_fields="$(tr ',' '\n' <<<"${vm_boot}")"
+  assert_equal "docs/vm-workflow.md boots the guest with the firmware its opening sentence names" \
+    "$(head -1 <<<"${vm_boot_fields}")" "uefi"
+  assert_present "docs/vm-workflow.md still tells the reader Secure Boot is off" \
+    "${VM_DOC}" 'Secure Boot disabled'
+  for vm_feature in secure-boot enrolled-keys; do
+    vm_feature_index="$(sed -n "s/^firmware\.feature\([0-9]\+\)\.name=${vm_feature}\$/\1/p" <<<"${vm_boot_fields}")"
+    if [[ -z "${vm_feature_index}" ]]; then
+      fail "docs/vm-workflow.md's firmware string still names the ${vm_feature} feature" \
+        "--boot ${vm_boot}"
+      continue
+    fi
+    assert_equal "docs/vm-workflow.md disables the firmware feature it labels ${vm_feature}" \
+      "$(sed -n "s/^firmware\.feature${vm_feature_index}\.enabled=//p" <<<"${vm_boot_fields}")" "no"
+  done
+
+  # --- The disk ---------------------------------------------------------------
+  #
+  # The filename is a literal the reader types, and it encodes the Justfile's
+  # default disk size. `BUILD_DISK_SIZE` changed without this document changing
+  # leaves the reader importing a qcow2 that docs/installation.md never wrote.
+  vm_doc_qcow="${vm_doc_disk%%,*}"
+  vm_doc_qcow="${vm_doc_qcow#path=}"
+  vm_disk_size="$(sed -n 's/^disk_size := env("BUILD_DISK_SIZE", "\([^"]*\)").*/\1/p' "${JUSTFILE}")"
+  if [[ -z "${vm_disk_size}" ]]; then
+    fail "the Justfile still has a default disk size for docs/vm-workflow.md's filename to encode" \
+      "no 'disk_size := env(\"BUILD_DISK_SIZE\", ...)' in ${JUSTFILE}"
+  else
+    assert_equal "the qcow2 docs/vm-workflow.md imports is named for the Justfile's default disk size" \
+      "${vm_doc_qcow##*/}" "arch-bootc-$(tr '[:upper:]' '[:lower:]' <<<"${vm_disk_size}").qcow2"
+  fi
+
+  # The same file, under the same directory, as the convert step the reader ran
+  # one document earlier.
+  vm_install_qcow="$(grep -oE 'output/[A-Za-z0-9._-]+\.qcow2' "${INSTALL_DOC}" | sort -u)"
+  if [[ -z "${vm_install_qcow}" || "${vm_install_qcow}" == *$'\n'* ]]; then
+    fail "docs/installation.md writes exactly one qcow2 for docs/vm-workflow.md to import" \
+      "found: ${vm_install_qcow//$'\n'/ | }"
+  elif [[ "${vm_doc_qcow}" == */"${vm_install_qcow}" ]]; then
+    pass "docs/vm-workflow.md imports the qcow2 docs/installation.md's convert step writes"
+  else
+    fail "docs/vm-workflow.md imports the qcow2 docs/installation.md's convert step writes" \
+      "runbook: ${vm_doc_qcow}; installation.md: ${vm_install_qcow}"
+  fi
+
+  # The bus and format matter as much as the path: a qcow2 attached without
+  # `bus=virtio` boots, slowly, on an emulated controller the guest image has
+  # no reason to be tuned for.
+  vm_quickstart_qcow_disk="$(grep -E '^--disk .*format=qcow2' <<<"${vm_quickstart_options}" | head -1)"
+  assert_equal "docs/vm-workflow.md attaches the qcow2 the way ${QUICKSTART} attaches it" \
+    "${vm_doc_disk#*,}" "${vm_quickstart_qcow_disk#*,}"
+
+  # --- Teardown ---------------------------------------------------------------
+  #
+  # The document's recreate step and the script's closing "Remove it again"
+  # block are the same two commands. `--nvram` is the load-bearing half: undefine
+  # without it leaves the per-VM UEFI variable store behind, and the next
+  # virt-install inherits the old firmware state it just set up from scratch.
+  vm_doc_teardown="$(vm_fenced bash |
+    grep -E '^virsh .* (destroy|undefine) ' |
+    sed -e 's/[[:space:]]*||[[:space:]]*true$//' -e "s/[[:space:]]${vm_doc_name}\\b//" |
+    sort | tr '\n' '|')"
+  vm_quickstart_teardown="$(grep -oE 'virsh -c qemu:///session (destroy|undefine) [$][{]VM_NAME[}][^"]*' "${QUICKSTART}" |
+    sed -e 's/[[:space:]]*$//' -e 's/[[:space:]][$][{]VM_NAME[}]//' |
+    sort | tr '\n' '|')"
+  if [[ -z "${vm_doc_teardown}" ]]; then
+    fail "docs/vm-workflow.md still tells the reader how to delete and recreate the VM" \
+      "no virsh destroy/undefine pair in any \`\`\`bash block"
+  else
+    assert_equal "docs/vm-workflow.md tears the VM down with the commands ${QUICKSTART} prints" \
+      "${vm_doc_teardown}" "${vm_quickstart_teardown}"
+  fi
+
+  # --- The guest agent --------------------------------------------------------
+  #
+  # Same command, same connection, same payload as the script's "Watch it come
+  # up" line.
+  vm_doc_ping="$(vm_fenced bash | grep -F 'guest-ping' | head -1 |
+    sed -e "s/[[:space:]]${vm_doc_name}[[:space:]]/ VMNAME /")"
+  vm_quickstart_ping="$(grep -F 'guest-ping' "${QUICKSTART}" | head -1 |
+    sed -e 's/.*virsh/virsh/' -e 's/"$//' -e 's/\\//g' -e 's/[[:space:]][$][{]VM_NAME[}][[:space:]]/ VMNAME /')"
+  assert_equal "docs/vm-workflow.md pings the agent with the command ${QUICKSTART} prints" \
+    "${vm_doc_ping}" "${vm_quickstart_ping}"
+
+  vm_doc_connections="$(vm_fenced bash | grep -E '^[[:space:]]*virsh' | grep -vc 'qemu:///session')"
+  assert_equal "every virsh command docs/vm-workflow.md gives the reader targets the session connection it says it uses" \
+    "${vm_doc_connections}" "0"
+fi
+
+# --- The payloads the reader pastes ------------------------------------------
+#
+# These are JSON documents typed by hand into a shell string. `jq` is what
+# actually parses them on the way to the agent, so parse them here: a missing
+# brace or a trailing comma is a command that fails for every reader, and a
+# `capture-output` that went missing is a command that runs and returns
+# nothing to read.
+#
+# `<PID>` is the document's own placeholder for a number the previous command
+# printed. Substituting it is the only edit made before parsing.
+vm_payloads="$(vm_fenced bash | grep -o "'{.*}'" | sed -e "s/^'//" -e "s/'\$//" -e 's/<PID>/0/')"
+vm_payload_count="$(grep -c . <<<"${vm_payloads}")"
+[[ -n "${vm_payloads}" ]] || vm_payload_count=0
+if ((vm_payload_count == 0)); then
+  fail "docs/vm-workflow.md still hands the reader guest-agent payloads" "no '{...}' payload in any bash block"
+else
+  vm_bad_payloads=""
+  vm_exec_payloads=0
+  while IFS= read -r payload; do
+    [[ -n "${payload}" ]] || continue
+    if ! jq -e . >/dev/null 2>&1 <<<"${payload}"; then
+      vm_bad_payloads+="${payload} (not JSON) "
+      continue
+    fi
+    [[ "$(jq -r '.execute // empty' <<<"${payload}")" == "guest-exec" ]] || continue
+    vm_exec_payloads=$((vm_exec_payloads + 1))
+    # guest-exec takes no shell and no PATH: `path` is passed to the guest's
+    # exec directly, so a bare command name is a command the agent cannot find.
+    [[ "$(jq -r '.arguments.path // empty' <<<"${payload}")" == /* ]] ||
+      vm_bad_payloads+="${payload} (path is not absolute) "
+    # The document tells the reader to "read its output" from the result.
+    [[ "$(jq -r '.arguments["capture-output"] // empty' <<<"${payload}")" == "true" ]] ||
+      vm_bad_payloads+="${payload} (no capture-output) "
+  done <<<"${vm_payloads}"
+  if [[ -n "${vm_bad_payloads}" ]]; then
+    fail "every guest-agent payload docs/vm-workflow.md hands the reader parses and captures its output" \
+      "${vm_bad_payloads}"
+  elif ((vm_exec_payloads == 0)); then
+    fail "every guest-agent payload docs/vm-workflow.md hands the reader parses and captures its output" \
+      "${vm_payload_count} payload(s) found, none of them a guest-exec"
+  else
+    pass "every guest-agent payload docs/vm-workflow.md hands the reader parses, and each of its ${vm_exec_payloads} guest-exec calls captures output"
+  fi
+
+  # The document says the result is read back by pid. Without that second
+  # command the reader has a pid and no way to learn whether the command worked,
+  # which is exactly what the section's closing sentence tells them to check.
+  assert_equal "docs/vm-workflow.md reads each guest-exec result back with guest-exec-status" \
+    "$(jq -rs '[.[] | select(.execute == "guest-exec-status") | .arguments.pid] | length' <<<"${vm_payloads}")" "1"
+  assert_present "docs/vm-workflow.md still tells the reader to confirm the exit code" \
+    "${VM_DOC}" 'exitcode.:0'
+
+  # --- The account the reader creates ---------------------------------------
+  #
+  # This is the same account docs/first-boot.md creates from a console and
+  # scripts/quickstart.sh seeds through cloud-init. uid 1000 and `wheel` are
+  # what make it the machine's first admin user; either one changed here and
+  # the reader ends up with an account that cannot sudo, or one that collides
+  # with the seeded user on a VM built the other way.
+  vm_useradd_args="$(jq -rs '[.[] | select(.arguments.path? // "" | endswith("/useradd")) | .arguments.arg | join(" ")] | .[0] // empty' <<<"${vm_payloads}")"
+  if [[ -z "${vm_useradd_args}" ]]; then
+    fail "docs/vm-workflow.md still bootstraps the first admin user through the agent" \
+      "no guest-exec payload runs useradd"
+  else
+    vm_doc_uid="$(sed -n 's/.*-u \([0-9]\+\).*/\1/p' <<<"${vm_useradd_args}")"
+    vm_doc_groups="$(sed -n 's/.*-G \([A-Za-z0-9,_-]\+\).*/\1/p' <<<"${vm_useradd_args}")"
+    vm_seed_uid="$(grep -oE 'uid: [0-9]+' "${QUICKSTART}" | head -1 | sed 's/uid: //')"
+    assert_equal "the uid docs/vm-workflow.md gives the first admin user is the one ${QUICKSTART} seeds" \
+      "${vm_doc_uid}" "${vm_seed_uid}"
+    assert_equal "the groups docs/vm-workflow.md gives the first admin user are the ones ${QUICKSTART} seeds" \
+      "[${vm_doc_groups}]" "$(grep -oE 'groups: \[[A-Za-z0-9, _-]+\]' "${QUICKSTART}" | head -1 | sed 's/groups: //')"
+  fi
+
+  # --- The base64 blob ------------------------------------------------------
+  #
+  # A reader cannot see what this decodes to; the sentence above it is the only
+  # description they get. chpasswd reads `user:password` lines from stdin, so a
+  # blob that decoded to something else -- or that lost its trailing newline --
+  # sets a password nobody can predict, on an account that already exists.
+  vm_chpasswd_b64="$(jq -rs '[.[] | select(.arguments.path? // "" | endswith("/chpasswd")) | .arguments["input-data"]] | .[0] // empty' <<<"${vm_payloads}")"
+  if [[ -z "${vm_chpasswd_b64}" ]]; then
+    fail "docs/vm-workflow.md still sets the new account's password through the agent" \
+      "no guest-exec payload runs chpasswd with input-data"
+  elif ! vm_chpasswd_plain="$(base64 -d <<<"${vm_chpasswd_b64}" 2>/dev/null)"; then
+    fail "docs/vm-workflow.md's chpasswd input-data is valid base64" "${vm_chpasswd_b64}"
+  else
+    assert_equal "docs/vm-workflow.md's chpasswd input-data decodes to the line its own sentence describes" \
+      "${vm_chpasswd_plain}" "$(sed -n 's/.*input-data is base64 of "\(.*\)\\n".*/\1/p' "${VM_DOC}" | head -1)"
+    # Command substitution eats a trailing newline, so count the bytes rather
+    # than compare the strings: that newline is what makes chpasswd read the
+    # line at all.
+    assert_equal "docs/vm-workflow.md's chpasswd input-data ends in the newline chpasswd needs to read the line" \
+      "$(base64 -d <<<"${vm_chpasswd_b64}" | wc -c)" "$((${#vm_chpasswd_plain} + 1))"
+    # And it is the *same* placeholder the useradd above created, not a second
+    # one a reader would have to notice and reconcile.
+    if [[ -n "${vm_useradd_args}" ]]; then
+      assert_equal "the account docs/vm-workflow.md sets a password for is the one it just created" \
+        "${vm_chpasswd_plain%%:*}" "${vm_useradd_args##* }"
+    fi
+  fi
+fi
+
+# --- What makes the agent reachable at all -----------------------------------
+#
+# "The image installs qemu-guest-agent" is a claim about every flavor, so the
+# package must be in the base list rather than a desktop one.
+vm_agent_package_files="$(for f in packages-*.txt; do grep -qx 'qemu-guest-agent' "${f}" && printf '%s ' "${f}"; done)"
+assert_equal "qemu-guest-agent, which docs/vm-workflow.md says the image installs, is in the base package list only" \
+  "${vm_agent_package_files% }" "packages-base.txt"
+
+# The document tells the reader nothing needs enabling: the package's udev rule
+# starts the service when the channel appears. The Containerfile's comment says
+# the same thing and explains why force-enabling it would restart-loop on bare
+# metal -- a symlink added into multi-user.target.wants would make both wrong.
+assert_absent "qemu-guest-agent is left to its udev rule, as docs/vm-workflow.md's 'started automatically' promises" \
+  "${CONTAINERFILE}" 'multi-user\.target\.wants/qemu-guest-agent' \
+  "docs/vm-workflow.md: 'started automatically by its udev rule'; the unit has an empty [Install] section and Restart=always"
+
+# The channel name is the udev rule's trigger, and the document names it. Both
+# spellings are hand-written.
+assert_equal "the agent channel docs/vm-workflow.md names is the one the Containerfile names" \
+  "$(grep -oE 'org\.qemu\.guest_agent\.[0-9]+' "${VM_DOC}" | sort -u | tr '\n' ' ')" \
+  "$(grep -oE 'org\.qemu\.guest_agent\.[0-9]+' "${CONTAINERFILE}" | sort -u | tr '\n' ' ')"
+
+# --- The closing sentence ----------------------------------------------------
+#
+# "`sudo` already works via `wheel`" is true only because the image ships a
+# sudoers drop-in granting it. Nothing else in this tree would give a wheel
+# member anything: Arch ships that line commented out.
+assert_present "the image grants wheel sudo, which is docs/vm-workflow.md's 'sudo already works via wheel'" \
+  "${CONTAINERFILE}" '%wheel[[:space:]]+ALL=\(ALL:ALL\)[[:space:]]+ALL' \
+  "docs/vm-workflow.md ends by telling the reader sudo works; Arch's own sudoers ships that grant commented out"
+
+assert_present "that sudoers drop-in is validated before the layer is accepted" \
+  "${CONTAINERFILE}" 'visudo -cf /etc/sudoers\.d/' \
+  "an unparsable drop-in locks every wheel member out of sudo, and the build would not notice"
+
+fi
+
 # ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then
