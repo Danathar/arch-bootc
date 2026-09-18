@@ -35,7 +35,7 @@ concurrency:
 jobs:
   invariants:
     name: Repository invariants
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Static reads of a checked-out tree. Anything past 5 minutes is a hang.
     timeout-minutes: 5
     permissions:
@@ -51,7 +51,7 @@ jobs:
 
   bootc-pin:
     name: bootc tag still resolves to the pinned commit
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -104,7 +104,7 @@ jobs:
 
   signatures:
     name: Published ${{ matrix.flavor }} image is signed by this repository's key
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     strategy:
       fail-fast: false

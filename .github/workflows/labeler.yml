@@ -15,7 +15,7 @@ concurrency:
 jobs:
   label:
     name: Apply path labels
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Two API-bound steps and no build; anything past 5 minutes is a hang.
     timeout-minutes: 5
     # `pull_request`, not `pull_request_target`, on purpose. The target variant
