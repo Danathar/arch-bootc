@@ -3534,6 +3534,383 @@ assert_present "that sudoers drop-in is validated before the layer is accepted" 
 fi
 
 # ---------------------------------------------------------------------------
+group "First-boot runbook (docs/first-boot.md is a hand copy of the root-login controls, scripts/quickstart.sh's cloud-init seed and the brew payload review)"
+
+# docs/first-boot.md is the first document anybody follows on a machine that has
+# just booted. It hands out root's password, the `useradd` line that creates the
+# admin account, a cloud-init seed to write onto an offline disk, and the account
+# of what the image does and does not install around Homebrew.
+#
+# Nothing opened it. README.md's table points at it, three other documents hand
+# off to it, and tests/test-homebrew-shell-integration.sh cites it in a comment --
+# but no test read the file, so every value in it is a hand copy of something in
+# this tree that nothing compared. The failure that produces is specific: a
+# reader is told a password that no longer works, or is told the image closes a
+# door it has stopped closing, and follows the document anyway.
+#
+# The machine side of all of this is asserted above. What is new here is the
+# join: each assertion below reads a value out of the document and compares it to
+# the Containerfile step, the quickstart script, the guarded fragment or the
+# manifest entry that the sentence is a copy of.
+#
+# One claim in it is deliberately not asserted, for the reason given at the top
+# of this file: "both display managers refuse root" is behavior of the packaged
+# plasmalogin and lightdm units, and there is nothing in this tree to read.
+
+FIRSTBOOT_DOC="docs/first-boot.md"
+
+# Spelled-out counts, for the sentences that say how many files something covers.
+# The document counts in words and the tree counts in lines, which is exactly the
+# pair that drifts silently: adding a manifest entry is a one-line diff and
+# rewording a paragraph around it is not.
+NUMBER_WORDS=(zero one two three four five six seven eight nine ten eleven
+  twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty)
+
+number_word() {
+  local n="$1"
+  if ((n >= 0 && n < ${#NUMBER_WORDS[@]})); then
+    printf '%s' "${NUMBER_WORDS[n]}"
+  fi
+}
+
+if [[ ! -f "${FIRSTBOOT_DOC}" ]]; then
+  fail "the first-boot runbook exists" \
+    "${FIRSTBOOT_DOC} is missing; README.md's documentation table links to it"
+else
+
+assert_present "README.md's documentation table still links to the first-boot runbook" \
+  "README.md" '\]\(docs/first-boot\.md\)'
+
+assert_doc_links_resolve "${FIRSTBOOT_DOC}" \
+  "no relative links found; the hand-off to vm-workflow.md, installation.md and brew-payload.manifest is gone"
+
+# --- The password the reader is handed ---------------------------------------
+#
+# The document prints it twice -- once in the warning box and once in the
+# bare-metal section -- and the Containerfile sets it in one place. A password
+# changed there and not here sends a reader to a console that rejects them, with
+# no other way in on hardware that has no guest agent.
+containerfile_root_password="$(sed -n "s/.*echo 'root:\([^']*\)'[[:space:]]*|[[:space:]]*chpasswd.*/\1/p" \
+  "${CONTAINERFILE}" | head -1)"
+firstboot_passwords="$(grep -oE '(default password \(|`root` / )`[^`]+`' "${FIRSTBOOT_DOC}" |
+  grep -oE '`[^`]+`$' | tr -d '`' | sort -u | tr '\n' ' ')"
+firstboot_passwords="${firstboot_passwords% }"
+if [[ -z "${containerfile_root_password}" ]]; then
+  fail "the root password docs/first-boot.md hands out is the one the Containerfile sets" \
+    "no 'root:<password>' | chpasswd step found in ${CONTAINERFILE}"
+else
+  assert_equal "the root password docs/first-boot.md hands out is the one the Containerfile sets" \
+    "${firstboot_passwords}" "${containerfile_root_password}"
+fi
+
+# "It is also expired, so logging in forces an immediate password change" is the
+# sentence that makes printing the password in a public document defensible.
+if grep -qi 'expired' "${FIRSTBOOT_DOC}"; then
+  assert_present "the password docs/first-boot.md calls expired is expired by the Containerfile" \
+    "${CONTAINERFILE}" 'passwd --expire root' \
+    "the document still promises a forced change on first login; nothing expires the password"
+else
+  fail "docs/first-boot.md still says the root password is expired" \
+    "the document prints a well-known password and no longer says it only survives one login"
+fi
+
+# The other half of "only works from a physical console". SSH is the half this
+# tree owns.
+assert_present "SSH refuses the root password docs/first-boot.md prints, as its warning box says" \
+  "${CONTAINERFILE}" 'PermitRootLogin[[:space:]]+prohibit-password' \
+  "docs/first-boot.md tells the reader SSH refuses root regardless of password"
+
+# --- The admin account the reader creates ------------------------------------
+#
+# `sudo` working for the new user is a promise about a file this repository
+# writes, and the document names that file.
+firstboot_sudoers="$(grep -oE '/etc/sudoers\.d/[A-Za-z0-9_.-]+' "${FIRSTBOOT_DOC}" |
+  sort -u | tr '\n' ' ')"
+containerfile_sudoers="$(grep -v '^[[:space:]]*#' "${CONTAINERFILE}" |
+  grep -oE '/etc/sudoers\.d/[A-Za-z0-9_.-]+' | sort -u | tr '\n' ' ')"
+assert_equal "the sudoers drop-in docs/first-boot.md names is the one the Containerfile writes" \
+  "${firstboot_sudoers% }" "${containerfile_sudoers% }"
+
+# "password-prompted `sudo`" is the document's wording, and it is what makes the
+# wheel grant an opt-in rather than a way around the console-only root model.
+assert_absent "the wheel grant still prompts for a password, as docs/first-boot.md says" \
+  "${CONTAINERFILE}" 'NOPASSWD' \
+  "docs/first-boot.md promises a password prompt; a NOPASSWD rule would hand every wheel member passwordless root"
+
+# The account the document creates is only useful if it lands in the group the
+# drop-in grants, at the UID the Homebrew prefix is chowned to.
+assert_present "the account docs/first-boot.md creates joins the group the sudoers drop-in grants" \
+  "${FIRSTBOOT_DOC}" 'useradd .*-G wheel' \
+  "the useradd line no longer puts the new user in wheel, so sudo does not work as the next sentence claims"
+
+assert_present "that account takes the UID the Homebrew prefix is handed to" \
+  "${FIRSTBOOT_DOC}" 'useradd .*-u 1000' \
+  "brew-setup.service chowns the prefix to 1000:1000; a user created at another UID gets no brew"
+
+# --- The cloud-init seed ------------------------------------------------------
+#
+# The document tells a reader with no console to write a seed onto an offline
+# disk. That only works because the Containerfile pins cloud-init to the one
+# datasource that reads a seed from the filesystem -- and the seed directory the
+# document names is that datasource's, spelled in lowercase.
+containerfile_datasources="$(grep -oE 'datasource_list:[[:space:]]*\[[^]]*\]' "${CONTAINERFILE}" |
+  sed -E 's/.*\[//; s/\]//' | tr -d ' ' | tr ',' '\n' | sed '/^$/d' | sort -u | tr '\n' ' ')"
+firstboot_seed_dirs="$(grep -oE 'var/lib/cloud/seed/[a-z0-9]+' "${FIRSTBOOT_DOC}" |
+  sed 's|.*/||' | sort -u | tr '\n' ' ')"
+if [[ -z "${containerfile_datasources}" ]]; then
+  fail "docs/first-boot.md seeds the datasource the Containerfile pins cloud-init to" \
+    "no datasource_list: [...] in ${CONTAINERFILE}; the seed the document writes may never be read"
+else
+  assert_equal "docs/first-boot.md seeds the datasource the Containerfile pins cloud-init to" \
+    "${firstboot_seed_dirs% }" \
+    "$(tr '[:upper:]' '[:lower:]' <<<"${containerfile_datasources% }")"
+fi
+
+# The same cloud-config block is written twice: by hand here, and by
+# scripts/quickstart.sh for the guided path. `just quickstart` and this document
+# create the same account by two different routes, so a key changed in the script
+# leaves the document seeding a user with different privileges -- or, if
+# lock_passwd drifts, one that cannot log in at all.
+firstboot_user_keys="$(awk '/^```/ { inb = !inb; next } inb' "${FIRSTBOOT_DOC}" |
+  grep -E '^[[:space:]]{4}[a-z_]+:' | sed 's/^[[:space:]]*//' | sort -u)"
+quickstart_user_keys="$(grep -oE "printf [\"'][[:space:]]*[a-z_]+:[^\"']*" "${QUICKSTART}" |
+  sed -E "s/^printf [\"'][[:space:]]*//; s/\\\\n$//; s/[[:space:]]*$//" | sort -u)"
+if [[ -z "${firstboot_user_keys}" ]]; then
+  fail "the cloud-config user docs/first-boot.md seeds matches the one scripts/quickstart.sh seeds" \
+    "no cloud-config user keys found in any fenced block of ${FIRSTBOOT_DOC}"
+elif [[ -z "${quickstart_user_keys}" ]]; then
+  fail "the cloud-config user docs/first-boot.md seeds matches the one scripts/quickstart.sh seeds" \
+    "${QUICKSTART} no longer emits a cloud-config user block; the document is a copy of nothing"
+else
+  # `passwd:` is compared by key only. The document shows a placeholder and the
+  # script substitutes a hash, so their values differ on purpose.
+  firstboot_user_mismatch=""
+  while IFS= read -r pair; do
+    [[ -n "${pair}" ]] || continue
+    if [[ "${pair}" == passwd:* ]]; then
+      grep -q '^passwd:' <<<"${quickstart_user_keys}" ||
+        firstboot_user_mismatch+="passwd: (not seeded by ${QUICKSTART}) "
+      continue
+    fi
+    grep -qxF -- "${pair}" <<<"${quickstart_user_keys}" ||
+      firstboot_user_mismatch+="${pair} "
+  done <<<"${firstboot_user_keys}"
+  if [[ -z "${firstboot_user_mismatch}" ]]; then
+    pass "the cloud-config user docs/first-boot.md seeds matches the one scripts/quickstart.sh seeds"
+  else
+    fail "the cloud-config user docs/first-boot.md seeds matches the one scripts/quickstart.sh seeds" \
+      "in the document, not in the script: ${firstboot_user_mismatch}"
+  fi
+fi
+
+# The hash format is part of that seed: a document that tells the reader to
+# generate one form while the script generates another means one of the two
+# produces an account cloud-init refuses to authenticate.
+assert_equal "docs/first-boot.md generates the password hash scripts/quickstart.sh generates" \
+  "$(grep -oE 'openssl passwd -[0-9]' "${FIRSTBOOT_DOC}" | sort -u | tr '\n' ' ')" \
+  "$(grep -oE 'openssl passwd -[0-9]' "${QUICKSTART}" | sort -u | tr '\n' ' ')"
+
+# --- The recovery image the reader is told to run -----------------------------
+#
+# The manual fallback runs this repository's own published image as a rescue
+# toolkit. A flavor that is not built, or a tag the publish step does not
+# repoint, is a `podman run` that pulls nothing on a machine whose only other
+# recovery path the reader has already been told does not apply.
+firstboot_image_refs="$(grep -oE 'ghcr\.io/[a-z0-9._/-]+:[a-z0-9._-]+' "${FIRSTBOOT_DOC}" | sort -u)"
+workflow_default_tag="$(sed -n 's/^[[:space:]]*DEFAULT_TAG:[[:space:]]*"\{0,1\}\([A-Za-z0-9._-]*\)"\{0,1\}[[:space:]]*$/\1/p' \
+  "${BUILD_WORKFLOW}" | head -1)"
+if [[ -z "${firstboot_image_refs}" ]]; then
+  fail "the image docs/first-boot.md uses as a recovery toolkit is one the build publishes" \
+    "no ghcr.io reference in ${FIRSTBOOT_DOC}; the offline-disk fallback names no image"
+elif [[ -z "${workflow_flavors}" || -z "${workflow_default_tag}" ]]; then
+  fail "the image docs/first-boot.md uses as a recovery toolkit is one the build publishes" \
+    "flavors: '${workflow_flavors}', DEFAULT_TAG: '${workflow_default_tag}'"
+else
+  firstboot_unpublished=""
+  while IFS= read -r ref; do
+    [[ -n "${ref}" ]] || continue
+    image="${ref##*/}"
+    flavor="${image%%:*}"
+    flavor="${flavor#arch-bootc-}"
+    tag="${image##*:}"
+    grep -qw -- "${flavor}" <<<"${workflow_flavors}" ||
+      firstboot_unpublished+="${ref} (flavor '${flavor}' is not in the build matrix) "
+    [[ "${tag}" == "${workflow_default_tag}" ]] ||
+      firstboot_unpublished+="${ref} (tag '${tag}' is not the tag every publish repoints) "
+  done <<<"${firstboot_image_refs}"
+  if [[ -z "${firstboot_unpublished}" ]]; then
+    pass "the image docs/first-boot.md uses as a recovery toolkit is one the build publishes"
+  else
+    fail "the image docs/first-boot.md uses as a recovery toolkit is one the build publishes" \
+      "${firstboot_unpublished}"
+  fi
+fi
+
+# --- Homebrew: the prefix and the two fragments -------------------------------
+#
+# "The image installs system-wide shell integration" is followed by a two-item
+# list, and then by the sentence the whole ownership argument rests on: "Those
+# two are the only shell integration the image installs". A third fragment added
+# to system_files/ would make that false, and the ownership guard the paragraph
+# goes on to describe would say nothing about it.
+firstboot_guarded="$(grep -oE '/etc/(profile\.d|fish/conf\.d)/homebrew\.(sh|fish)' "${FIRSTBOOT_DOC}" |
+  sort -u | tr '\n' ' ')"
+shipped_fragments="$(find system_files/etc/profile.d system_files/etc/fish/conf.d -type f 2>/dev/null |
+  sed 's|^system_files||' | sort | tr '\n' ' ')"
+assert_equal "the two fragments docs/first-boot.md calls the only shell integration are the only ones shipped" \
+  "${firstboot_guarded% }" "${shipped_fragments% }"
+
+# The build's sweep is what keeps that true against the next payload digest, and
+# its allowlist is the same two names. The document's sentence is only as strong
+# as that list.
+firstboot_sweep_allowlist="$(grep -oE '\-vxF( -e [^ ]+)+' "${CONTAINERFILE}" |
+  tr ' ' '\n' | grep '^/' | sort -u | tr '\n' ' ')"
+assert_equal "the build's unguarded-fragment sweep exempts exactly the two docs/first-boot.md names" \
+  "${firstboot_sweep_allowlist% }" "${firstboot_guarded% }"
+
+# The prefix. The document prints it as a path to read and again inside the
+# `brew shellenv` line a reader pastes into an already-open shell; the guarded
+# fragments eval the same path.
+firstboot_prefix="$(grep -oE '/var/home/linuxbrew/\.linuxbrew' "${FIRSTBOOT_DOC}" | head -1)"
+if [[ -z "${firstboot_prefix}" ]]; then
+  fail "the Homebrew prefix docs/first-boot.md names is the one the guarded fragments use" \
+    "${FIRSTBOOT_DOC} no longer names /var/home/linuxbrew/.linuxbrew"
+else
+  firstboot_prefix_missing=""
+  for fragment in "${BREW_SH}" "${BREW_FISH}"; do
+    grep -qF -- "${firstboot_prefix}/bin/brew" "${fragment}" || firstboot_prefix_missing+="${fragment} "
+  done
+  if [[ -z "${firstboot_prefix_missing}" ]]; then
+    pass "the Homebrew prefix docs/first-boot.md names is the one the guarded fragments use"
+  else
+    fail "the Homebrew prefix docs/first-boot.md names is the one the guarded fragments use" \
+      "not referenced in: ${firstboot_prefix_missing}"
+  fi
+fi
+
+# The escape hatch the document offers for an already-open shell is the same eval
+# the POSIX fragment runs for a new one.
+firstboot_shellenv="$(grep -oE 'eval "\$\(/var/home/linuxbrew/\.linuxbrew/bin/brew shellenv\)"' \
+  "${FIRSTBOOT_DOC}" | head -1)"
+if [[ -z "${firstboot_shellenv}" ]]; then
+  fail "the shellenv line docs/first-boot.md tells the reader to run is the one the fragment runs" \
+    "${FIRSTBOOT_DOC} no longer shows the eval for an already-open shell"
+elif grep -qF -- "${firstboot_shellenv}" "${BREW_SH}"; then
+  pass "the shellenv line docs/first-boot.md tells the reader to run is the one the fragment runs"
+else
+  fail "the shellenv line docs/first-boot.md tells the reader to run is the one the fragment runs" \
+    "${BREW_SH} does not contain: ${firstboot_shellenv}"
+fi
+
+# Zsh gets no fragment of its own -- the document's claim is that /etc/zsh/zprofile
+# sources /etc/profile, which is a property of Arch's packaging and not of this
+# tree. tests/test-homebrew-profile.sh is what exercises that path, so it is the
+# only thing standing behind the sentence.
+if grep -qF '/etc/zsh/zprofile' "${FIRSTBOOT_DOC}"; then
+  if grep -qF '/etc/zsh/zprofile' "tests/test-homebrew-profile.sh"; then
+    pass "the zsh path docs/first-boot.md promises is the one tests/test-homebrew-profile.sh exercises"
+  else
+    fail "the zsh path docs/first-boot.md promises is the one tests/test-homebrew-profile.sh exercises" \
+      "the document says zsh login shells are covered via /etc/zsh/zprofile and no test runs that path"
+  fi
+fi
+
+# --- Homebrew: what the payload brings and what the build removes -------------
+#
+# The document explains the review record to a reader as a count: the manifest
+# covers "the other ten" of "the eleven". Both words are hand-written, and the
+# thing they count is a file with one path per line.
+firstboot_manifest_entries="$(sed -e 's/#.*//' -e 's/[[:space:]]*$//' "${BREW_MANIFEST}" |
+  grep -cv '^$')"
+firstboot_count_word="$(number_word "${firstboot_manifest_entries}")"
+firstboot_remainder_word="$(number_word "$((firstboot_manifest_entries - 1))")"
+if [[ -z "${firstboot_count_word}" || -z "${firstboot_remainder_word}" ]]; then
+  fail "docs/first-boot.md counts the payload's files the way brew-payload.manifest lists them" \
+    "${firstboot_manifest_entries} entries is outside the range this check spells out"
+else
+  firstboot_count_missing=""
+  for word in "${firstboot_count_word}" "${firstboot_remainder_word}"; do
+    grep -qE "\b${word}\b" "${FIRSTBOOT_DOC}" || firstboot_count_missing+="${word} "
+  done
+  if [[ -z "${firstboot_count_missing}" ]]; then
+    pass "docs/first-boot.md counts the payload's files the way brew-payload.manifest lists them"
+  else
+    fail "docs/first-boot.md counts the payload's files the way brew-payload.manifest lists them" \
+      "${BREW_MANIFEST} has ${firstboot_manifest_entries} entries; the document never says: ${firstboot_count_missing}"
+  fi
+fi
+
+# "one path per line" is the document's description of the file it links to, and
+# the build's comparison depends on it: an entry with a second field on it
+# matches no `find -printf '%P\n'` output and fails every payload.
+firstboot_multi_field="$(sed -e 's/#.*//' -e 's/[[:space:]]*$//' "${BREW_MANIFEST}" |
+  grep -v '^$' | grep '[[:space:]]' || true)"
+if [[ -z "${firstboot_multi_field}" ]]; then
+  pass "brew-payload.manifest is the one-path-per-line list docs/first-boot.md describes"
+else
+  fail "brew-payload.manifest is the one-path-per-line list docs/first-boot.md describes" \
+    "entries with more than a path: ${firstboot_multi_field//$'\n'/ | }"
+fi
+
+# The three unguarded fragments the document names are the three the Containerfile
+# deletes. A fourth arriving in a later digest is the build's problem; a name that
+# stops matching is this document's, and it reads as a promise that something was
+# removed.
+firstboot_unguarded="$(grep -oE '/(etc/profile\.d|usr/share/fish/vendor_conf\.d)/[A-Za-z0-9_.-]+' \
+  "${FIRSTBOOT_DOC}" | grep -v '/homebrew\.' | sort -u | tr '\n' ' ')"
+assert_equal "the fragments docs/first-boot.md says the Containerfile deletes are the ones it deletes" \
+  "${firstboot_unguarded% }" \
+  "$(printf '%s\n' "${VENDORED_BREW_FRAGMENTS[@]}" | sort | tr '\n' ' ' | sed 's/ $//')"
+
+firstboot_unguarded_count="$(wc -w <<<"${firstboot_unguarded}" | tr -d ' ')"
+firstboot_unguarded_word="$(number_word "${firstboot_unguarded_count}")"
+if [[ -n "${firstboot_unguarded_word}" ]] &&
+  grep -qE "\b${firstboot_unguarded_word}\b unguarded fragments" "${FIRSTBOOT_DOC}"; then
+  pass "docs/first-boot.md counts those fragments the way it lists them"
+else
+  fail "docs/first-boot.md counts those fragments the way it lists them" \
+    "the document names ${firstboot_unguarded_count} of them and does not say '${firstboot_unguarded_word:-?} unguarded fragments'"
+fi
+
+# The containment the last section describes, by path. The drop-in is in this
+# tree, so a rename that leaves the document pointing at nothing is a plain
+# comparison.
+firstboot_dropin="$(grep -oE '/usr/lib/systemd/system/brew-setup\.service\.d/[A-Za-z0-9_.-]+' \
+  "${FIRSTBOOT_DOC}" | sort -u | tr '\n' ' ')"
+assert_equal "the PrivateTmp drop-in docs/first-boot.md names is the one this repository ships" \
+  "${firstboot_dropin% }" "/${BREW_SETUP_DROPIN#system_files/}"
+
+# The unit the document tells the reader to check when brew is missing is the one
+# the Containerfile presets, and the one the manifest says arrives.
+firstboot_units="$(grep -oE '[A-Za-z0-9_.-]+\.(service|timer)' "${FIRSTBOOT_DOC}" | sort -u)"
+if [[ -z "${firstboot_units}" ]]; then
+  fail "every unit docs/first-boot.md names is one the image enables" \
+    "the document no longer names the unit whose status it tells the reader to check"
+else
+  firstboot_unknown_units=""
+  while IFS= read -r unit; do
+    [[ -n "${unit}" ]] || continue
+    grep -qE "systemctl preset .*${unit//./\\.}" "${CONTAINERFILE}" ||
+      firstboot_unknown_units+="${unit} "
+  done <<<"${firstboot_units}"
+  if [[ -z "${firstboot_unknown_units}" ]]; then
+    pass "every unit docs/first-boot.md names is one the image enables"
+  else
+    fail "every unit docs/first-boot.md names is one the image enables" \
+      "not preset by the Containerfile: ${firstboot_unknown_units}"
+  fi
+fi
+
+# The tarball size the document quotes twice is the one the Containerfile and the
+# manifest quote. It is the figure a reader uses to decide whether a first boot
+# is hung or still extracting.
+assert_equal "the payload size docs/first-boot.md quotes is the one the Containerfile quotes" \
+  "$(grep -oE '[0-9]+MB' "${FIRSTBOOT_DOC}" | sort -u | tr '\n' ' ')" \
+  "$(grep -oE '[0-9]+MB' "${CONTAINERFILE}" | sort -u | tr '\n' ' ')"
+
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then
   printf 'invariants: %d of %d check(s) failed\n' "${failures}" "${checks_run}" >&2
