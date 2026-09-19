@@ -65,8 +65,8 @@
 # So this looks at the operands git would actually receive, and refuses the
 # two-operand form unless every operand resolves as a revision -- which is what
 # separates `git diff main feature` from `git diff /dev/null ./cosign.key`.
-# After a bare `--` no word can be a revision, so there the test is git's own:
-# two or more words where any one lies outside the working tree. The write
+# After a bare `--` no word can be a revision, so there it conservatively checks
+# for two or more words where any one lies outside the working tree. The write
 # primitive needs none of that machinery: `--output` anywhere in a git
 # invocation is refused outright.
 #
@@ -125,14 +125,22 @@ done
 
 read -r -a words <<<"${normalized}"
 
-# Git's path_inside_repo, approximately: the operand, made absolute and with
-# its `..` components folded, lies at or under the working tree. Anything this
-# cannot decide -- no working tree here, no realpath on the host -- counts as
-# outside, so the gate refuses rather than guesses.
+# Conservatively classify paths after a bare `--`. Git considers a spelling
+# that climbs out of the checkout and back in by name outside, even though
+# realpath folds it into an inside path. Reject every `..` component before
+# normalizing, and count stdin as outside too. This also refuses some ordinary
+# pathspecs (e.g. tests/../AGENTS.md); use a direct inside spelling instead.
+# Require both lexical and symlink-resolved containment: -s alone does not
+# follow symlinks, while resolution alone admits an outside alias back inside.
+# Anything this cannot decide -- no working tree here, no realpath on the
+# host -- counts as outside, so the gate refuses rather than guesses.
 path_inside_worktree() {
   local candidate toplevel
+  [[ "$1" == "-" || "/$1/" == */../* ]] && return 1
   toplevel="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
   candidate="$(realpath -m -s -- "$1" 2>/dev/null)" || return 1
+  [[ "${candidate}" == "${toplevel}" || "${candidate}" == "${toplevel}"/* ]] || return 1
+  candidate="$(realpath -m -- "$1" 2>/dev/null)" || return 1
   [[ "${candidate}" == "${toplevel}" || "${candidate}" == "${toplevel}"/* ]]
 }
 

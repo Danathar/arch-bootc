@@ -169,6 +169,15 @@ must be described as such.
   `git diff ../<checkout>/cosign.key -` walks that route back to a path the
   deny rules name, because git's inside-the-repo test reads the spelling and a
   `..` that leaves the checkout and returns counts as outside.
+  This also applies behind `--`: normalizing
+  `../<checkout>/cosign.key` before checking containment erases the spelling
+  that makes Git read it as a plain file. The hook rejects any `..` component
+  and a lone `-` there, then requires both the lexical absolute path and the
+  symlink-resolved path to stay inside the working tree. These checks are
+  deliberately conservative: even an internal `tests/../AGENTS.md` path or an
+  inside path paired with stdin is refused in a two-operand comparison. Use
+  direct inside pathspecs instead; ordinary `git diff -- ./AGENTS.md ./tests/`
+  and revision-scoped diffs remain unprompted.
   It also fails closed, refusing rather than passing the call through when `jq`
   is missing or the payload will not parse, because these settings run on
   contributor hosts and not only on the `jq`-equipped CI runner.
@@ -210,6 +219,10 @@ must be described as such.
   the flag orderings a prefix rule would miss, on the flagless, requoted, and
   behind-`--` forms, on `--output` across `git diff`, `git log` and `git show`,
   with `jq` off `PATH`, and on the ordinary diffs that must stay unprompted.
+  Synthetic files inside the checkout demonstrate Git printing contents for
+  climb-out-and-back-in spellings, both against another file and against stdin.
+  The tests also check the conservative symlink containment rule in both
+  directions and keep inside symlinks and nonexistent inside pathspecs usable.
   The `--output` fixtures build a one-commit repository in a temporary
   directory and show that commit's `+` lines replacing the contents of a file
   next to it, so the refusals are asserted against a demonstrated exposure
