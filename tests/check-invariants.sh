@@ -4051,6 +4051,581 @@ assert_equal "the payload size docs/first-boot.md quotes is the one the Containe
 fi
 
 # ---------------------------------------------------------------------------
+group "Review rubric (docs/review-rubric.md is the reviewer's hand copy of the invariants asserted above)"
+
+# The header of this file names docs/review-rubric.md as one of the documents
+# whose prose these checks exist to enforce. Nothing read it. Every other
+# document under docs/ is now joined to the tree, and the rubric was the one
+# still unread -- which is the worst place for a stale line to sit. A reviewer
+# who works down a checklist and finds a bullet naming a file, a flag or a
+# carve-out that no longer exists ticks the box and moves on, and the check that
+# bullet stands for simply does not happen. The document is load-bearing in
+# exactly the way a test is: it is the only thing standing between a weakened
+# invariant and an approval.
+#
+# Every assertion below runs in the same direction: take the identifier out of
+# the rubric and compare it to the thing in the tree it is a hand copy of.
+# Reading the needle out of the document rather than restating it here is the
+# point -- the tree side of most of these is already asserted in the groups
+# above, so what is new is that a reworded or deleted bullet now fails.
+#
+# What is deliberately not asserted, rather than left to be assumed: section 1
+# (Scope) and section 6 (Evidence) are judgements about a pull request and its
+# description, not properties of the checked-out tree, so there is nothing here
+# to read. "Display managers still refusing root" is behavior of the packaged
+# plasmalogin and lightdm units, for the reason given at the top of this file.
+
+RUBRIC="docs/review-rubric.md"
+
+if [[ ! -f "${RUBRIC}" ]]; then
+  fail "the review rubric exists" \
+    "${RUBRIC} is missing; README.md's documentation table and CONTRIBUTING.md both send a reader to it"
+else
+
+# The Containerfile with comment lines removed, for the same reason
+# assert_present strips them: every control the rubric names is also described
+# in a nearby rationale comment using the same words, so a plain grep is
+# satisfied by the *explanation* of a control that has been deleted.
+rubric_cf_active="$(grep -Ev '^[[:space:]]*#' "${CONTAINERFILE}")"
+
+shopt -s nullglob
+rubric_workflows=(.github/workflows/*.yml .github/workflows/*.yaml)
+shopt -u nullglob
+
+# The body of one checklist item, for the bullets that need more than a grep.
+# Items start at column 0 and their continuations are indented, so the next
+# item -- or the next heading -- ends the one being read.
+rubric_bullet() {
+  awk -v needle="$1" '
+    index($0, needle) && /^- \[ \]/ { grab = 1; print; next }
+    grab && (/^- \[ \]/ || /^#/) { exit }
+    grab { print }
+  ' "${RUBRIC}"
+}
+
+# Compare an identifier the rubric hands a reviewer with the same identifier in
+# the tree. An identifier that has vanished from *both* sides is a failure, not
+# a match: "" == "" is exactly the silent pass this group exists to prevent.
+assert_rubric_join() {
+  local description="$1" from_doc="$2" from_tree="$3" note="${4:-}"
+  if [[ -z "${from_doc}" ]]; then
+    fail "${description}" "${RUBRIC} no longer names it${note:+: ${note}}"
+  else
+    assert_equal "${description}" "${from_doc}" "${from_tree}"
+  fi
+}
+
+# The rubric names a literal that must appear somewhere in the tree.
+assert_rubric_needle() {
+  local description="$1" needle="$2" haystack="$3" where="$4"
+  if [[ -z "${needle}" ]]; then
+    fail "${description}" "${RUBRIC} no longer names it"
+  elif grep -Fq -- "${needle}" <<<"${haystack}"; then
+    pass "${description}"
+  else
+    fail "${description}" "${where} has no such line: ${needle}"
+  fi
+}
+
+# --- The document is still reachable and still a checklist --------------------
+
+assert_present "README.md's documentation table still links to the review rubric" \
+  "README.md" '\]\(docs/review-rubric\.md\)'
+
+assert_present "CONTRIBUTING.md still sends a contributor to the review rubric" \
+  "CONTRIBUTING.md" 'docs/review-rubric\.md'
+
+assert_doc_links_resolve "${RUBRIC}" \
+  "no relative links found; the hand-off to AGENTS.md and ci-cd.md is gone"
+
+# This file's own header claims to assert what the rubric describes in prose.
+# If the header stops naming it, the pairing this group rests on is gone and
+# nothing says so.
+#
+# Only the header is read, not the whole file: the assignment above and the
+# comments in this group both spell the path, so a whole-file grep would be
+# satisfied by this group's own source and could never fail.
+if head -n 30 "tests/check-invariants.sh" | grep -Fq "${RUBRIC}"; then
+  pass "this file still names the rubric among the documents it enforces"
+else
+  fail "this file still names the rubric among the documents it enforces" \
+    "the header comment no longer names ${RUBRIC}"
+fi
+
+assert_equal "the rubric's numbered sections are 1 through 7, in order" \
+  "$(grep -oE '^## [0-9]+\.' "${RUBRIC}" | grep -oE '[0-9]+' | tr '\n' ' ')" \
+  "1 2 3 4 5 6 7 "
+
+# A pre-ticked box is an answer somebody else supplied.
+rubric_ticked="$(grep -nE '^[[:space:]]*- \[[^]] ?\]' "${RUBRIC}" | grep -vE '^[0-9]+:[[:space:]]*- \[ \]' | tr '\n' ' ')"
+if [[ -z "${rubric_ticked}" ]]; then
+  pass "every rubric box is unticked, so a reviewer has to answer it"
+else
+  fail "every rubric box is unticked, so a reviewer has to answer it" "${rubric_ticked}"
+fi
+
+# A numbered section with no checklist item left in it is a heading a reviewer
+# reads past.
+rubric_empty_sections=""
+for rubric_n in 1 2 3 4 5 6 7; do
+  rubric_items="$(awk -v n="${rubric_n}" '
+    $0 ~ "^## " n "\\." { grab = 1; next }
+    grab && /^## / { exit }
+    grab && /^- \[ \]/ { count++ }
+    END { print count + 0 }
+  ' "${RUBRIC}")"
+  ((rubric_items > 0)) || rubric_empty_sections+="${rubric_n} "
+done
+if [[ -z "${rubric_empty_sections}" ]]; then
+  pass "every numbered rubric section still carries at least one checklist item"
+else
+  fail "every numbered rubric section still carries at least one checklist item" \
+    "sections with no '- [ ]' item: ${rubric_empty_sections}"
+fi
+
+# --- 2. Security invariants ---------------------------------------------------
+
+rubric_sshd="$(grep -oE 'PermitRootLogin [a-z-]+' "${RUBRIC}" | sort -u | tr '\n' ' ')"
+assert_rubric_join "the sshd directive the rubric names is the one the Containerfile pins" \
+  "${rubric_sshd}" \
+  "$(grep -oE 'PermitRootLogin [a-z-]+' <<<"${rubric_cf_active}" | sort -u | tr '\n' ' ')" \
+  "the rubric no longer tells a reviewer which PermitRootLogin value to look for"
+
+# Naming one PAM service is the exact mistake the Containerfile's own comment
+# warns about: util-linux's su authenticates a *login* shell against
+# /etc/pam.d/su-l. A rubric that lost the second path sends a reviewer looking
+# for half the control and finding it.
+rubric_pam="$(grep -oE '/etc/pam\.d/[a-z-]+' "${RUBRIC}" | sort -u | tr '\n' ' ')"
+assert_rubric_join "the PAM services the rubric names are the ones the Containerfile edits" \
+  "${rubric_pam}" \
+  "$(grep -oE '/etc/pam\.d/[a-z-]+' <<<"${rubric_cf_active}" | sort -u | tr '\n' ' ')" \
+  "the rubric no longer names a PAM service file"
+
+assert_rubric_needle "the PAM rule the rubric names is the one the build enables and verifies" \
+  "$(grep -oE 'pam_wheel\.so use_uid' "${RUBRIC}" | head -1)" \
+  "${rubric_cf_active}" "the Containerfile"
+
+assert_rubric_needle "the password-expiry command the rubric names is the one the Containerfile runs" \
+  "$(grep -oE 'passwd --expire' "${RUBRIC}" | head -1)" \
+  "${rubric_cf_active}" "the Containerfile"
+
+# "These four are load-bearing *together*" is a count of the closures listed in
+# the same bullet, and a count in prose next to a list is the pair that drifts:
+# dropping a closure from the list is a one-line diff, and the word four a few
+# lines down goes on asserting that nothing was dropped.
+#
+# The bullet is read as one line before the count is matched out of it: the
+# document wraps at 80 columns and "These four" already sits at the end of a
+# line with "are load-bearing" on the next, so a line-based match finds nothing
+# and reports the sentence missing when it is merely wrapped.
+rubric_root_bullet="$(rubric_bullet 'The root-login model is intact' | tr '\n' ' ' | tr -s ' ')"
+rubric_root_word="$(grep -oE 'These [a-z]+ are load-bearing' <<<"${rubric_root_bullet}" | awk '{print $2}')"
+rubric_root_named=0
+for rubric_closure in 'PermitRootLogin' 'pam_wheel' 'display manager' 'passwd --expire'; do
+  if grep -Fq -- "${rubric_closure}" <<<"${rubric_root_bullet}"; then
+    rubric_root_named=$((rubric_root_named + 1))
+  fi
+done
+assert_rubric_join "the rubric's count of load-bearing root closures matches the number it lists" \
+  "${rubric_root_word}" "$(number_word "${rubric_root_named}")" \
+  "the bullet no longer says how many closures hold the default root password up"
+
+rubric_policy="$(grep -oE 'system_files/etc/containers/[A-Za-z0-9._-]+' "${RUBRIC}" | sort -u | tr '\n' ' ')"
+assert_rubric_join "the signature policy file the rubric names is the one this script asserts against" \
+  "${rubric_policy}" "${POLICY} " \
+  "the rubric no longer names the policy file a reviewer is told to check"
+
+# "cosign.pub is not duplicated or bypassed": the Containerfile copies the one
+# at the repository root into the image, and a second copy committed anywhere
+# else is a second key nobody is watching.
+rubric_cosign="$(grep -oE 'cosign\.pub' "${RUBRIC}" | head -1)"
+if [[ -z "${rubric_cosign}" ]]; then
+  fail "cosign.pub exists once, at the repository root (rubric: 'not duplicated or bypassed')" \
+    "${RUBRIC} no longer names cosign.pub"
+else
+  assert_equal "cosign.pub exists once, at the repository root (rubric: 'not duplicated or bypassed')" \
+    "$(find . -name 'cosign.pub' -not -path './.git/*' | sort | tr '\n' ' ')" \
+    "./cosign.pub "
+fi
+
+rubric_bust="$(grep -oE '[A-Z][A-Z_]*CACHE_BUST' "${RUBRIC}" | sort -u | head -1)"
+if [[ -z "${rubric_bust}" ]]; then
+  fail "the cache-bust ARG the rubric names is declared in the Containerfile" \
+    "${RUBRIC} no longer names the cache-bust ARG"
+  fail "package installation has not moved above the cache-bust reference" \
+    "${RUBRIC} no longer names the cache-bust ARG"
+else
+  assert_rubric_needle "the cache-bust ARG the rubric names is declared in the Containerfile" \
+    "ARG ${rubric_bust}=" "${rubric_cf_active}" "the Containerfile"
+
+  # The second half of that bullet -- "package installation has not moved above
+  # it" -- is an ordering, and an ordering is invisible to a grep for the name.
+  # The ARG only busts the layer cache for steps that come after the step
+  # referencing it; a `pacman -Syu` that moves above that reference keeps
+  # serving a cached package set forever, with the ARG still present and still
+  # bumped by CI.
+  rubric_bust_line="$(grep -nF "\${${rubric_bust}}" "${CONTAINERFILE}" |
+    grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | cut -d: -f1)"
+  rubric_install_line="$(grep -nE '^[^#]*pacman -S' "${CONTAINERFILE}" | head -1 | cut -d: -f1)"
+  if [[ -n "${rubric_bust_line}" && -n "${rubric_install_line}" ]] &&
+    ((rubric_bust_line < rubric_install_line)); then
+    pass "package installation has not moved above the cache-bust reference"
+  else
+    fail "package installation has not moved above the cache-bust reference" \
+      "${rubric_bust} referenced at line ${rubric_bust_line:-none}, first pacman install at line ${rubric_install_line:-none}"
+  fi
+fi
+
+# The checkout option the rubric names, counted against the checkouts that must
+# carry it. The needle comes from the document so that a rubric quoting an
+# option nobody sets -- or quoting `true` -- fails here.
+rubric_persist="$(grep -oE 'persist-credentials: [a-z]+' "${RUBRIC}" | sort -u | head -1)"
+if [[ -z "${rubric_persist}" ]] || ((${#rubric_workflows[@]} == 0)); then
+  fail "every actions/checkout sets the option the rubric names" \
+    "rubric option: '${rubric_persist:-none}', workflow files found: ${#rubric_workflows[@]}"
+else
+  assert_equal "every actions/checkout sets the option the rubric names (${rubric_persist})" \
+    "$(grep -cF "${rubric_persist}" "${rubric_workflows[@]}" 2>/dev/null | awk -F: '{total += $NF} END {print total + 0}')" \
+    "$(grep -c 'uses: actions/checkout@' "${rubric_workflows[@]}" 2>/dev/null | awk -F: '{total += $NF} END {print total + 0}')"
+fi
+
+# The other half of that bullet, and the only claim in section 2 that nothing in
+# this tree checked before: a `${{ ... }}` expansion inside a `run:` block is
+# substituted into the shell source before the shell ever sees it, so a context
+# carrying text from a pull request becomes code. Passing it through `env:`
+# makes it a variable the shell reads instead of source it executes.
+#
+# `matrix.` is carved out explicitly rather than by oversight. A matrix value is
+# written in the workflow file itself, a few lines above the step that reads it,
+# and cannot carry anything from a pull request; build.yml interpolates
+# `matrix.flavor` in two `run:` blocks on that basis. Every other context root
+# fails here, and the check below requires the matrix key to be declared in the
+# same file, so the carve-out cannot be widened by naming a key that is not one.
+rubric_interpolations=""
+rubric_matrix_uses=""
+for rubric_workflow in "${rubric_workflows[@]}"; do
+  while IFS= read -r rubric_hit; do
+    [[ -n "${rubric_hit}" ]] || continue
+    rubric_context="${rubric_hit#*|}"
+    if [[ "${rubric_context}" == matrix.* ]]; then
+      rubric_matrix_uses+="${rubric_workflow}|${rubric_context#matrix.} "
+    else
+      rubric_interpolations+="${rubric_workflow}: ${rubric_context} "
+    fi
+  done < <(awk '
+    /^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*[|>]/ {
+      inrun = 1
+      indent = match($0, /[^ ]/)
+      next
+    }
+    inrun && /^[[:space:]]*$/ { next }
+    inrun && match($0, /[^ ]/) <= indent { inrun = 0 }
+    inrun {
+      line = $0
+      while (match(line, /\$\{\{[[:space:]]*[A-Za-z0-9_.-]+/)) {
+        token = substr(line, RSTART, RLENGTH)
+        sub(/^\$\{\{[[:space:]]*/, "", token)
+        print FILENAME "|" token
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' "${rubric_workflow}")
+done
+
+if [[ -z "${rubric_interpolations}" ]]; then
+  pass "no run: block interpolates a context the rubric says belongs in env:"
+else
+  fail "no run: block interpolates a context the rubric says belongs in env:" \
+    "pass these through env: instead -- ${rubric_interpolations}"
+fi
+
+rubric_undeclared_matrix=""
+read -r -a rubric_matrix_pairs <<<"${rubric_matrix_uses}"
+if ((${#rubric_matrix_pairs[@]} > 0)); then
+  for rubric_pair in "${rubric_matrix_pairs[@]}"; do
+    rubric_pair_workflow="${rubric_pair%%|*}"
+    rubric_pair_key="${rubric_pair#*|}"
+    grep -qE "^[[:space:]]+${rubric_pair_key}:" "${rubric_pair_workflow}" ||
+      rubric_undeclared_matrix+="${rubric_pair_workflow}: matrix.${rubric_pair_key} "
+  done
+fi
+if [[ -z "${rubric_undeclared_matrix}" ]]; then
+  pass "every matrix value interpolated into a run: block is declared in that workflow"
+else
+  fail "every matrix value interpolated into a run: block is declared in that workflow" \
+    "${rubric_undeclared_matrix}"
+fi
+
+# --- 3. Image and system correctness ------------------------------------------
+
+# "A change to the shared base stage reaches base, kde, and xfce": the three
+# names are the reviewer's list of what else to look at, and they are a hand
+# copy of the Containerfile's flavor stages and of the CI build matrix. A fourth
+# flavor added to the tree and not to this bullet is a flavor nobody is told to
+# think about.
+# shellcheck disable=SC2016  # the backticks are literal Markdown in the document
+rubric_flavors="$(grep -oE '`[a-z][a-z0-9-]*`' <<<"$(rubric_bullet 'Which flavors does this touch')" |
+  tr -d '`' | sort -u | tr '\n' ' ')"
+assert_rubric_join "the flavors the rubric says a base-stage change reaches are the Containerfile's flavor stages" \
+  "${rubric_flavors}" \
+  "$(grep -oE '^FROM base-core AS [a-z][a-z0-9-]*' "${CONTAINERFILE}" | awk '{print $NF}' | sort -u | tr '\n' ' ')" \
+  "the bullet no longer names the flavors"
+
+assert_rubric_join "the flavors the rubric names are the ones the CI build matrix builds" \
+  "${rubric_flavors}" \
+  "$(grep -oE '^[[:space:]]*flavor:[[:space:]]*\[[^]]*\]' "${BUILD_WORKFLOW}" |
+    awk -F'[][]' '{print $2}' | tr ',' '\n' | tr -d ' ' | sort -u | tr '\n' ' ')" \
+  "the bullet no longer names the flavors"
+
+# The rubric gives the directory enablement symlinks belong in. Read the prefix
+# out of it and require every .wants path the Containerfile creates to sit under
+# that prefix -- so a rubric rewritten to bless /etc, and a Containerfile that
+# moves there, both fail.
+rubric_wants_prefix="$(grep -oE '/usr/lib/systemd/system/<target>\.wants/' "${RUBRIC}" | head -1)"
+rubric_wants_prefix="${rubric_wants_prefix%%<target>*}"
+if [[ -z "${rubric_wants_prefix}" ]]; then
+  fail "every .wants directory the Containerfile writes sits under the prefix the rubric names" \
+    "${RUBRIC} no longer names the /usr/lib/systemd/system/<target>.wants/ layout"
+else
+  rubric_stray_wants=""
+  while IFS= read -r rubric_wants_path; do
+    [[ -n "${rubric_wants_path}" ]] || continue
+    [[ "${rubric_wants_path}" == "${rubric_wants_prefix}"* ]] ||
+      rubric_stray_wants+="${rubric_wants_path} "
+  done < <(grep -oE '(/[A-Za-z0-9._-]+)+\.wants' <<<"${rubric_cf_active}" | sort -u)
+  if [[ -z "${rubric_stray_wants}" ]]; then
+    pass "every .wants directory the Containerfile writes sits under the prefix the rubric names"
+  else
+    fail "every .wants directory the Containerfile writes sits under the prefix the rubric names" \
+      "outside ${rubric_wants_prefix}: ${rubric_stray_wants}"
+  fi
+fi
+
+rubric_presetall="$(grep -oE 'systemctl preset-all' "${RUBRIC}" | head -1)"
+if [[ -z "${rubric_presetall}" ]]; then
+  fail "the command the rubric forbids is absent from the Containerfile" \
+    "${RUBRIC} no longer forbids systemctl preset-all"
+elif grep -Fq -- "${rubric_presetall}" <<<"${rubric_cf_active}"; then
+  fail "the command the rubric forbids is absent from the Containerfile" \
+    "an active Containerfile line runs ${rubric_presetall}"
+else
+  pass "the command the rubric forbids is absent from the Containerfile"
+fi
+
+# "except the documented mask that must live there" is singular, and it is the
+# only /etc exception a reviewer is told to accept. A second mask is a second
+# exception nobody agreed to.
+assert_equal "the /etc exception the rubric allows is still exactly one masked unit" \
+  "$(grep -cE 'systemctl[[:space:]]+mask' <<<"${rubric_cf_active}")" "1"
+
+if grep -qE '^[[:space:]]*#.*systemctl mask' "${CONTAINERFILE}" &&
+  grep -qE '^[[:space:]]*#.*/etc/systemd/system/' "${CONTAINERFILE}"; then
+  pass "the mask the rubric calls documented is documented where it is written"
+else
+  fail "the mask the rubric calls documented is documented where it is written" \
+    "no Containerfile comment explains the mask and the /etc/systemd/system/ symlink it creates"
+fi
+
+# The paths the rubric forbids a bind-mount from targeting are forbidden because
+# the directory-restructuring step replaced each of them with a symlink into
+# /var, and a failed bind-mount onto a dangling symlink has been observed
+# deleting real files from the *host* source directory. Both halves are checked:
+# that each path the rubric names is in fact one of the symlinked ones, and that
+# nothing targets it.
+# shellcheck disable=SC2016  # the backticks are literal Markdown in the document
+rubric_dangling="$(grep -oE '`/[a-z]+`' <<<"$(rubric_bullet 'mount=type=bind')" | tr -d '`' | sort -u)"
+rubric_bind_targets="$(grep -oE 'type=bind[^[:space:]]*' <<<"${rubric_cf_active}" |
+  grep -oE 'target=[^ ,]+' | cut -d= -f2 | sort -u)"
+if [[ -z "${rubric_dangling}" ]]; then
+  fail "every path the rubric calls dangling is one the Containerfile symlinks away" \
+    "${RUBRIC} no longer names the paths a bind-mount must not target"
+  fail "no bind-mount targets a path the rubric calls dangling" \
+    "${RUBRIC} no longer names the paths a bind-mount must not target"
+else
+  rubric_not_symlinked=""
+  rubric_bad_targets=""
+  while IFS= read -r rubric_path; do
+    [[ -n "${rubric_path}" ]] || continue
+    grep -qE "ln -sT? [^ ]+ ${rubric_path}([[:space:]]|$)" <<<"${rubric_cf_active}" ||
+      rubric_not_symlinked+="${rubric_path} "
+    while IFS= read -r rubric_target; do
+      [[ -n "${rubric_target}" ]] || continue
+      [[ "${rubric_target}" == "${rubric_path}" || "${rubric_target}" == "${rubric_path}/"* ]] &&
+        rubric_bad_targets+="${rubric_target} "
+    done <<<"${rubric_bind_targets}"
+  done <<<"${rubric_dangling}"
+
+  if [[ -z "${rubric_not_symlinked}" ]]; then
+    pass "every path the rubric calls dangling is one the Containerfile symlinks away"
+  else
+    fail "every path the rubric calls dangling is one the Containerfile symlinks away" \
+      "no restructuring symlink found for: ${rubric_not_symlinked}"
+  fi
+
+  if [[ -z "${rubric_bad_targets}" ]]; then
+    pass "no bind-mount targets a path the rubric calls dangling"
+  else
+    fail "no bind-mount targets a path the rubric calls dangling" \
+      "${rubric_bad_targets}"
+  fi
+fi
+
+# --- 5. Tests and validation --------------------------------------------------
+
+rubric_thresholds="$(grep -oE '\.coverage-thresholds\.json' "${RUBRIC}" | head -1)"
+if [[ -z "${rubric_thresholds}" ]]; then
+  fail "the coverage-floor file the rubric names exists" \
+    "${RUBRIC} no longer names the file whose floors a reviewer is told to check"
+  fail "something under tests/ actually reads the coverage-floor file the rubric names" \
+    "${RUBRIC} no longer names the file"
+else
+  if [[ -f "${rubric_thresholds}" ]]; then
+    pass "the coverage-floor file the rubric names exists"
+  else
+    fail "the coverage-floor file the rubric names exists" "${rubric_thresholds} is missing"
+  fi
+
+  # A floor nothing reads is not a floor. The rubric tells a reviewer to check
+  # that it was raised rather than lowered, which is only a check if some test
+  # enforces it.
+  #
+  # This file is excluded from the search deliberately: the pattern a few lines
+  # up spells the filename, so including it would make the assertion satisfied
+  # by its own source no matter what the rest of tests/ does.
+  rubric_threshold_readers="$(grep -rlF -- "${rubric_thresholds}" tests/ 2>/dev/null |
+    grep -vFx 'tests/check-invariants.sh' | tr '\n' ' ')"
+  if [[ -n "${rubric_threshold_readers}" ]]; then
+    pass "something under tests/ actually reads the coverage-floor file the rubric names"
+  else
+    fail "something under tests/ actually reads the coverage-floor file the rubric names" \
+      "nothing under tests/ mentions ${rubric_thresholds}, so a lowered floor is enforced by nothing"
+  fi
+fi
+
+# The rubric names the two hand-maintained ShellCheck invocations by name. Both
+# names are copies: the Justfile recipe name, and the CI step name.
+# shellcheck disable=SC2016  # the backticks are literal Markdown in the document
+rubric_lint_recipe="$(grep -oE '`Justfile` `[a-z-]+` recipe' "${RUBRIC}" | awk '{print $2}' | tr -d '`')"
+assert_rubric_needle "the Justfile recipe the rubric names still exists" \
+  "${rubric_lint_recipe:+${rubric_lint_recipe}:}" \
+  "$(grep -E '^[a-z][a-z-]*:' "${JUSTFILE}")" "the Justfile's recipe list"
+
+assert_present "the CI ShellCheck step the rubric names still exists" \
+  "${BUILD_WORKFLOW}" '^[[:space:]]*-[[:space:]]*name:[[:space:]]*ShellCheck'
+
+# The glob the rubric tells a reviewer to watch for has to be the repository's
+# actual naming convention, or the bullet points at a class with no members.
+rubric_test_glob="$(grep -oE 'tests/test-\*\.sh' "${RUBRIC}" | head -1)"
+if [[ -n "${rubric_test_glob}" ]] && compgen -G "${rubric_test_glob}" >/dev/null; then
+  pass "the test-file glob the rubric names matches files in this repository"
+else
+  fail "the test-file glob the rubric names matches files in this repository" \
+    "rubric glob: '${rubric_test_glob:-none}'"
+fi
+
+# --- 7. Checks and threads ----------------------------------------------------
+
+# The rubric hands a reviewer a command to run. A command that is missing, or
+# committed without its executable bit, fails at the moment somebody trusts the
+# document.
+rubric_named_tools="$(grep -oE '\./scripts/[a-z0-9-]+\.sh' "${RUBRIC}" | sort -u)"
+if [[ -z "${rubric_named_tools}" ]]; then
+  fail "every script the rubric tells a reviewer to run exists and is executable" \
+    "${RUBRIC} no longer names the review-state script"
+  fail "the ci-cd.md section the rubric hands off to still documents that script" \
+    "${RUBRIC} no longer names the review-state script"
+else
+  rubric_tool_problems=""
+  rubric_tool_undocumented=""
+  while IFS= read -r rubric_tool; do
+    [[ -n "${rubric_tool}" ]] || continue
+    if [[ ! -f "${rubric_tool}" ]]; then
+      rubric_tool_problems+="${rubric_tool} (missing) "
+    elif [[ ! -x "${rubric_tool}" ]]; then
+      rubric_tool_problems+="${rubric_tool} (not executable) "
+    fi
+    grep -Fq -- "${rubric_tool#./}" "docs/ci-cd.md" ||
+      rubric_tool_undocumented+="${rubric_tool} "
+  done <<<"${rubric_named_tools}"
+
+  if [[ -z "${rubric_tool_problems}" ]]; then
+    pass "every script the rubric tells a reviewer to run exists and is executable"
+  else
+    fail "every script the rubric tells a reviewer to run exists and is executable" \
+      "${rubric_tool_problems}"
+  fi
+
+  if [[ -z "${rubric_tool_undocumented}" ]]; then
+    pass "the ci-cd.md section the rubric hands off to still documents that script"
+  else
+    fail "the ci-cd.md section the rubric hands off to still documents that script" \
+      "not mentioned in docs/ci-cd.md: ${rubric_tool_undocumented}"
+  fi
+fi
+
+# --- Merging ------------------------------------------------------------------
+
+# "Renovate automerges most dependency updates once the build is green, with
+# deliberate carve-outs (notably major bootc bumps). Do not broaden that scope
+# or remove a carve-out." That is the one paragraph in the rubric that describes
+# a configuration file rather than a diff, so it is the one that can be
+# contradicted by a merged PR without anybody editing the rubric.
+rubric_merge_section="$(awk '/^## Merging/ { grab = 1; next } grab' "${RUBRIC}")"
+# shellcheck disable=SC2016  # the backticks are literal Markdown in the document
+rubric_carve_name="$(grep -oE 'major `[a-z][a-z0-9-]*` bumps' <<<"${rubric_merge_section}" |
+  awk '{print $2}' | tr -d '`')"
+
+if ! command -v jq >/dev/null 2>&1; then
+  fail "renovate.json still automerges updates, as the rubric's merging section says" \
+    "jq is not on PATH, so renovate.json could not be read"
+  fail "renovate.json still carries the major carve-out the rubric names" \
+    "jq is not on PATH, so renovate.json could not be read"
+  fail "the carve-out names the package the rubric names" \
+    "jq is not on PATH, so renovate.json could not be read"
+elif ! jq -e . "renovate.json" >/dev/null 2>&1; then
+  fail "renovate.json still automerges updates, as the rubric's merging section says" \
+    "renovate.json is not valid JSON"
+  fail "renovate.json still carries the major carve-out the rubric names" \
+    "renovate.json is not valid JSON"
+  fail "the carve-out names the package the rubric names" \
+    "renovate.json is not valid JSON"
+else
+  rubric_automerging="$(jq -r '[.packageRules[]? | select(.automerge == true)] | length' "renovate.json")"
+  if ((rubric_automerging > 0)); then
+    pass "renovate.json still automerges updates, as the rubric's merging section says"
+  else
+    fail "renovate.json still automerges updates, as the rubric's merging section says" \
+      "no packageRule sets automerge: true, so the paragraph describes a policy that is gone"
+  fi
+
+  # The carve-out, read as the property rather than as a rule at a fixed index:
+  # a rule that refuses automerge for the major update type.
+  rubric_carved_packages="$(jq -r '
+    [.packageRules[]?
+     | select(.automerge == false)
+     | select((.matchUpdateTypes // []) | index("major"))
+     | (.matchPackageNames // [])[]] | join(" ")' "renovate.json")"
+  if [[ -n "${rubric_carved_packages}" ]]; then
+    pass "renovate.json still carries the major carve-out the rubric names"
+  else
+    fail "renovate.json still carries the major carve-out the rubric names" \
+      "no packageRule refuses automerge for matchUpdateTypes [major]"
+  fi
+
+  if [[ -z "${rubric_carve_name}" ]]; then
+    fail "the carve-out names the package the rubric names" \
+      "${RUBRIC}'s merging section no longer names which major bumps are carved out"
+  elif grep -Fq -- "${rubric_carve_name}" <<<"${rubric_carved_packages}"; then
+    pass "the carve-out names the package the rubric names"
+  else
+    fail "the carve-out names the package the rubric names" \
+      "the rubric says '${rubric_carve_name}', the carve-out covers: ${rubric_carved_packages:-nothing}"
+  fi
+fi
+
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then
   printf 'invariants: %d of %d check(s) failed\n' "${failures}" "${checks_run}" >&2
