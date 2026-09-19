@@ -215,6 +215,27 @@ must be described as such.
   some later non-git command in the same string; the alternative is a bypass
   spelled with one pipe.
 
+  Both halves also rest on the words being the words git receives, and brace
+  expansion is the rewrite that breaks that: Bash expands braces *before* it
+  splits words, so one word to a gate reading the typed string is several words
+  to git. `git diff {/dev/null,./cosign.key}` is a single operand to the scan
+  and two operands to git — the plain-file read with the count hidden — and
+  `--outpu{t,t}=FILE` matches neither `--output` nor `--output=*` and arrives
+  as `--output=FILE`. Neither needs a variable or a subshell, so neither is one
+  of the runtime-built arguments this gate states it cannot inspect; both are
+  written out in full and were simply not expanded. The hook refuses a brace
+  rather than expanding one, because expanding correctly means reimplementing
+  Bash's rules — nesting, `{1..9}` sequences, and the rule that a brace with no
+  comma and no range is a literal — and a half-right expansion disagrees with
+  the shell in some other direction. The refusal is scoped to the same `git`
+  latch `--output` uses, so an `awk '{print}'` or `jq '{a:1}'` in a string that
+  never calls git is untouched; a brace belonging to a later non-git command in
+  a string that *does* call git is refused, which is the same trade the
+  operator-spacing rule above makes. A brace before the first `git` word needs
+  no rule: the allow patterns match a literal `git diff` / `git log` prefix, so
+  an invocation assembled out of braces matches no allow rule and prompts on
+  its own account.
+
   `tests/check-invariants.sh` extracts the hook with `jq` and **runs** it — on
   the flag orderings a prefix rule would miss, on the flagless, requoted, and
   behind-`--` forms, on `--output` across `git diff`, `git log` and `git show`,
@@ -226,7 +247,10 @@ must be described as such.
   The `--output` fixtures build a one-commit repository in a temporary
   directory and show that commit's `+` lines replacing the contents of a file
   next to it, so the refusals are asserted against a demonstrated exposure
-  rather than a described one. It is still not a
+  rather than a described one. The brace fixtures do the same for that rewrite:
+  a single braced word is shown printing a file's contents as two operands, and
+  a split `--outpu{t,t}=` is shown writing a commit over the file it names.
+  It is still not a
   sandbox: a command that builds its arguments at runtime, or that leaves the
   repository first, is outside what this can see, and nothing bounds what a
   command reads or writes once it has started.
