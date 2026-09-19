@@ -1245,6 +1245,50 @@ if ((settings_readable)); then
       "this git no longer accepts --output for an ordinary commit; re-derive the git show case"
   fi
 
+  # Brace expansion, which rebuilds both exposures above out of four
+  # characters. Bash expands braces before it splits words, so one word in a
+  # scan that reads the typed string is several words to git: the operand count
+  # stays at one while git receives two, and a flag name split down the middle
+  # matches nothing while git receives it whole. Neither needs a variable or a
+  # subshell, so neither is one of the runtime-built arguments the hook says it
+  # cannot see. Demonstrated rather than described, in a temporary directory of
+  # this fixture's own.
+  brace_dir="$(mktemp -d)"
+  printf 'SECRET-LINE-1\nSECRET-LINE-2\n' >"${brace_dir}/fake.key"
+  printf 'ORIGINAL-CONTENT\n' >"${brace_dir}/victim-brace"
+
+  brace_repo="${brace_dir}/repo"
+  git -c init.defaultBranch=main init --quiet "${brace_repo}" >/dev/null 2>&1
+  printf 'PAYLOAD-LINE-1\n' >"${brace_repo}/committed"
+  git -C "${brace_repo}" add committed >/dev/null 2>&1
+  git -C "${brace_repo}" -c user.name=invariants \
+    -c user.email=invariants@example.invalid -c commit.gpgsign=false \
+    commit --quiet -m fixture >/dev/null 2>&1
+
+  # The braces are literal to this script -- they sit inside double quotes --
+  # and are expanded by the inner shell, which is the point being shown.
+  # </dev/null so a host where the brace stops expanding cannot leave the run
+  # waiting on the stdin operand.
+  brace_read="$(bash -c "git diff {/dev/null,${brace_dir}/fake.key}" 2>/dev/null </dev/null)"
+  bash -c "git -C '${brace_repo}' log -p --outpu{t,t}=${brace_dir}/victim-brace -1" \
+    >/dev/null 2>&1 </dev/null
+  brace_written="$(cat "${brace_dir}/victim-brace" 2>/dev/null)"
+  rm -rf "${brace_dir}"
+
+  if grep -q '^+SECRET-LINE-1$' <<<"${brace_read}"; then
+    pass "one braced word reaches git as the two operands of the plain-file read"
+  else
+    fail "one braced word reaches git as the two operands of the plain-file read" \
+      "this shell no longer expands the brace into two operands; re-derive the brace refusal in the hook"
+  fi
+
+  if grep -q '^+PAYLOAD-LINE-1$' <<<"${brace_written}"; then
+    pass "a brace split through --outpu{t,t}= reaches git as --output and writes the file it names"
+  else
+    fail "a brace split through --outpu{t,t}= reaches git as --output and writes the file it names" \
+      "the file does not hold the commit's + lines; re-derive why a split flag name still reaches git"
+  fi
+
   # The hook's rationale is that these three entries stay exactly as they are.
   # If Bash(git diff*) leaves the allow list the hook is redundant; if either
   # Read deny rule goes, there is nothing left for the hook to be a route
@@ -1453,6 +1497,43 @@ if ((settings_readable)); then
     'ls&&git diff /etc/shadow -'
   assert_hook_refuses "the hook refuses a denied path spelled as a climb out of the checkout" \
     'git diff ../elsewhere/cosign.key -'
+
+  # Brace expansion. Asserted by message rather than by exit status, because
+  # several of these spellings are refused for an unrelated reason today -- the
+  # operand scan counts the unbraced words on either side -- and that accident
+  # stops holding the moment the braced word is the whole comparison.
+  assert_hook_refuses_naming "the hook refuses two operands folded into one braced word" \
+    'git diff {/dev/null,./cosign.key}' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses the braced two-operand form behind a bare --" \
+    'git diff -- {/dev/null,./cosign.key}' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a brace inside one operand of a comparison" \
+    'git diff /dev/nul{l,l} ./cosign.key' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses the braced form behind an unspaced &&" \
+    'ls&&git diff {/dev/null,./cosign.key}' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a brace that rebuilds --no-index" \
+    'git diff --no-inde{x,x} -- /dev/null ./cosign.key' 'expands braces'
+  # The write half, which needs no operand arithmetic at all: a brace anywhere
+  # in the flag name hands git --output whole.
+  assert_hook_refuses_naming "the hook refuses a brace that rebuilds --output on git log" \
+    'git log -p --outpu{t,t}=cosign.pub -1' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a brace that rebuilds --output on git show" \
+    'git show --outpu{t,t}=/tmp/written HEAD' 'expands braces'
+  # The stated cost of latching on the word `git`, recorded rather than
+  # discovered: a brace belonging to a later non-git command in the same string
+  # is refused too. The alternative is a bypass spelled with one pipe, exactly
+  # as for --output.
+  assert_hook_refuses_naming "a brace after a git call in the same string is refused, as documented" \
+    'git status --short && awk "{print}" packages-base.txt' 'expands braces'
+  # And the refusal is scoped to git invocations, so a brace in a command
+  # string that never calls git is untouched. These are the ordinary shapes --
+  # an awk program, a jq filter -- that a whole-string brace refusal would
+  # have broken.
+  assert_hook_permits "an awk program in braces is still unprompted" \
+    'awk "{print}" packages-base.txt'
+  assert_hook_permits "a jq object filter in braces is still unprompted" \
+    'jq "{forkProcessing: .forkProcessing}" renovate.json'
+  assert_hook_permits "a brace expansion outside a git call is still unprompted" \
+    'ls packages-{base,kde}.txt'
 
   # Spellings the shell rewrites before git sees them. Each of these reaches
   # git as --no-index while the literal string is absent from the command.
