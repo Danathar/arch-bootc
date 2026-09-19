@@ -1122,7 +1122,37 @@ if ((settings_readable)); then
   # block; the file's own lines are what git prints, on the `-` side of the
   # comparison rather than the `+` side.
   stdin_operand_output="$(git diff "${no_index_dir}/fake.key" - 2>/dev/null </dev/null)"
-  rm -rf "${no_index_dir}"
+  # Use only synthetic contents, including for paths inside this checkout.
+  # Git treats a spelling that climbs out and returns by name as outside;
+  # realpath -m -s erases that distinction. Keep both operands in the checkout
+  # so an already-outside operand cannot accidentally make the hook test pass.
+  path_fixture_dir="$(mktemp -d "${REPO_ROOT}/tests/.git-diff-paths.XXXXXX")"
+  path_fixture="${path_fixture_dir#"${REPO_ROOT}/"}"
+  checkout_name="$(basename -- "$(git rev-parse --show-toplevel)")"
+  printf 'SYNTHETIC-PATH-FIXTURE\n' >"${path_fixture_dir}/fake.key"
+  : >"${path_fixture_dir}/empty"
+  mkdir "${path_fixture_dir}/inside"
+  ln -s "${no_index_dir}" "${path_fixture_dir}/outside"
+  ln -s inside "${path_fixture_dir}/inside-link"
+  ln -s "${path_fixture_dir}" "${no_index_dir}/back-inside"
+  reentry_path="../${checkout_name}/${path_fixture}"
+  reentry_output="$(git diff -- "${reentry_path}/fake.key" "${reentry_path}/empty" 2>/dev/null)"
+  reentry_stdin_output="$(git diff -- "${reentry_path}/fake.key" - 2>/dev/null </dev/null)"
+  inside_stdin_output="$(git diff -- "${path_fixture}/fake.key" - 2>/dev/null </dev/null)"
+  if grep -q '^-SYNTHETIC-PATH-FIXTURE$' <<<"${reentry_output}"; then
+    pass "git diff behind -- prints an inside file spelled as a climb out and back in"
+  else
+    fail "git diff behind -- prints an inside file spelled as a climb out and back in" \
+      "this git no longer treats the re-entry spelling as outside; re-derive the lexical check"
+  fi
+  if grep -q '^-SYNTHETIC-PATH-FIXTURE$' <<<"${reentry_stdin_output}"; then
+    pass "git diff behind -- prints the re-entry file against stdin too"
+  else
+    fail "git diff behind -- prints the re-entry file against stdin too" \
+      "the re-entry path plus stdin did not print the synthetic contents"
+  fi
+  assert_equal "an inside spelling against stdin does not print the untracked fixture" \
+    "${inside_stdin_output}" ""
   if grep -q '^+SECRET-LINE-1$' <<<"${no_index_output}"; then
     pass "git diff --no-index prints the contents of a plain file outside the index"
   else
@@ -1377,6 +1407,34 @@ if ((settings_readable)); then
     'git diff -- ./AGENTS.md /home/someone/.ssh/id_ed25519'
   assert_hook_refuses "the hook refuses the -- form that climbs out of the checkout" \
     'git diff -- ../outside ./cosign.key'
+
+  # #297: classify the spelling before normalizing it, then also resolve
+  # symlinks. The symlink and bare-stdin refusals are conservative: Git 2.55
+  # keeps the inside spellings as pathspecs, but we require both containment
+  # checks to agree rather than depend on that treatment.
+  assert_hook_refuses "the hook refuses two re-entry paths behind --" \
+    "git diff -- ../${checkout_name}/cosign.key ../${checkout_name}/AGENTS.md"
+  assert_hook_refuses "the hook refuses a re-entry path against stdin behind --" \
+    "git diff -- ../${checkout_name}/cosign.key -"
+  assert_hook_refuses "the hook refuses re-entry starting inside tests behind --" \
+    "git diff -- ./tests/../../${checkout_name}/cosign.key -"
+  assert_hook_refuses "the hook refuses the demonstrated synthetic re-entry comparison" \
+    "git diff -- ${reentry_path}/fake.key ${reentry_path}/empty"
+  assert_hook_refuses "the hook counts stdin as outside even with an inside first operand" \
+    'git diff -- ./AGENTS.md -'
+  assert_hook_refuses "the hook counts stdin as outside in the first position too" \
+    'git diff -- - ./AGENTS.md'
+  assert_hook_refuses "the hook refuses a leading symlink directory pointing outside" \
+    "git diff -- ${path_fixture}/outside/fake.key ${path_fixture}/empty"
+  assert_hook_refuses "the hook refuses an outside spelling that resolves back inside" \
+    "git diff -- ${no_index_dir}/back-inside/fake.key ${path_fixture}/empty"
+  assert_hook_permits "a directory symlink staying inside the checkout is still unprompted" \
+    "git diff -- ${path_fixture}/inside-link ./AGENTS.md"
+  assert_hook_permits "a nonexistent inside path still works as a repository pathspec" \
+    "git diff -- ${path_fixture}/missing ./AGENTS.md"
+  assert_hook_permits "two dots within a filename are not a parent component" \
+    'git diff -- ./file..name ./AGENTS.md'
+  rm -rf -- "${path_fixture_dir}" "${no_index_dir}"
 
   # The stdin operand. `-` is the one word git diff counts as an operand and an
   # option scan drops, so these forms reached the plain-file mode with the
