@@ -3592,6 +3592,7 @@ assert_doc_links_resolve "${FIRSTBOOT_DOC}" \
 # no other way in on hardware that has no guest agent.
 containerfile_root_password="$(sed -n "s/.*echo 'root:\([^']*\)'[[:space:]]*|[[:space:]]*chpasswd.*/\1/p" \
   "${CONTAINERFILE}" | head -1)"
+# shellcheck disable=SC2016  # backticks and $ are literal needles in the document
 firstboot_passwords="$(grep -oE '(default password \(|`root` / )`[^`]+`' "${FIRSTBOOT_DOC}" |
   grep -oE '`[^`]+`$' | tr -d '`' | sort -u | tr '\n' ' ')"
 firstboot_passwords="${firstboot_passwords% }"
