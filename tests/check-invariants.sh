@@ -1969,16 +1969,22 @@ if ((settings_readable)); then
     fail "a redirection written before the git word truncates the file it names" \
       "the file kept its contents; re-derive why prefix redirections are carried to the command name"
   fi
+  # shellcheck disable=SC2016 # the substitutions are spellings handed to the hook, not run here
   for redirect_command in \
     '>cosign.pub git diff HEAD' \
     'git status; >cosign.pub git diff HEAD' \
     '2>err git log -1' \
     '>> out git show HEAD' \
     'FOO=bar >out git diff HEAD' \
-    'git status; >cosign.pub /usr/bin/git diff HEAD'; do
+    'git status; >cosign.pub /usr/bin/git diff HEAD' \
+    'git status; {fd}>cosign.pub git diff HEAD' \
+    'git diff HEAD {fd}>cosign.pub' \
+    'git status; >$(printf cosign.pub) git diff HEAD' \
+    '>$(printf cosign.pub) git diff HEAD'; do
     assert_hook_refuses_naming "the hook refuses a redirection written before the git word: ${redirect_command}" \
       "${redirect_command}" 'output redirection'
   done
+  # shellcheck disable=SC2016 # the substitutions are spellings handed to the hook, not run here
   for redirect_command in \
     '</dev/null git diff HEAD' \
     '2>&1 git diff HEAD' \
@@ -1986,7 +1992,12 @@ if ((settings_readable)); then
     '>out echo x; git diff HEAD' \
     '>out cat f | git diff --stat' \
     'git status; >out printf %s git' \
-    '>out echo git; git diff HEAD'; do
+    '>out echo git; git diff HEAD' \
+    '>$(printf out) echo x; git diff HEAD' \
+    '{fd}>out echo x; git diff HEAD' \
+    'x=$(date); git diff HEAD' \
+    'echo $(date) *.sh; git status' \
+    'echo $(git log -1) | git diff HEAD'; do
     assert_hook_permits "a prefix redirection that writes no path, or belongs to another command, is unprompted: ${redirect_command}" \
       "${redirect_command}"
   done
