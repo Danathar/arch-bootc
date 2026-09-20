@@ -292,6 +292,45 @@ must be described as such.
   interpreter (`sh -c`), or that leaves the repository first, is outside what
   this can see, and nothing bounds what a command reads or writes once it has
   started.
+- **`git` is not the only allowed command that opens a file it is pointed at.**
+  `Bash(shellcheck *)` is allowed with no prompt too, and ShellCheck prints the
+  *source line* above every diagnostic it reports — so it prints back whatever
+  it is aimed at. `shellcheck ./.env` echoes every unexported `NAME=value`
+  line of a file `Read(./.env)` refuses, values included; a PEM-shaped file
+  gives up its `-----BEGIN/END-----` lines and its trailing base64 line. It is
+  a lossy read rather than `cat`, and for the `.env` shape those rules name the
+  loss is nothing that matters.
+
+  No permission pattern closes it, for the same reason as above: patterns match
+  by prefix, so `Bash(shellcheck tests/*)` still matches
+  `shellcheck tests/run-tests.sh /home/me/.aws/credentials`, and an exact rule
+  per tracked script stops `shellcheck a.sh b.sh` working at all. The hook
+  therefore scans a `shellcheck` invocation the way it scans a `git` one: every
+  operand must resolve inside the working tree — reusing the same containment
+  test, `..` climb-outs and all — and must not be one of the secret-shaped
+  names the deny rules list. Options are skipped, the eight short flags that
+  take a value (`-i -e -f -o -P -s -S -W`) and the long forms in their space
+  spelling consume it, and anything the list does not recognise stays an
+  operand and is checked, so a mis-parse costs a refused lint run rather than
+  an unwatched read. `-` keeps working: it is stdin, not a file. A word Bash
+  would rewrite before ShellCheck saw it is refused for the reason it is
+  refused for `git`: a brace Bash would expand, a `$` or backtick, a process
+  substitution, an unquoted leading `~` (`shellcheck ~/.aws/credentials`
+  reaches the hook as a literal `~` that resolves *inside* the tree, and Bash
+  as `$HOME`) and an unquoted `*`, `?` or `[` (`shellcheck .env*` is one
+  word here and the file to Bash). `SHELLCHECK_OPTS=` is refused wherever it
+  is assigned, because ShellCheck reads file operands out of it too. Linting
+  this repository's
+  own scripts is unaffected, which `tests/check-invariants.sh` asserts by
+  running the hook against the `Justfile` lint recipe's own invocations rather
+  than against a restated copy of them — and it demonstrates the exposure
+  first, by running ShellCheck at a synthetic file and finding the file's line
+  in its output.
+
+  `bash -n`, the other allowed linter, is not the same case: it echoes at most
+  the one line of a syntax error, and the key and `.env` shapes parse cleanly
+  and print nothing.
+
 - Workflow permissions are declared explicitly and minimally per job. A workflow
   that needs `packages: write` says so in that job only; it does not get it at
   the workflow level for convenience.
