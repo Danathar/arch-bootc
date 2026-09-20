@@ -1753,6 +1753,12 @@ if ((settings_readable)); then
     assert_hook_permits "a quoted, escaped or non-leading ~ is the literal word and is unprompted: ${tilde_command}" \
       "${tilde_command}"
   done
+  # The containment test never resolves a leading `~` inside the tree, quoted
+  # or not, so two quoted tildes after a `--` are refused as the plain-file
+  # form although bash would hand git two literal paths: the stricter
+  # direction, taken on purpose (review on zfs-kinoite-complex#220).
+  assert_hook_refuses_naming "two quoted tildes after -- are refused as the plain-file form" \
+    "git diff -- '~/x' '~/y'" 'plain files'
   # The tilde rule against bash itself, the way the brace corpus is checked:
   # every word bash rewrites must be refused, every word of the literal set
   # must be allowed, and a word in neither class is held only to the first
@@ -1978,7 +1984,9 @@ if ((settings_readable)); then
     '2>&1 git diff HEAD' \
     '>&2 git diff HEAD' \
     '>out echo x; git diff HEAD' \
-    '>out cat f | git diff --stat'; do
+    '>out cat f | git diff --stat' \
+    'git status; >out printf %s git' \
+    '>out echo git; git diff HEAD'; do
     assert_hook_permits "a prefix redirection that writes no path, or belongs to another command, is unprompted: ${redirect_command}" \
       "${redirect_command}"
   done

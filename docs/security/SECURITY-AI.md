@@ -239,7 +239,9 @@ must be described as such.
   git invocation that begins with an unquoted `~` (`~/`, `~user/`, `~`
   alone), and its containment test counts a leading `~` as outside. A quoted
   or escaped tilde and a tilde inside a word (`HEAD~1`) are literals to Bash
-  and are not affected.
+  and are not refused by that rule; the containment test never resolves a
+  leading `~` inside the tree, quoted or not, so two quoted tildes after a
+  `--` are refused as the plain-file form, the stricter direction.
 
   Both halves also rest on the words being the words git receives, and Bash
   rewrites them first. Brace expansion turns one word into several: `git diff
