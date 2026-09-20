@@ -203,38 +203,68 @@ must be described as such.
   which the agent already reads. `--output-indicator-*` changes the marker
   character rather than the destination and stays permitted.
 
-  Both halves rest on finding the word `git`, and shell operators need no
-  whitespace around them: `git log -1 && (git log -p --output=cosign.pub -1)`
-  splits on whitespace into `(git`, which is not that word. A command written
-  hard against an operator was therefore not recognized as a git invocation at
-  all, and neither gate looked at it. The hook gives every operator character
-  whitespace of its own before it splits, and — because an operator can also
-  sit *inside* an argument, as in `git log --grep=a|b --output=cosign.pub` —
-  the `--output` refusal latches once the word `git` has been seen and holds
-  for the rest of the command string. That refuses a `--output` belonging to
-  some later non-git command in the same string; the alternative is a bypass
-  spelled with one pipe.
+  Both halves rest on finding the word `git` and on knowing where that
+  command ends, and the hook reads the command string the way Bash does
+  rather than splitting it on whitespace or on every operator character. A
+  command written hard against an operator — `ls&&git diff ...`,
+  `(git log -p --output=cosign.pub -1)` — is still a command; an operator
+  inside quotes is not one, so `git diff --src-prefix='x|' /dev/null
+  ./cosign.key` stays a single two-operand diff and is refused (an earlier
+  version stripped the quotes first, cut the string at the `|`, and let the
+  read through — issue #316); a redirection is not a separator either, so
+  `2>&1`, `&>`, `>|` and `<&` neither end the git command nor count toward its
+  operands. The `--output` refusal alone latches once the word `git` has been
+  seen and holds for the rest of the command string, because
+  `git log --grep=a|b --output=cosign.pub` is two commands to Bash and the
+  second one is where the write would land; that refuses a `--output`
+  belonging to some later non-git command in the same string, and the
+  alternative is a bypass spelled with one pipe.
 
-  Both halves also rest on the words being the words git receives, and brace
-  expansion is the rewrite that breaks that: Bash expands braces *before* it
-  splits words, so one word to a gate reading the typed string is several words
-  to git. `git diff {/dev/null,./cosign.key}` is a single operand to the scan
-  and two operands to git — the plain-file read with the count hidden — and
-  `--outpu{t,t}=FILE` matches neither `--output` nor `--output=*` and arrives
-  as `--output=FILE`. Neither needs a variable or a subshell, so neither is one
-  of the runtime-built arguments this gate states it cannot inspect; both are
-  written out in full and were simply not expanded. The hook refuses a brace
-  rather than expanding one, because expanding correctly means reimplementing
-  Bash's rules — nesting, `{1..9}` sequences, and the rule that a brace with no
-  comma and no range is a literal — and a half-right expansion disagrees with
-  the shell in some other direction. The refusal is scoped to the same `git`
-  latch `--output` uses, so an `awk '{print}'` or `jq '{a:1}'` in a string that
-  never calls git is untouched; a brace belonging to a later non-git command in
-  a string that *does* call git is refused, which is the same trade the
-  operator-spacing rule above makes. A brace before the first `git` word needs
-  no rule: the allow patterns match a literal `git diff` / `git log` prefix, so
-  an invocation assembled out of braces matches no allow rule and prompts on
-  its own account.
+  The shell has its own spelling of the write, and it is the older one: an
+  output redirection inside a git invocation — `git diff HEAD >cosign.pub`,
+  `>>`, `>|`, `&>`, `2>err`, `>&file`, `<>file` — makes Bash open the target
+  for writing before git starts. The hook refuses it whatever the target, on
+  the same ground as `--output`. Descriptor forms (`2>&1`, `>&2`, `>&-`),
+  input redirections, and a redirection on another command of the same string
+  (`echo x >out; git diff HEAD`, `git diff HEAD | jq . > out`) are not
+  affected.
+
+  Both halves also rest on the words being the words git receives, and Bash
+  rewrites them first. Brace expansion turns one word into several: `git diff
+  {/dev/null,./cosign.key}` is a single operand to the scan and two operands
+  to git — the plain-file read with the count hidden — and `--outpu{t,t}=FILE`
+  matches neither `--output` nor `--output=*` and arrives as `--output=FILE`.
+  The hook refuses a brace rather than expanding one, because expanding
+  correctly means reimplementing Bash's rules and a half-right expansion
+  disagrees with the shell in some other direction. It is not every brace,
+  though: Bash leaves a brace alone unless a comma or a `..` range sits inside
+  it, and git's own `@{...}` revision syntax — `HEAD@{1}`, `main@{upstream}`,
+  `@{-1}` — is spelled with exactly that literal form, so refusing it blocked
+  the ordinary diff against the previous commit for no gain (issue #312). The
+  test is what Bash would expand, applied to the word *as typed* with its
+  quotes in place, since `{a';',b}` is one word to Bash and two paths after
+  expansion; `${VAR}` and a process substitution (`git diff <(...)`) are
+  refused with it as operands the scan never saw, and `HEAD@{2}..HEAD@{1}` is
+  over-refused on purpose with a message naming `HEAD~2..HEAD~1`. The refusal
+  is scoped to the words of the git command itself, from the `git` word to the
+  next unquoted separator, so an `awk '{print}'` or `jq '{a:1}'` before, after
+  or piped from a git call is untouched (an earlier version held the scope to
+  the end of the string and refused `git log -1 && jq '{a:1}'` — issue #313).
+  A `$` or a backtick in a word of a git invocation is refused outright:
+  `$(...)` and a backtick supply operands the scan never counted, and
+  `$'\x74'` is the letter t, so `--outpu$'\x74'=FILE` reaches git whole.
+
+  Every scope above opens at a literal `git` word, and the allow patterns
+  match a literal `git diff` / `git log` prefix, so the word that names a
+  command has to be literal too: `git status; G=git; $G diff /dev/null
+  ./cosign.key` is allowed on its prefix, opens no scope at `$G`, and runs
+  the plain-file read. A command name built by an expansion, a brace bash
+  would expand (`{,git}`), or a glob (`g?t`, `/usr/bin/g[i]t`) is refused
+  wherever it stands in the string — every word after a wrapper such as
+  `command`, `env` or `timeout` included — while `FOO=bar git diff HEAD`
+  names git and is left alone, a literal path to git (`/usr/bin/git diff`) is
+  read as git, and `env -S`, which splits a quoted string into a command the
+  hook never sees as words, is refused outright.
 
   `tests/check-invariants.sh` extracts the hook with `jq` and **runs** it — on
   the flag orderings a prefix rule would miss, on the flagless, requoted, and
@@ -250,10 +280,16 @@ must be described as such.
   rather than a described one. The brace fixtures do the same for that rewrite:
   a single braced word is shown printing a file's contents as two operands, and
   a split `--outpu{t,t}=` is shown writing a commit over the file it names.
-  It is still not a
-  sandbox: a command that builds its arguments at runtime, or that leaves the
-  repository first, is outside what this can see, and nothing bounds what a
-  command reads or writes once it has started.
+  A brace corpus is handed to Bash itself (`bash --norc -c 'printf "%s\\0"
+  WORD'`) so that every word Bash expands is asserted refused and every word
+  of git's literal `@{...}` set is asserted allowed, against the shell rather
+  than against a hand-written label; the quoted-operator read of #316, the
+  redirection truncation, the substituted operand and the variable-named
+  command are each demonstrated the same way before their refusals are
+  asserted. It is still not a sandbox: a command that hides git behind another
+  interpreter (`sh -c`), or that leaves the repository first, is outside what
+  this can see, and nothing bounds what a command reads or writes once it has
+  started.
 - Workflow permissions are declared explicitly and minimally per job. A workflow
   that needs `packages: write` says so in that job only; it does not get it at
   the workflow level for convenience.
