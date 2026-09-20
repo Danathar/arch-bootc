@@ -1518,12 +1518,35 @@ if ((settings_readable)); then
     'git log -p --outpu{t,t}=cosign.pub -1' 'expands braces'
   assert_hook_refuses_naming "the hook refuses a brace that rebuilds --output on git show" \
     'git show --outpu{t,t}=/tmp/written HEAD' 'expands braces'
-  # The stated cost of latching on the word `git`, recorded rather than
-  # discovered: a brace belonging to a later non-git command in the same string
-  # is refused too. The alternative is a bypass spelled with one pipe, exactly
-  # as for --output.
-  assert_hook_refuses_naming "a brace after a git call in the same string is refused, as documented" \
-    'git status --short && awk "{print}" packages-base.txt' 'expands braces'
+  # #313: the brace scope ends where bash ends the command. The first version
+  # of this rule latched on the word `git` and held to the end of the string,
+  # so a jq filter or awk program in a *later* command of the same string was
+  # refused as though git would receive it -- `git log -1 && jq '{a:1}'` was
+  # blocked outright. A brace is git's only between a `git` word and the next
+  # unquoted `;`, `&`, `|`, `(`, `)`, newline or backtick; the scope reopens
+  # at the next `git` word, so a second git command in the string is held to
+  # the same rule and one that is piped into is not excused by the command in
+  # front of it.
+  assert_hook_permits "a brace in a later non-git command of the same string is unprompted (#313)" \
+    'git status --short && awk "{print}" packages-base.txt'
+  assert_hook_permits "a jq filter after a git call is unprompted (#313)" \
+    "git log -1 && jq '{a:1}'"
+  assert_hook_permits "an awk program piped from git diff is unprompted" \
+    "git diff HEAD | awk '{print \$1}'"
+  assert_hook_permits "a jq filter piped from a reflog diff is unprompted" \
+    "git diff HEAD@{1} | jq '{a,b}'"
+  assert_hook_permits "a brace in the command piped into git is unprompted" \
+    "jq '{a,b}' < f | git diff --stat"
+  assert_hook_refuses_naming "the hook refuses a brace in a second git command after ;" \
+    'git log -1; git diff {a,b}' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a brace in a git command that is piped into" \
+    'echo x | git diff {a,b}' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a brace in a git command on a second line" \
+    $'git log -1\ngit diff {a,b}' 'expands braces'
+  # shellcheck disable=SC2016 # the literal backticks are the command string
+  # handed to the hook, not anything this script expands.
+  assert_hook_refuses_naming "the hook refuses a brace in a git command inside backticks" \
+    'git log -1 `git diff {a,b}`' 'expands braces'
   # And the refusal is scoped to git invocations, so a brace in a command
   # string that never calls git is untouched. These are the ordinary shapes --
   # an awk program, a jq filter -- that a whole-string brace refusal would
@@ -1534,6 +1557,476 @@ if ((settings_readable)); then
     'jq "{forkProcessing: .forkProcessing}" renovate.json'
   assert_hook_permits "a brace expansion outside a git call is still unprompted" \
     'ls packages-{base,kde}.txt'
+
+  # #312: bash expands a brace only when a comma or a `..` range sits inside
+  # it. Every other brace is a literal, and git's own `@{...}` revision syntax
+  # -- `HEAD@{1}`, `main@{upstream}`, `@{-1}`, `@{2.days.ago}` -- is spelled
+  # with exactly that literal form, so refusing every brace blocked the
+  # ordinary diff against the previous commit for no gain. One operand each,
+  # so nothing here depends on the reflog this checkout happens to have; the
+  # last case pins that a `{` which never closes is a literal too.
+  assert_hook_permits "git diff against @{upstream} is unprompted (#312)" \
+    'git diff @{upstream}'
+  assert_hook_permits "git log of a reflog entry is unprompted (#312)" \
+    'git log HEAD@{2}'
+  assert_hook_permits "git diff HEAD@{1} with a pathspec is unprompted" \
+    'git diff HEAD@{1} -- AGENTS.md'
+  assert_hook_permits "git log main@{upstream} is unprompted" \
+    'git log main@{upstream} -1'
+  assert_hook_permits "git rev-parse @{-1} is unprompted" \
+    'git rev-parse @{-1}'
+  assert_hook_permits "git log @{2.days.ago} is unprompted" \
+    'git log @{2.days.ago} -1'
+  assert_hook_permits "an unclosed brace in a git word is a literal and unprompted" \
+    'git log HEAD@{1 -1'
+  # The line is drawn where bash draws it, and errs toward refusing: `@{1,2}`
+  # reads as revision syntax and is two words to bash; `{x..x}` is a
+  # one-element sequence that rebuilds a flag; a comma nested one level down
+  # still expands; `${VAR}` is a runtime-built argument; bash pairs a `{` with
+  # the last `}` it can, so `{a},b}` expands and a depth counter that closed
+  # at the first `}` never saw the comma; a quoted `;` inside the brace is
+  # part of the word bash expands, while a split on the quote-stripped string
+  # cut the word in two before the brace test saw it. A `..` between two
+  # reflog entries has the refused shape and is refused although bash would
+  # leave it alone; the message names the spelling to use instead.
+  assert_hook_refuses_naming "the hook refuses @{1,2}, which bash expands" \
+    'git diff HEAD@{1,2}' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a one-element range that rebuilds --no-index" \
+    'git diff --no-inde{x..x} /dev/null ./AGENTS.md' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a nested brace expansion" \
+    'git diff {{/dev/null,./cosign.key}}' 'expands braces'
+  # shellcheck disable=SC2016 # the literal ${SECRET} is the point
+  assert_hook_refuses_naming "the hook refuses \${VAR} inside a git invocation" \
+    'git diff ${SECRET} HEAD' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a brace closed at its last }" \
+    'git diff {a},b} /dev/null ./cosign.key' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a brace that rebuilds --output on git log via {}" \
+    'git log {--format=%h},--output=cosign.pub} -1' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a quoted operator inside a brace" \
+    "git diff {/tmp/reference';',./cosign.key}" 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a quoted space inside a brace" \
+    "git log -p --outpu{t,'t '}=cosign.pub -1" 'expands braces'
+  assert_hook_refuses_naming "the hook refuses .. between two reflog entries and names HEAD~2..HEAD~1" \
+    'git log HEAD@{2}..HEAD@{1}' 'HEAD~2..HEAD~1'
+
+  # The brace rule against bash itself rather than against a label. Each
+  # corpus word is handed to bash verbatim, as an agent would type it, and
+  # bash says whether it becomes more than one word; every word bash expands
+  # must be refused, and every word of the literal set must be allowed. A word
+  # in neither class is held only to the first rule, so an over-refusal there
+  # is not a failure. The counts keep the check from going vacuous if the
+  # corpus shrinks or bash reads it differently. `OPERANDS` is set so that
+  # `${OPERANDS}` splits into two words the way a runtime-built argument would.
+  literal_brace_words=(
+    'HEAD@{1}'
+    'main@{upstream}'
+    '@{-1}'
+    '@{2.days.ago}'
+    'HEAD@{1'
+  )
+  # shellcheck disable=SC2016 # every word here is a spelling handed to bash
+  # verbatim; ${OPERANDS} and '{print $1}' are meant to reach it unexpanded.
+  brace_corpus=(
+    "${literal_brace_words[@]}"
+    'HEAD@{2}..HEAD@{1}'
+    '{a,b}'
+    '{1..3}'
+    'x{1..3}y'
+    'a{,b}'
+    '{{a,b}}'
+    '--no-inde{x,x}'
+    '--outpu{t,t}=FILE'
+    'HEAD@{1,2}'
+    '{--src-prefix=x},--no-index}'
+    '{a},b}'
+    "{/tmp/reference';',./cosign.key}"
+    '{a",",b}'
+    '{a\,b,c}'
+    '"{a,b}"'
+    "'{a,b}'"
+    '{a,b'
+    '{a,b}}'
+    '{{a,b}'
+    '${OPERANDS}'
+    '--output={a,b}'
+    '--output=x{,}'
+    "'{print \$1}'"
+    "'{a:1}'"
+    "'{a: .x, b: .y}'"
+  )
+  bash_expands() {
+    local expanded
+    expanded="$(OPERANDS='/dev/null ./cosign.key' bash --norc --noprofile -c 'printf "%s\0" '"$1" 2>/dev/null | tr -cd '\0' | wc -c)" || return 1
+    ((expanded > 1))
+  }
+  corpus_expanding=0
+  corpus_refused=1
+  corpus_failed=''
+  for corpus_word in "${brace_corpus[@]}"; do
+    bash_expands "${corpus_word}" || continue
+    corpus_expanding=$((corpus_expanding + 1))
+    corpus_payload="$(jq -nc --arg c "git diff ${corpus_word}" '{tool_name: "Bash", tool_input: {command: $c}}')"
+    run_bash_hooks "${corpus_payload}"
+    if ((hook_status != 2)) || [[ "${hook_stderr}" != *'expands braces'* ]]; then
+      corpus_refused=0
+      corpus_failed+="${corpus_word} (exit ${hook_status}) "
+    fi
+  done
+  if ((${#brace_corpus[@]} >= 25 && corpus_expanding >= 15)); then
+    pass "the brace corpus is large enough to mean something (${#brace_corpus[@]} words, ${corpus_expanding} that bash expands)"
+  else
+    fail "the brace corpus is large enough to mean something (${#brace_corpus[@]} words, ${corpus_expanding} that bash expands)" \
+      "wanted at least 25 words of which bash expands at least 15; the check has gone vacuous"
+  fi
+  if ((corpus_refused)); then
+    pass "every corpus word bash expands is refused inside a git invocation"
+  else
+    fail "every corpus word bash expands is refused inside a git invocation" \
+      "bash expands these into more than one word and the hook let them through: ${corpus_failed}"
+  fi
+  literal_allowed=1
+  literal_failed=''
+  for literal_word in "${literal_brace_words[@]}"; do
+    if bash_expands "${literal_word}"; then
+      literal_allowed=0
+      literal_failed+="${literal_word} (bash expands it) "
+      continue
+    fi
+    corpus_payload="$(jq -nc --arg c "git log ${literal_word} -1" '{tool_name: "Bash", tool_input: {command: $c}}')"
+    run_bash_hooks "${corpus_payload}"
+    if ((hook_status != 0)) || [[ -n "${hook_stderr}" ]]; then
+      literal_allowed=0
+      literal_failed+="${literal_word} (exit ${hook_status}) "
+    fi
+  done
+  if ((literal_allowed)); then
+    pass "every literal-brace word bash leaves alone is unprompted inside a git invocation"
+  else
+    fail "every literal-brace word bash leaves alone is unprompted inside a git invocation" \
+      "${literal_failed}"
+  fi
+
+  # #316: a quoted operator inside a git diff flag must not end the command.
+  # The first split stripped quotes and then cut the string at every operator
+  # character, so `--src-prefix='x|'` ended the git invocation as far as the
+  # operand scan was concerned, the count reset at the `|`, and `/dev/null
+  # ./cosign.key` were never counted -- while bash handed git the ordinary
+  # two-operand plain-file read. Demonstrated first, in a temporary directory
+  # of this fixture's own: git really prints the file beside that flag.
+  quoted_op_dir="$(mktemp -d)"
+  printf 'SECRET-LINE-1\nSECRET-LINE-2\n' >"${quoted_op_dir}/fake.key"
+  quoted_op_read="$(bash --norc --noprofile -c "git diff --src-prefix='x|' /dev/null ${quoted_op_dir}/fake.key" 2>/dev/null </dev/null)"
+  if grep -q '^+SECRET-LINE-1$' <<<"${quoted_op_read}"; then
+    pass "git diff prints a plain file beside a flag carrying a quoted operator"
+  else
+    fail "git diff prints a plain file beside a flag carrying a quoted operator" \
+      "this git no longer enters the plain-file mode behind --src-prefix='x|'; re-derive the quote-aware split"
+  fi
+  assert_hook_refuses_naming "the hook refuses the plain-file read behind a quoted pipe in a flag (#316)" \
+    "git diff --src-prefix='x|' /dev/null ./cosign.key" 'plain files'
+  assert_hook_refuses_naming "the hook refuses the plain-file read behind a quoted semicolon in a flag (#316)" \
+    "git diff --src-prefix='x;' /dev/null ./cosign.key" 'plain files'
+  assert_hook_refuses_naming "the hook refuses the plain-file read behind a quoted regex pipe (#316)" \
+    "git diff --word-diff-regex='.|.' /dev/null ./cosign.key" 'plain files'
+  assert_hook_refuses_naming "the hook refuses the plain-file read behind a double-quoted operator" \
+    'git diff --src-prefix="x&" /dev/null ./cosign.key' 'plain files'
+  assert_hook_refuses_naming "the hook refuses the plain-file read behind a backslash-escaped operator" \
+    'git diff --src-prefix=x\| /dev/null ./cosign.key' 'plain files'
+  assert_hook_refuses_naming "the hook refuses --output after a quoted pipe in an earlier flag" \
+    "git log --grep='a|b' --output=cosign.pub -1" '--output=FILE'
+  # The unquoted spelling of the same string is two commands to bash -- `git
+  # log --grep=a` piped into `b --output=...` -- and the --output latch still
+  # holds to the end of the string, so it stays refused.
+  assert_hook_refuses_naming "the hook still refuses --output after an unquoted pipe" \
+    'git log --grep=a|b --output=cosign.pub -1' '--output=FILE'
+  assert_hook_permits "a quoted operator in an ordinary one-operand diff flag is unprompted" \
+    "git diff --src-prefix='x|' HEAD"
+  assert_hook_permits "a quoted regex in git log --grep is unprompted" \
+    "git log --grep='fix|feat' --oneline -5"
+
+  # A redirection is not a separator, and its descriptor and target are the
+  # shell's words rather than git's. A split that counted every unquoted `&`
+  # as a separator closed the brace scope at the `&` of `2>&1`, and counted
+  # the `2` and `1` of it as diff operands, refusing every `git diff ... 2>&1`
+  # while letting `git diff 2>&1 /dev/null ./cosign.key` through with neither
+  # operand counted. `>&`, `<&`, `&>`, `&>>` and `>|` are redirections; `|&`
+  # is a pipe and still ends the command.
+  assert_hook_permits "git diff HEAD 2>&1 is unprompted" 'git diff HEAD 2>&1'
+  assert_hook_permits "git diff HEAD@{1} 2>&1 piped into jq is unprompted" \
+    "git diff HEAD@{1} 2>&1 | jq '{a,b}'"
+  assert_hook_permits "git diff HEAD |& jq is unprompted" "git diff HEAD |& jq '{a,b}'"
+  assert_hook_permits "an input redirection on git diff is unprompted" 'git diff HEAD </dev/null'
+  assert_hook_permits "a spaced input redirection on git diff is unprompted" 'git diff HEAD < /dev/null'
+  assert_hook_permits "git diff --stat with 2>&1 piped into head is unprompted" \
+    'git diff --stat HEAD -- AGENTS.md 2>&1 | head'
+  assert_hook_refuses_naming "the hook refuses the plain-file read with 2>&1 before the operands" \
+    'git diff 2>&1 /dev/null ./cosign.key' 'plain files'
+  assert_hook_refuses_naming "the hook refuses the plain-file read with 2>&1 after the operands" \
+    'git diff /dev/null ./cosign.key 2>&1' 'plain files'
+  assert_hook_refuses_naming "the hook refuses a brace behind 2>&1 on git log" \
+    'git log 2>&1 --outpu{t,t}=cosign.pub -1' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a brace behind &>" \
+    'git diff &>/dev/null {a,b}' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a brace behind <&0" \
+    'git diff <&0 {a,b}' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a brace behind >| in the same command" \
+    'git log -1 >| out --outpu{t,t}=cosign.pub' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a brace in a git command behind |&" \
+    'git log -1 |& git diff {a,b}' 'expands braces'
+
+  # The shell's own spelling of the write primitive: `git diff HEAD
+  # >cosign.pub` truncates the file before git starts. The split above learned
+  # to skip a redirection's target so `2>&1` is not two operands -- and with
+  # that, the target of `>` was skipped too and the command passed. Shown
+  # first, in a temporary directory: the redirection really empties the file.
+  redirect_dir="$(mktemp -d)"
+  printf 'ORIGINAL-CONTENT\n' >"${redirect_dir}/victim"
+  bash --norc --noprofile -c "git diff HEAD HEAD >${redirect_dir}/victim" >/dev/null 2>&1 </dev/null
+  redirect_written="$(cat "${redirect_dir}/victim" 2>/dev/null)"
+  rm -rf "${redirect_dir}"
+  if [[ "${redirect_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "an output redirection on git diff truncates the file it names before git runs"
+  else
+    fail "an output redirection on git diff truncates the file it names before git runs" \
+      "the file kept its contents; re-derive why the redirection refusal exists"
+  fi
+  for redirect_command in \
+    'git diff HEAD >cosign.pub' \
+    'git diff HEAD > cosign.pub' \
+    'git log -1 >> out' \
+    'git diff 2>err' \
+    'git diff &>/dev/null' \
+    'git diff &>>/dev/null' \
+    'git show HEAD >| x' \
+    'git diff HEAD > .claude/settings.json' \
+    'git diff HEAD > .claude/hooks/gate-git-diff.sh' \
+    'git diff HEAD >&cosign.pub' \
+    'git diff HEAD >& cosign.pub' \
+    'git diff HEAD <>cosign.pub' \
+    'git diff HEAD 2>&1 >cosign.pub' \
+    'git log -1; git diff HEAD >cosign.pub' \
+    'echo x | git diff HEAD >cosign.pub' \
+    'git diff HEAD 2>&1 | jq . ; git log -1 >out'; do
+    assert_hook_refuses_naming "the hook refuses an output redirection inside a git invocation: ${redirect_command}" \
+      "${redirect_command}" 'output redirection'
+  done
+  for redirect_command in \
+    'git diff HEAD >&2' \
+    'git diff HEAD 1>&2' \
+    'git diff HEAD >&-' \
+    'git diff HEAD 2>&-' \
+    'git diff HEAD <&0' \
+    "git diff HEAD <<<''" \
+    'echo x > out; git diff HEAD' \
+    'echo x >> out && git diff HEAD' \
+    'git diff HEAD | jq . > out'; do
+    assert_hook_permits "a descriptor, input or other-command redirection is unprompted: ${redirect_command}" \
+      "${redirect_command}"
+  done
+  # Bash lets a redirection precede the command name, and the two spellings
+  # are the same command: `>cosign.pub git diff HEAD` truncates the file
+  # exactly as `git diff HEAD >cosign.pub` does. A scope that opened at the
+  # `git` word had not yet seen the target, so `git status; >cosign.pub git
+  # diff HEAD` -- allowed on its `git status` prefix -- went through (review
+  # on #317). Shown first: the prefix form really truncates the file.
+  prefix_dir="$(mktemp -d)"
+  printf 'ORIGINAL-CONTENT\n' >"${prefix_dir}/victim"
+  bash --norc --noprofile -c "git status --short >/dev/null; >${prefix_dir}/victim git diff HEAD HEAD" >/dev/null 2>&1 </dev/null
+  prefix_written="$(cat "${prefix_dir}/victim" 2>/dev/null)"
+  rm -rf "${prefix_dir}"
+  if [[ "${prefix_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "a redirection written before the git word truncates the file it names"
+  else
+    fail "a redirection written before the git word truncates the file it names" \
+      "the file kept its contents; re-derive why prefix redirections are carried to the command name"
+  fi
+  for redirect_command in \
+    '>cosign.pub git diff HEAD' \
+    'git status; >cosign.pub git diff HEAD' \
+    '2>err git log -1' \
+    '>> out git show HEAD' \
+    'FOO=bar >out git diff HEAD' \
+    'git status; >cosign.pub /usr/bin/git diff HEAD'; do
+    assert_hook_refuses_naming "the hook refuses a redirection written before the git word: ${redirect_command}" \
+      "${redirect_command}" 'output redirection'
+  done
+  for redirect_command in \
+    '</dev/null git diff HEAD' \
+    '2>&1 git diff HEAD' \
+    '>&2 git diff HEAD' \
+    '>out echo x; git diff HEAD' \
+    '>out cat f | git diff --stat'; do
+    assert_hook_permits "a prefix redirection that writes no path, or belongs to another command, is unprompted: ${redirect_command}" \
+      "${redirect_command}"
+  done
+  # An expanding brace means the words here are not the words git would
+  # receive, so its message comes first; the redirection is refused once the
+  # brace is gone.
+  assert_hook_refuses_naming "a brace wins over a redirection refusal" \
+    'git diff HEAD >cosign.{pub,key}' 'expands braces'
+
+  # A `(` behind an unquoted `<` or `>` is a process substitution, not a
+  # subshell: it hands git a /dev/fd path as an operand the scan never
+  # counted, and the first split reset the operand count at its `(` instead.
+  # It is refused in a git invocation and left alone in any other command.
+  assert_hook_refuses_naming "the hook refuses a process substitution as a git diff operand" \
+    'git diff <(true) ./cosign.key' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a process substitution behind --" \
+    'git diff -- ./cosign.key <(true)' 'expands braces'
+  assert_hook_refuses_naming "the hook refuses a brace in a git command inside a process substitution" \
+    'cat <(git diff {a,b})' 'expands braces'
+  assert_hook_permits "a process substitution in a later non-git command is unprompted" \
+    'git log -1; cat <(true)'
+  assert_hook_permits "git inside a process substitution of another command is unprompted" \
+    'cat <(git log -1)'
+  assert_hook_permits "two git process substitutions handed to diff are unprompted" \
+    'diff <(git log -1) <(git log -2)'
+
+  # `$` and a backtick rebuild both refusals by another route: `$(...)` and
+  # `` `...` `` supply operands the scan never counted, `$'\x74'` is the
+  # letter t so `--outpu$'\x74'=FILE` reaches git as --output=FILE, and `$x`
+  # is a runtime-built argument. Shown first: bash replaces the substitution
+  # before git runs, and git prints the file beside it.
+  subst_dir="$(mktemp -d)"
+  printf 'SECRET-LINE-1\nSECRET-LINE-2\n' >"${subst_dir}/fake.key"
+  subst_read="$(bash --norc --noprofile -c "git diff \$(echo /dev/null) ${subst_dir}/fake.key" 2>/dev/null </dev/null)"
+  if grep -q '^+SECRET-LINE-1$' <<<"${subst_read}"; then
+    pass "git diff prints a plain file beside a substituted operand"
+  else
+    fail "git diff prints a plain file beside a substituted operand" \
+      "bash no longer substitutes the operand before git runs; re-derive the \$ refusal"
+  fi
+  # shellcheck disable=SC2016 # the literal $(...), $x and backticks are the
+  # command strings handed to the hook, not anything this script expands.
+  for expand_command in \
+    'git diff $(echo /dev/null) ./cosign.key' \
+    "git diff \$(printf '/dev/null ./cosign.key')" \
+    "git diff \`printf '/dev/null ./cosign.key'\`" \
+    'git diff `echo /dev/null` ./cosign.key' \
+    "git log -p --outpu\$'\\x74'=cosign.pub -1" \
+    "git log --outpu\$'\\x74'=FILE" \
+    'git diff $OPERANDS' \
+    'git diff -- $x $y' \
+    'git log -1 && git diff $(echo /dev/null) ./cosign.key' \
+    "git log --grep='a|b' --outpu\$'\\x74'=cosign.pub -1" \
+    "git log --grep='a|b' \`printf -- --output=cosign.pub\` -1"; do
+    assert_hook_refuses_naming "the hook refuses a \$ or backtick in a git word: ${expand_command}" \
+      "${expand_command}" 'before git sees the words'
+  done
+  # The `$` half is scoped like the brace rule, to the command that starts at
+  # a `git` word: an awk or jq program in a string that never invokes git, or
+  # in a command before or after it, is somebody else's argument.
+  # shellcheck disable=SC2016 # literal $(date) and backticks are the point
+  for expand_command in \
+    "awk '{print \$1}' README.md" \
+    "jq '.[\$x]' renovate.json" \
+    'echo `date`' \
+    'x=$(date); ls' \
+    "jq '.[\$x]' f | git diff --stat" \
+    "git diff HEAD | awk '{print \$1}'"; do
+    assert_hook_permits "a \$ or backtick outside a git invocation is unprompted: ${expand_command}" \
+      "${expand_command}"
+  done
+
+  # The word that names a command must be literal. Every scope in the hook
+  # opens at a literal `git` word, and the allow rule matched the string on
+  # its literal `git status` prefix: `$G` is not the word `git`, so after
+  # `git status;` nothing reopened, the hook exited 0, and bash ran the
+  # plain-file read. So is a brace bash would expand or a glob in that
+  # position -- `{,git}`, `g?t`, `/usr/bin/g[i]t` all reach git -- and after
+  # a wrapper that runs its arguments (`command`, `env`, `timeout`, ...) every
+  # remaining word of the command is held to the test. `[` and `[[` are
+  # commands, not globs. Shown first: `$G diff` really prints the file.
+  name_dir="$(mktemp -d)"
+  printf 'SECRET-LINE-1\nSECRET-LINE-2\n' >"${name_dir}/fake.key"
+  name_read="$(bash --norc --noprofile -c "git status --short >/dev/null; G=git; \$G diff /dev/null ${name_dir}/fake.key" 2>/dev/null </dev/null)"
+  rm -rf "${name_dir}"
+  if grep -q '^+SECRET-LINE-1$' <<<"${name_read}"; then
+    pass "a git invocation named through a variable really runs the plain-file read"
+  else
+    fail "a git invocation named through a variable really runs the plain-file read" \
+      "bash no longer runs \$G as git; re-derive the literal-command-name rule"
+  fi
+  # shellcheck disable=SC2016 # literal $G and $(printf git) are the point
+  for name_command in \
+    'git status; G=git; $G diff /dev/null ./cosign.key' \
+    'git status; $(printf git) diff /dev/null ./cosign.key' \
+    'git status; `echo git` diff x' \
+    '`echo git` diff x' \
+    '$G diff /dev/null ./cosign.key' \
+    'G=git $G diff /dev/null ./cosign.key' \
+    'git status && "$(printf git)" diff x' \
+    'git status; { $G diff x; }' \
+    'git status; exec $G diff x' \
+    'git status; env G=git $G diff x' \
+    'git status; time $G diff x' \
+    'git status | $G diff x' \
+    'git status; {,git} diff /dev/null ./cosign.key' \
+    'git status; g?t diff /dev/null ./cosign.key' \
+    'git status; gi* diff /dev/null ./cosign.key' \
+    'git status; /usr/bin/g[i]t diff /dev/null ./cosign.key' \
+    'shellcheck --version; G=git; command -- $G diff /dev/null ./cosign.key' \
+    'git status; env -u X $G diff /dev/null ./cosign.key' \
+    'git status; timeout -s KILL 5 $G diff x'; do
+    assert_hook_refuses_naming "the hook refuses a command name that is not literal: ${name_command}" \
+      "${name_command}" 'Spell every command name literally'
+  done
+  # `env -S` is not an option but an interpreter: it splits its quoted string
+  # into a command this scan never sees as words. Any -S after env, clustered
+  # or long, is refused; the other env options are not.
+  for name_command in \
+    "git status; env -S 'git diff /dev/null ./cosign.key'" \
+    "env -iS 'git diff /dev/null ./cosign.key'" \
+    "git status; env --split-string='git diff x'" \
+    "git status; env --split-string 'git diff x'" \
+    "git status; env -u X -S 'git diff x'"; do
+    assert_hook_refuses_naming "the hook refuses env -S: ${name_command}" \
+      "${name_command}" 'env -S'
+  done
+  # shellcheck disable=SC2016 # literal $x, $HOME and backticks are the point
+  for name_command in \
+    'git status; git diff HEAD@{1}' \
+    'FOO=bar git diff HEAD' \
+    'X=$(date); git diff HEAD' \
+    'echo $HOME; git diff HEAD' \
+    'echo `date`; git diff HEAD' \
+    'if [ -n "$x" ]; then git diff HEAD; fi' \
+    '[[ -n "$x" ]] && git diff HEAD' \
+    'git status; [ -f cosign.pub ]' \
+    'for f in $(ls); do echo $f; done' \
+    'ls > out; git status' \
+    'env FOO=$x git diff HEAD' \
+    'env -i PATH=$PATH git diff HEAD' \
+    'env -u X git diff HEAD' \
+    'timeout 60 git diff HEAD' \
+    'git status; timeout -s KILL 5 git diff HEAD' \
+    'xargs -I{} git diff {} < list' \
+    'command -v shellcheck' \
+    "find . -name '*.sh'"; do
+    assert_hook_permits "a literal command name is unprompted: ${name_command}" \
+      "${name_command}"
+  done
+  # A literal path to git is git: `/usr/bin/git diff /dev/null ./cosign.key`
+  # needs no expansion and opened no scope, because every scan compared the
+  # word to `git`. A literal name whose last component is git is rewritten
+  # to git before any scan runs, so each refusal reaches it.
+  assert_hook_refuses_naming "the hook refuses the plain-file read through /usr/bin/git after git status" \
+    'git status; /usr/bin/git diff /dev/null ./cosign.key' 'plain files'
+  assert_hook_refuses_naming "the hook refuses the plain-file read through /usr/bin/git" \
+    '/usr/bin/git diff /dev/null ./cosign.key' 'plain files'
+  assert_hook_refuses_naming "the hook refuses the plain-file read through ~/bin/git" \
+    'git status; ~/bin/git diff /dev/null ./cosign.key' 'plain files'
+  assert_hook_refuses_naming "the hook refuses the plain-file read through command /usr/bin/git" \
+    'git status; command /usr/bin/git diff /dev/null ./cosign.key' 'plain files'
+  assert_hook_refuses_naming "the hook refuses --output through /usr/bin/git" \
+    '/usr/bin/git log -1 --output=cosign.pub' '--output=FILE'
+  assert_hook_refuses_naming "the hook refuses an output redirection through /usr/bin/git" \
+    'git status; /usr/bin/git diff HEAD >cosign.pub' 'output redirection'
+  assert_hook_refuses_naming "the hook refuses a brace through /usr/bin/git" \
+    '/usr/bin/git diff {/dev/null,./cosign.key}' 'expands braces'
+  assert_hook_permits "an ordinary diff through /usr/bin/git is unprompted" '/usr/bin/git diff HEAD'
+  assert_hook_permits "an ordinary log through /usr/bin/git is unprompted" '/usr/bin/git log --oneline -5'
+  rm -rf -- "${quoted_op_dir}" "${subst_dir}"
 
   # Spellings the shell rewrites before git sees them. Each of these reaches
   # git as --no-index while the literal string is absent from the command.
@@ -1747,11 +2240,91 @@ if ((settings_readable)); then
   assert_hook_refuses_naming "the hook refuses a shellcheck read behind another command" \
     'ls -l && shellcheck ./.env' 'shellcheck prints the source line'
   assert_hook_refuses_naming "the hook refuses a shellcheck read behind an env assignment" \
-    'SHELLCHECK_OPTS=-x shellcheck ./.env' 'shellcheck prints the source line'
-  # Brace expansion is the same rewrite it was for git: one word to a gate
-  # reading the typed string, two files to shellcheck.
-  assert_hook_refuses_naming "the hook refuses a brace inside a shellcheck invocation" \
-    'shellcheck {tests/run-tests.sh,/etc/shadow}' 'bash expands braces before shellcheck'
+    'FOO=bar shellcheck ./.env' 'shellcheck prints the source line'
+
+  # Bash rewrites some words before shellcheck sees them, and the gate reads
+  # the words as typed. Two of those rewrites turned a checked operand into a
+  # different file (review on aurora-zfs-simple#207, the same gate):
+  #   * a leading unquoted `~` is $HOME to bash, and a literal `~` to the
+  #     gate -- which `realpath -m -s` resolved to `<checkout>/~/...`, an
+  #     inside path, so `shellcheck ~/.aws/credentials` passed. (The
+  #     `~/.ssh/id_ed25519` case above was refused only by its basename.)
+  #   * an unquoted `*`, `?` or `[` is a glob bash expands into files the
+  #     gate never saw: `shellcheck .env*` is one word here, and the .env to
+  #     bash.
+  # Both shown first, against a throwaway HOME and a synthetic file in a
+  # temporary directory of this fixture's own -- never the real $HOME.
+  tilde_home="$(mktemp -d)"
+  mkdir -p "${tilde_home}/.aws"
+  printf 'SYNTHETIC_TILDE_SECRET=synthetic-value-2\n' >"${tilde_home}/.aws/credentials"
+  tilde_output="$(HOME="${tilde_home}" bash --norc --noprofile -c 'shellcheck ~/.aws/credentials' 2>&1 </dev/null || true)"
+  rm -rf "${tilde_home}"
+  if grep -q '^SYNTHETIC_TILDE_SECRET=synthetic-value-2$' <<<"${tilde_output}"; then
+    pass "shellcheck ~/path reads the file under \$HOME, which is not the literal ~ the gate resolves"
+  else
+    fail "shellcheck ~/path reads the file under \$HOME, which is not the literal ~ the gate resolves" \
+      "the synthetic line did not appear; re-derive why an unquoted leading ~ is refused"
+  fi
+  glob_dir="$(mktemp -d)"
+  printf 'SYNTHETIC_GLOB_SECRET=synthetic-value-3\n' >"${glob_dir}/.env"
+  glob_output="$(cd "${glob_dir}" && bash --norc --noprofile -c 'shellcheck .env*' 2>&1 </dev/null || true)"
+  rm -rf "${glob_dir}"
+  if grep -q '^SYNTHETIC_GLOB_SECRET=synthetic-value-3$' <<<"${glob_output}"; then
+    pass "shellcheck .env* reads the file the glob expands to, which the gate never saw as a word"
+  else
+    fail "shellcheck .env* reads the file the glob expands to, which the gate never saw as a word" \
+      "the synthetic line did not appear; re-derive why an unquoted glob is refused"
+  fi
+  for rewrite_command in \
+    'shellcheck ~/.aws/credentials' \
+    'shellcheck ~' \
+    'shellcheck ~someone/.bashrc' \
+    'shellcheck .env*' \
+    'shellcheck cosign.ke?' \
+    'shellcheck .en[v]' \
+    'shellcheck ./.*' \
+    'shellcheck tests/*.sh' \
+    'shellcheck -S style tests/run-tests.sh ~/.netrc' \
+    'git log -1 && shellcheck ~/.aws/credentials'; do
+    assert_hook_refuses_naming "the hook refuses a tilde or glob in a shellcheck operand: ${rewrite_command}" \
+      "${rewrite_command}" 'bash rewrites this word'
+  done
+  # Brace expansion, command substitution and a process substitution are the
+  # same rewrite they were for git: one word to a gate reading the typed
+  # string, other files to shellcheck. The backtick closes the scope it would
+  # be refused in, so it is held on the whole-string latch the git rule uses.
+  # shellcheck disable=SC2016 # literal $(...), $F and backticks are the point
+  for rewrite_command in \
+    'shellcheck {tests/run-tests.sh,/etc/shadow}' \
+    'shellcheck $(echo /etc/shadow)' \
+    'shellcheck `echo /etc/shadow`' \
+    'shellcheck $F' \
+    'shellcheck <(cat /etc/shadow)'; do
+    assert_hook_refuses_naming "the hook refuses an expansion in a shellcheck operand: ${rewrite_command}" \
+      "${rewrite_command}" 'bash rewrites this word'
+  done
+  # ShellCheck reads file operands out of SHELLCHECK_OPTS as well, so the
+  # assignment is refused wherever it stands, including in a command of its
+  # own: the Bash tool's shell persists between calls.
+  for rewrite_command in \
+    'SHELLCHECK_OPTS=/etc/shadow shellcheck tests/run-tests.sh' \
+    'export SHELLCHECK_OPTS=/etc/shadow; shellcheck tests/run-tests.sh' \
+    'export SHELLCHECK_OPTS=/etc/shadow' \
+    'env SHELLCHECK_OPTS=-x shellcheck tests/run-tests.sh'; do
+    assert_hook_refuses_naming "the hook refuses a SHELLCHECK_OPTS assignment: ${rewrite_command}" \
+      "${rewrite_command}" 'SHELLCHECK_OPTS='
+  done
+  # A quoted or escaped glob character is the literal word bash would pass,
+  # and a `~` that does not lead the word is a character in a filename.
+  for rewrite_command in \
+    "shellcheck 'tests/*.sh'" \
+    'shellcheck "tests/*.sh"' \
+    'shellcheck tests/\*.sh' \
+    'shellcheck tests/run-tests.sh~' \
+    "shellcheck 'tests/run-tests.sh'"; do
+    assert_hook_permits "a quoted glob or a non-leading ~ in a shellcheck operand is unprompted: ${rewrite_command}" \
+      "${rewrite_command}"
+  done
   # An rc file is not on the skip list, so its path is checked like any other.
   assert_hook_refuses_naming "the hook refuses an rc file outside the tree" \
     'shellcheck --rcfile /home/someone/.shellcheckrc tests/run-tests.sh' \
