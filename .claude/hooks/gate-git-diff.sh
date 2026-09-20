@@ -70,6 +70,22 @@
 #      and arrives as `--output=FILE`. Braces are refused inside a git
 #      invocation rather than expanded; see `BRACE_MSG`.
 #
+#   7. `git` is not the only allow-listed command that opens a file it is
+#      pointed at. `Bash(shellcheck *)` is allowed with no prompt too, and
+#      ShellCheck prints the *source line* above every diagnostic it reports,
+#      so `shellcheck ./.env` prints back every unexported `NAME=value` line
+#      of a file `Read(./.env)` refuses -- values included. A PEM-shaped file
+#      leaks its `-----BEGIN/END-----` lines and its trailing base64 line the
+#      same way. It is a lossy read rather than `cat`, and for the `.env`
+#      shape the deny rules name, the loss is nothing that matters.
+#
+#      No permission pattern closes it: patterns match by prefix, so
+#      `Bash(shellcheck tests/*)` still matches
+#      `shellcheck tests/run-tests.sh /home/me/.aws/credentials`. So the same
+#      operand scan applies here -- every operand must resolve inside the
+#      working tree and must not be one of the secret-shaped names the deny
+#      rules list. Linting this repository's own scripts is unaffected.
+#
 # So this looks at the operands git would actually receive, and refuses the
 # two-operand form unless every operand resolves as a revision -- which is what
 # separates `git diff main feature` from `git diff /dev/null ./cosign.key`.
@@ -81,8 +97,13 @@
 # What it still cannot see, stated rather than implied: a command that builds
 # its arguments at runtime (`git diff $x $y`, `sh -c ...`), one that changes
 # directory out of the repository first, and anything a command reads or writes
-# once it has started. This re-gates the pre-approved commands that reach past
-# the deny list; it is not a sandbox.
+# once it has started. A `shellcheck -x` run whose target file names an outside
+# file in a `source` directive is in that last category: the operands are
+# checked, what the tool then opens on their behalf is not. This re-gates the
+# pre-approved commands that reach past the deny list; it is not a sandbox.
+#
+# The file is still named for the git gate because `.github/workflows/build.yml`
+# lints it by path; renaming it needs that file changed in the same commit.
 
 set -uo pipefail
 
@@ -94,6 +115,10 @@ refuse() {
 DIFF_MSG='blocked: this git diff would compare paths as plain files (git'"'"'s --no-index mode, which needs no flag once two operands are given), so it prints any file on disk -- cosign.key, a .env, a private key outside this repository -- past the Read(...) deny rules in .claude/settings.json. Describe such a file with ls -l or wc -c instead.'
 
 BRACE_MSG='blocked: bash expands braces before git sees the words, and this gate reads the words as typed, so a brace rebuilds both spellings it refuses: git diff {/dev/null,./cosign.key} passes the operand scan as one word and reaches git as two operands (the plain-file read), and --outpu{t,t}=FILE matches no word here and reaches git as --output=FILE. Expanding braces correctly means reimplementing bash inside a hook; refusing them costs nothing, because no git command in this repository is spelled with one. Write the command out in full. Only words of a git invocation are affected: awk and jq programs elsewhere in the string are not.'
+
+SHELLCHECK_MSG='blocked: shellcheck prints the source line above every diagnostic it reports, so pointing it at this path prints that file back -- every unexported NAME=value line of a .env, the BEGIN/END lines of a key -- past the Read(...) deny rules in .claude/settings.json, which gate the Read tool and say nothing about what an allowed Bash command opens. Operands must be inside the working tree and must not be one of the secret-shaped names those rules list (cosign.key, .env, .env.*, *.pem, *.p12, id_rsa, id_ed25519). Linting this repository'"'"'s own scripts is unaffected.'
+
+SHELLCHECK_BRACE_MSG='blocked: bash expands braces before shellcheck sees the words, and this gate reads the words as typed, so shellcheck {tests/run-tests.sh,/etc/shadow} is one word to the operand scan here and two files to shellcheck -- the second of which it would print back. Expanding braces correctly means reimplementing bash inside a hook; refusing them costs nothing, because no shellcheck command in this repository is spelled with one. Write the paths out in full.'
 
 OUT_MSG='blocked: git --output=FILE (and the space form) writes this diff or log to the path it names instead of stdout, overwriting any file this uid can reach -- cosign.pub, .claude/settings.json, this hook, ~/.ssh/authorized_keys -- with no Read(...) or Write(...) deny rule in its way. git diff, git log and git show print to stdout; read that instead. --output-indicator-* is a different flag and is unaffected.'
 
@@ -154,6 +179,16 @@ path_inside_worktree() {
   [[ "${candidate}" == "${toplevel}" || "${candidate}" == "${toplevel}"/* ]]
 }
 
+# The shapes `.claude/settings.json` denies the Read tool. Inside the working
+# tree is not enough on its own: `cosign.key` and a `.env` live there, and they
+# are the two files those rules exist for.
+denied_read_shape() {
+  case "${1##*/}" in
+  cosign.key | .env | .env.* | *.pem | *.p12 | id_rsa | id_ed25519) return 0 ;;
+  esac
+  return 1
+}
+
 seen_git=0
 in_git=0
 in_diff=0
@@ -161,6 +196,8 @@ operands=0
 unresolved=0
 after_dashdash=0
 skip_git_option_value=0
+in_shellcheck=0
+skip_shellcheck_option_value=0
 
 for word in "${words[@]+"${words[@]}"}"; do
   case "${word}" in
@@ -176,6 +213,11 @@ for word in "${words[@]+"${words[@]}"}"; do
     seen_git=0
     in_diff=0
     skip_git_option_value=0
+    # Unlike `in_git`, this does not latch past a command boundary. The
+    # refusal below is about one command's own operands, so a path belonging
+    # to some later command in the string is not its business.
+    in_shellcheck=0
+    skip_shellcheck_option_value=0
     continue
     ;;
   esac
@@ -227,6 +269,45 @@ for word in "${words[@]+"${words[@]}"}"; do
     case "${word}" in
     --output | --output=*) refuse "${OUT_MSG}" ;;
     esac
+  fi
+
+  # The operand scan for the other allow-listed command that opens a file it
+  # is pointed at. Everything here is refused-by-default: a word this does not
+  # recognise as an option is treated as a path and checked, so forgetting an
+  # option costs a refused lint run rather than an unwatched read.
+  if ((in_shellcheck)); then
+    case "${word}" in
+    *[{}]*) refuse "${SHELLCHECK_BRACE_MSG}" ;;
+    esac
+    if ((skip_shellcheck_option_value)); then
+      skip_shellcheck_option_value=0
+      continue
+    fi
+    case "${word}" in
+    # The eight short options that take a value, and the long options in the
+    # space spelling Haskell's getOpt accepts (`--shell bash`). The attached
+    # spellings (`-sbash`, `--shell=bash`) need no entry: they are one
+    # dash-prefixed word and fall through to the catch-all below.
+    #
+    # `--rcfile` is deliberately absent, so its path is checked like any other
+    # operand: an rc file outside the tree is not something a lint run here
+    # needs. `-C` is absent too, because its argument is optional and must be
+    # attached -- shellcheck reads `-C always` as the flag plus a file named
+    # `always`, and so does this.
+    -i | -e | -f | -o | -P | -s | -S | -W | \
+      --include | --exclude | --format | --enable | --source-path | \
+      --shell | --severity | --wiki-link-count)
+      skip_shellcheck_option_value=1
+      continue
+      ;;
+    # Stdin, not a file on disk.
+    -) continue ;;
+    -*) continue ;;
+    esac
+    if ! path_inside_worktree "${word}" || denied_read_shape "${word}"; then
+      refuse "${SHELLCHECK_MSG}"
+    fi
+    continue
   fi
 
   if ((in_diff)); then
@@ -300,6 +381,19 @@ for word in "${words[@]+"${words[@]}"}"; do
   if [[ "${word}" == "git" ]]; then
     seen_git=1
     in_git=1
+  fi
+
+  # The bare word, for the same reason the git latch above matches the bare
+  # word: `.claude/settings.json` allows the literal `shellcheck ` prefix, so
+  # `/usr/bin/shellcheck ...` matches no allow rule and prompts on its own
+  # account. Position is not required either -- `SHELLCHECK_OPTS=... shellcheck
+  # ./.env` puts the word second -- and the cost of that is an outside path
+  # named after the word in some command that is not shellcheck at all
+  # (`echo shellcheck /etc/passwd`), refused where it would otherwise have
+  # prompted. That is the same trade the `--output` latch above makes.
+  if [[ "${word}" == "shellcheck" ]]; then
+    in_shellcheck=1
+    skip_shellcheck_option_value=0
   fi
 done
 

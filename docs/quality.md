@@ -270,7 +270,11 @@ relying on an agent having read the policy carefully:
   secret set. These map to the consent gates in `AGENTS.md`.
 - **Allowed** — the non-privileged test suite, `shellcheck`, `bash -n`,
   read-only git and host inspection, and the read-only VM/pool name inventories
-  on **both** libvirt connections.
+  on **both** libvirt connections. "Read-only" is about the *repository*, not
+  about the disk: `git diff` and `shellcheck` both print the contents of any
+  path they are handed, so both are re-gated by the `PreToolUse` hook described
+  in [SECURITY-AI.md](security/SECURITY-AI.md) rather than by the permission
+  rules alone.
 
 Two of those splits are deliberate and easy to get wrong in the opposite
 direction:

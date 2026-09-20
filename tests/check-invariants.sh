@@ -1675,6 +1675,126 @@ if ((settings_readable)); then
   assert_hook_permits "git -c ... diff --stat is still unprompted" \
     'git -c core.pager=cat diff --stat'
 
+  # --- The other allow-listed command that opens a file it is pointed at ----
+  #
+  # `Bash(shellcheck *)` is allowed with no prompt as well, and ShellCheck
+  # prints the *source line* above every diagnostic it reports. So it prints
+  # back whatever it is aimed at: `shellcheck ./.env` echoes every unexported
+  # `NAME=value` line of a file `Read(./.env)` refuses, values included, and a
+  # PEM-shaped file gives up its `-----BEGIN/END-----` lines and its trailing
+  # base64 line. It is a lossy read rather than `cat`, and for the `.env` shape
+  # the deny rules name the loss is nothing that matters. The shape of the
+  # problem is the same as the git case above: those rules gate the *Read*
+  # tool, this is Bash, and nothing consulted them.
+  #
+  # No permission pattern closes it either -- patterns match by prefix, so
+  # `Bash(shellcheck tests/*)` still matches
+  # `shellcheck tests/run-tests.sh /home/me/.aws/credentials` -- so the hook
+  # checks the operands: inside the working tree, and not one of the
+  # secret-shaped names.
+  #
+  # Demonstrated before it is asserted, for the same reason the fixtures above
+  # are. ShellCheck is a declared dependency of this repository (`just lint`
+  # hard-errors without it, and the `ubuntu-26.04` runner ships 0.11.0), so its
+  # absence is a failure here rather than a silent skip: the alternative is
+  # this section going green on a host where the exposure was never reproduced.
+  shellcheck_dir="$(mktemp -d)"
+  printf '# synthetic fixture\nSYNTHETIC_SECRET=synthetic-value-1\n' \
+    >"${shellcheck_dir}/fake.env"
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    fail "shellcheck prints the contents of the file it is pointed at" \
+      "shellcheck is not on PATH, so the exposure the refusals below exist for could not be reproduced"
+  else
+    shellcheck_output="$(shellcheck "${shellcheck_dir}/fake.env" 2>&1 || true)"
+    if grep -q '^SYNTHETIC_SECRET=synthetic-value-1$' <<<"${shellcheck_output}"; then
+      pass "shellcheck prints the contents of the file it is pointed at"
+    else
+      fail "shellcheck prints the contents of the file it is pointed at" \
+        "this shellcheck no longer echoes the source line; re-derive what the refusals below are for"
+    fi
+  fi
+  rm -rf "${shellcheck_dir}"
+
+  # The paths the deny rules name, inside the checkout.
+  assert_hook_refuses_naming "the hook refuses shellcheck pointed at ./.env" \
+    'shellcheck ./.env' 'shellcheck prints the source line'
+  assert_hook_refuses_naming "the hook refuses shellcheck pointed at ./cosign.key" \
+    'shellcheck ./cosign.key' 'shellcheck prints the source line'
+  assert_hook_refuses_naming "the hook refuses shellcheck pointed at a .pem inside the tree" \
+    'shellcheck system_files/etc/pki/anything.pem' 'shellcheck prints the source line'
+  # And anything outside it, which is where the interesting material usually
+  # is: an agent's own credentials rather than the repository's.
+  assert_hook_refuses_naming "the hook refuses shellcheck pointed outside the checkout" \
+    'shellcheck /etc/shadow' 'shellcheck prints the source line'
+  assert_hook_refuses_naming "the hook refuses shellcheck pointed at a home-directory key" \
+    'shellcheck /home/someone/.ssh/id_ed25519' 'shellcheck prints the source line'
+  assert_hook_refuses_naming "the hook refuses the climb-out-and-back-in spelling" \
+    "shellcheck ../${checkout_name}/.env" 'shellcheck prints the source line'
+  # A flag before the operand must not hide it, and a flag that takes a value
+  # must not swallow it: `--shell bash /etc/shadow` is two words of option and
+  # one operand.
+  assert_hook_refuses_naming "a flag before the operand does not hide it" \
+    'shellcheck -S style -o all /etc/shadow' 'shellcheck prints the source line'
+  assert_hook_refuses_naming "a value-taking flag does not swallow the operand after its value" \
+    'shellcheck --shell bash /etc/shadow' 'shellcheck prints the source line'
+  # `-C`'s argument is optional and must be attached, so shellcheck reads
+  # `-C always` as the flag plus a file named `always`. The gate reads it the
+  # same way, which is why the operand after it is still checked.
+  assert_hook_refuses_naming "an optional-argument flag does not swallow the operand" \
+    'shellcheck -C always /etc/shadow' 'shellcheck prints the source line'
+  # The word need not start the command: an operator boundary or an
+  # environment assignment in front of it changes nothing.
+  assert_hook_refuses_naming "the hook refuses a shellcheck read behind another command" \
+    'ls -l && shellcheck ./.env' 'shellcheck prints the source line'
+  assert_hook_refuses_naming "the hook refuses a shellcheck read behind an env assignment" \
+    'SHELLCHECK_OPTS=-x shellcheck ./.env' 'shellcheck prints the source line'
+  # Brace expansion is the same rewrite it was for git: one word to a gate
+  # reading the typed string, two files to shellcheck.
+  assert_hook_refuses_naming "the hook refuses a brace inside a shellcheck invocation" \
+    'shellcheck {tests/run-tests.sh,/etc/shadow}' 'bash expands braces before shellcheck'
+  # An rc file is not on the skip list, so its path is checked like any other.
+  assert_hook_refuses_naming "the hook refuses an rc file outside the tree" \
+    'shellcheck --rcfile /home/someone/.shellcheckrc tests/run-tests.sh' \
+    'shellcheck prints the source line'
+
+  # None of that may cost the repository its own lint runs.
+  assert_hook_permits "linting a tracked script is still unprompted" \
+    'shellcheck tests/run-tests.sh'
+  assert_hook_permits "linting several tracked scripts at once is still unprompted" \
+    'shellcheck ./scripts/quickstart.sh scripts/pr-review-state.sh'
+  assert_hook_permits "the attached --shell= spelling is still unprompted" \
+    'shellcheck --shell=bash system_files/etc/profile.d/homebrew.sh'
+  assert_hook_permits "the space --shell spelling is still unprompted" \
+    'shellcheck --shell bash system_files/etc/profile.d/homebrew.sh'
+  assert_hook_permits "severity and optional-check flags are still unprompted" \
+    'shellcheck -S style -o all tests/check-invariants.sh'
+  assert_hook_permits "source-path and external sources are still unprompted" \
+    'shellcheck -x -P SCRIPTDIR scripts/quickstart.sh'
+  assert_hook_permits "reading a script from stdin is still unprompted" \
+    'shellcheck -'
+  assert_hook_permits "a script that does not exist yet is still unprompted" \
+    'shellcheck tests/test-not-written-yet.sh'
+  assert_hook_permits "the word shellcheck outside a shellcheck call is not one" \
+    'grep -n shellcheck Justfile'
+
+  # The join that matters most: this repository's own lint recipe must not be
+  # refused by this repository's own gate. Read the invocations out of the
+  # Justfile rather than restating them, because a restated command list is a
+  # second copy with the same drift problem the rest of this file avoids.
+  justfile_lint_commands=0
+  while IFS= read -r justfile_lint_command; do
+    justfile_lint_commands=$((justfile_lint_commands + 1))
+    assert_hook_permits \
+      "Justfile lint invocation ${justfile_lint_commands} is still unprompted" \
+      "${justfile_lint_command}"
+  done < <(sed -n 's/^[[:space:]]*\(shellcheck [^#]*\)$/\1/p' "${JUSTFILE}")
+  if ((justfile_lint_commands >= 2)); then
+    pass "the Justfile lint recipe's shellcheck invocations were found and checked"
+  else
+    fail "the Justfile lint recipe's shellcheck invocations were found and checked" \
+      "found ${justfile_lint_commands}; the recipe has two, so the extraction above stopped matching and those assertions checked nothing"
+  fi
+
   # PreToolUse fires for every Bash call, so a payload shaped differently from
   # the expected one must not block the session.
   assert_hook_payload_permits "an empty payload does not block the session" '{}'
