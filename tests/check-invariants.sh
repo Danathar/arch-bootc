@@ -1823,6 +1823,42 @@ if ((settings_readable)); then
     assert_hook_permits "a descriptor, input or other-command redirection is unprompted: ${redirect_command}" \
       "${redirect_command}"
   done
+  # Bash lets a redirection precede the command name, and the two spellings
+  # are the same command: `>cosign.pub git diff HEAD` truncates the file
+  # exactly as `git diff HEAD >cosign.pub` does. A scope that opened at the
+  # `git` word had not yet seen the target, so `git status; >cosign.pub git
+  # diff HEAD` -- allowed on its `git status` prefix -- went through (review
+  # on #317). Shown first: the prefix form really truncates the file.
+  prefix_dir="$(mktemp -d)"
+  printf 'ORIGINAL-CONTENT\n' >"${prefix_dir}/victim"
+  bash --norc --noprofile -c "git status --short >/dev/null; >${prefix_dir}/victim git diff HEAD HEAD" >/dev/null 2>&1 </dev/null
+  prefix_written="$(cat "${prefix_dir}/victim" 2>/dev/null)"
+  rm -rf "${prefix_dir}"
+  if [[ "${prefix_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "a redirection written before the git word truncates the file it names"
+  else
+    fail "a redirection written before the git word truncates the file it names" \
+      "the file kept its contents; re-derive why prefix redirections are carried to the command name"
+  fi
+  for redirect_command in \
+    '>cosign.pub git diff HEAD' \
+    'git status; >cosign.pub git diff HEAD' \
+    '2>err git log -1' \
+    '>> out git show HEAD' \
+    'FOO=bar >out git diff HEAD' \
+    'git status; >cosign.pub /usr/bin/git diff HEAD'; do
+    assert_hook_refuses_naming "the hook refuses a redirection written before the git word: ${redirect_command}" \
+      "${redirect_command}" 'output redirection'
+  done
+  for redirect_command in \
+    '</dev/null git diff HEAD' \
+    '2>&1 git diff HEAD' \
+    '>&2 git diff HEAD' \
+    '>out echo x; git diff HEAD' \
+    '>out cat f | git diff --stat'; do
+    assert_hook_permits "a prefix redirection that writes no path, or belongs to another command, is unprompted: ${redirect_command}" \
+      "${redirect_command}"
+  done
   # An expanding brace means the words here are not the words git would
   # receive, so its message comes first; the redirection is refused once the
   # brace is gone.

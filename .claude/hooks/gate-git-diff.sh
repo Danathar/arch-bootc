@@ -89,7 +89,9 @@
 # The shell has its own spelling of the same write, and it is the older one:
 # `git diff HEAD >cosign.pub` truncates the file before git starts, and
 # `>>`, `>|`, `&>`, `&>>`, `2>err`, `>&file` and `<>file` each open a path
-# for writing the same way. Nothing in the allow rule sees it -- the rule
+# for writing the same way, wherever in the command they are written --
+# `>cosign.pub git diff HEAD` is the same command as `git diff HEAD
+# >cosign.pub`. Nothing in the allow rule sees it -- the rule
 # matches a `git diff` prefix -- and the operand scan must not, because a
 # redirection's target is the shell's word, not git's (counting it refused
 # `git diff HEAD 2>&1`). So an output redirection inside a git invocation is
@@ -476,14 +478,23 @@ redirection_writes_a_path() {
 # to the simple command it is written in, so `git diff HEAD >cosign.pub` is
 # git's and `echo x >out; git diff HEAD` and `git diff HEAD | jq . >out` are
 # not -- those are decided by whatever rule covers `echo` and `jq`, the way
-# `git diff HEAD | tee cosign.pub` already is. A brace found anywhere in the
-# string wins the refusal: an expanding brace means the words here are not
-# the words git would receive, and that message is the one to act on first.
+# `git diff HEAD | tee cosign.pub` already is. Bash also lets a redirection
+# *precede* the command name -- `>cosign.pub git diff HEAD` is the same
+# command as `git diff HEAD >cosign.pub`, and `git status; >cosign.pub git
+# diff HEAD` truncated the trust anchor while a scope that opened at the
+# `git` word had not yet seen the target (review on #317). So a writing
+# target seen before any `git` word of its command is carried until the
+# command's name is known, and refused if that name turns out to be git. A
+# brace found anywhere in the string wins the refusal: an expanding brace
+# means the words here are not the words git would receive, and that message
+# is the one to act on first.
 raw_in_git=0
 writing_redirect=0
+prefix_writing_redirect=0 # a writing target seen before this command's git word
 for ((idx = 0; idx < ${#raw_words[@]}; idx++)); do
   if [[ "${kinds[idx]}" == sep ]]; then
     raw_in_git=0
+    prefix_writing_redirect=0
     continue
   fi
   raw_word="${raw_words[idx]}"
@@ -496,8 +507,14 @@ for ((idx = 0; idx < ${#raw_words[@]}; idx++)); do
       redirection_writes_a_path "${redirects[idx]}" "${words[idx]}"; then
       writing_redirect=1
     fi
+  elif [[ "${kinds[idx]}" == target ]] &&
+    redirection_writes_a_path "${redirects[idx]}" "${words[idx]}"; then
+    prefix_writing_redirect=1
   fi
-  [[ "${kinds[idx]}" == word && "${words[idx]}" == "git" ]] && raw_in_git=1
+  if [[ "${kinds[idx]}" == word && "${words[idx]}" == "git" ]]; then
+    raw_in_git=1
+    ((prefix_writing_redirect)) && writing_redirect=1
+  fi
 done
 ((writing_redirect)) && refuse "${REDIRECT_MSG}"
 

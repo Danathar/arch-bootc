@@ -223,8 +223,10 @@ must be described as such.
   The shell has its own spelling of the write, and it is the older one: an
   output redirection inside a git invocation — `git diff HEAD >cosign.pub`,
   `>>`, `>|`, `&>`, `2>err`, `>&file`, `<>file` — makes Bash open the target
-  for writing before git starts. The hook refuses it whatever the target, on
-  the same ground as `--output`. Descriptor forms (`2>&1`, `>&2`, `>&-`),
+  for writing before git starts, and Bash lets it precede the command name
+  (`>cosign.pub git diff HEAD` is the same command). The hook refuses it
+  whatever the target and wherever it is written, on the same ground as
+  `--output`. Descriptor forms (`2>&1`, `>&2`, `>&-`),
   input redirections, and a redirection on another command of the same string
   (`echo x >out; git diff HEAD`, `git diff HEAD | jq . > out`) are not
   affected.
