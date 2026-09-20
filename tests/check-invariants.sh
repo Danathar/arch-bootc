@@ -1706,6 +1706,129 @@ if ((settings_readable)); then
       "${literal_failed}"
   fi
 
+  # An unquoted leading `~` is $HOME to bash and a literal `~` to the gate,
+  # which `realpath -m -s` resolved to `<checkout>/~/...`, an inside path. So
+  # `git diff -- ~/.aws/credentials ~/.bashrc` counted two operands, found
+  # both inside the working tree, and exited 0, and bash then handed git two
+  # files from the home directory, which it printed as a plain-file diff. The
+  # ShellCheck operand scan below already refuses that word; the git scope now
+  # does the same. Shown first, against a throwaway HOME of this fixture's
+  # own -- never the real $HOME.
+  git_tilde_home="$(mktemp -d)"
+  mkdir -p "${git_tilde_home}/.aws"
+  printf 'SYNTHETIC_GIT_TILDE_SECRET=synthetic-value-4\n' >"${git_tilde_home}/.aws/credentials"
+  printf 'export FIXTURE=1\n' >"${git_tilde_home}/.bashrc"
+  git_tilde_output="$(HOME="${git_tilde_home}" bash --norc --noprofile -c 'git diff -- ~/.aws/credentials ~/.bashrc' 2>&1 </dev/null || true)"
+  rm -rf "${git_tilde_home}"
+  if grep -q '^-SYNTHETIC_GIT_TILDE_SECRET=synthetic-value-4$' <<<"${git_tilde_output}"; then
+    pass "git diff -- ~/path ~/path prints the files under \$HOME, which is not the literal ~ the gate resolves"
+  else
+    fail "git diff -- ~/path ~/path prints the files under \$HOME, which is not the literal ~ the gate resolves" \
+      "the synthetic line did not appear; re-derive why an unquoted leading ~ is refused in a git invocation"
+  fi
+  for tilde_command in \
+    'git diff -- ~/.aws/credentials ~/.bashrc' \
+    'git diff ~/.bashrc ~/.aws/credentials' \
+    'git diff -- ~ ~/.bashrc' \
+    'git diff -- ~root/.bashrc ./cosign.pub' \
+    'git log -p -- ~/.ssh/config' \
+    'git show HEAD -- ~/.ssh/config' \
+    'git diff HEAD -- ~/.bashrc' \
+    'git status; git diff -- ~/.aws/credentials ~/.bashrc' \
+    'echo x | git diff -- ~/.aws/credentials ~/.bashrc'; do
+    assert_hook_refuses_naming "the hook refuses an unquoted leading ~ in a git invocation: ${tilde_command}" \
+      "${tilde_command}" 'unquoted leading ~'
+  done
+  for tilde_command in \
+    'git diff HEAD@{1}' \
+    'git diff HEAD~1' \
+    "git diff -- 'lit~eral'" \
+    "git diff -- '~/x'" \
+    'git diff -- "~/x"' \
+    'git diff -- \~/x' \
+    'git diff HEAD -- x~' \
+    'git show HEAD:~/x' \
+    'ls ~/.bashrc; git diff HEAD' \
+    'echo x > out; git diff HEAD'; do
+    assert_hook_permits "a quoted, escaped or non-leading ~ is the literal word and is unprompted: ${tilde_command}" \
+      "${tilde_command}"
+  done
+  # The tilde rule against bash itself, the way the brace corpus is checked:
+  # every word bash rewrites must be refused, every word of the literal set
+  # must be allowed, and a word in neither class is held only to the first
+  # rule. Each word is handed to bash verbatim under a HOME that does not
+  # exist, which changes nothing about whether bash expands it.
+  literal_tilde_words=(
+    "'~/x'"
+    '"~/x"'
+    '\~/x'
+    'HEAD~1'
+    'HEAD~2..HEAD~1'
+    'lit~eral'
+    'x~'
+  )
+  # shellcheck disable=SC2088 # the quoted tildes are corpus words, not paths this fixture opens
+  tilde_corpus=(
+    "${literal_tilde_words[@]}"
+    '~'
+    '~/.aws/credentials'
+    '~/.bashrc'
+    '~root/.bashrc'
+    '~/'
+  )
+  bash_rewrites() {
+    local typed stripped
+    typed="$(HOME=/nonexistent-home bash --norc --noprofile -c 'printf "%s" '"$1" 2>/dev/null)" || return 1
+    stripped="${1//[\'\"\\]/}"
+    [[ "${typed}" != "${stripped}" ]]
+  }
+  tilde_rewritten=0
+  tilde_refused=1
+  tilde_failed=''
+  for corpus_word in "${tilde_corpus[@]}"; do
+    bash_rewrites "${corpus_word}" || continue
+    tilde_rewritten=$((tilde_rewritten + 1))
+    corpus_payload="$(jq -nc --arg c "git diff -- ${corpus_word} ./cosign.pub" '{tool_name: "Bash", tool_input: {command: $c}}')"
+    run_bash_hooks "${corpus_payload}"
+    if ((hook_status != 2)) || [[ "${hook_stderr}" != *'unquoted leading ~'* ]]; then
+      tilde_refused=0
+      tilde_failed+="${corpus_word} (exit ${hook_status}) "
+    fi
+  done
+  if ((tilde_rewritten >= 4)); then
+    pass "the tilde corpus is large enough to mean something (${#tilde_corpus[@]} words, ${tilde_rewritten} that bash rewrites)"
+  else
+    fail "the tilde corpus is large enough to mean something (${#tilde_corpus[@]} words, ${tilde_rewritten} that bash rewrites)" \
+      "wanted at least 4 words bash rewrites; the check has gone vacuous"
+  fi
+  if ((tilde_refused)); then
+    pass "every corpus word bash tilde-expands is refused inside a git invocation"
+  else
+    fail "every corpus word bash tilde-expands is refused inside a git invocation" \
+      "bash rewrites these and the hook let them through: ${tilde_failed}"
+  fi
+  tilde_literal_allowed=1
+  tilde_literal_failed=''
+  for literal_word in "${literal_tilde_words[@]}"; do
+    if bash_rewrites "${literal_word}"; then
+      tilde_literal_allowed=0
+      tilde_literal_failed+="${literal_word} (bash rewrites it) "
+      continue
+    fi
+    corpus_payload="$(jq -nc --arg c "git log -1 -- ${literal_word}" '{tool_name: "Bash", tool_input: {command: $c}}')"
+    run_bash_hooks "${corpus_payload}"
+    if ((hook_status != 0)) || [[ -n "${hook_stderr}" ]]; then
+      tilde_literal_allowed=0
+      tilde_literal_failed+="${literal_word} (exit ${hook_status}) "
+    fi
+  done
+  if ((tilde_literal_allowed)); then
+    pass "every literal-tilde word bash leaves alone is unprompted inside a git invocation"
+  else
+    fail "every literal-tilde word bash leaves alone is unprompted inside a git invocation" \
+      "${tilde_literal_failed}"
+  fi
+
   # #316: a quoted operator inside a git diff flag must not end the command.
   # The first split stripped quotes and then cut the string at every operator
   # character, so `--src-prefix='x|'` ended the git invocation as far as the

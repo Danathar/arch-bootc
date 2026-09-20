@@ -231,6 +231,16 @@ must be described as such.
   (`echo x >out; git diff HEAD`, `git diff HEAD | jq . > out`) are not
   affected.
 
+  The read half has a shell spelling of its own as well. An unquoted leading
+  `~` is `$HOME` to Bash and a literal `~` to a scan of the typed words, and
+  resolving that literal put it *inside* the checkout, so `git diff --
+  ~/.aws/credentials ~/.bashrc` counted two inside operands, exited 0, and
+  printed both home files as a plain-file diff. The hook refuses a word of a
+  git invocation that begins with an unquoted `~` (`~/`, `~user/`, `~`
+  alone), and its containment test counts a leading `~` as outside. A quoted
+  or escaped tilde and a tilde inside a word (`HEAD~1`) are literals to Bash
+  and are not affected.
+
   Both halves also rest on the words being the words git receives, and Bash
   rewrites them first. Brace expansion turns one word into several: `git diff
   {/dev/null,./cosign.key}` is a single operand to the scan and two operands
