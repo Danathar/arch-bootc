@@ -2035,6 +2035,14 @@ if ((settings_readable)); then
   printf 'ORIGINAL-CONTENT\n' >"${gated_dir}/victim2"
   (cd "${gated_dir}" && bash --norc --noprofile -c 'df -T > >(cat >victim2); wait' >/dev/null 2>&1 </dev/null)
   subst_written="$(cat "${gated_dir}/victim2" 2>/dev/null)"
+  # A process substitution as an ordinary argument runs its body as part of
+  # the approved string, and the body is held to no rule; and a wrapper's
+  # option before the name (`command -p bash -n +n ...`) is still that
+  # command (review on #322).
+  printf 'ORIGINAL-CONTENT\n' >"${gated_dir}/victim3"
+  (cd "${gated_dir}" && bash --norc --noprofile -c 'df -T >(cat >victim3); wait' >/dev/null 2>&1 </dev/null)
+  arg_subst_written="$(cat "${gated_dir}/victim3" 2>/dev/null)"
+  wrapper_ran="$(bash --norc --noprofile -c "command -p bash -n +n -c 'printf RAN-BEHIND-WRAPPER'" 2>/dev/null </dev/null)"
   rm -rf "${gated_dir}"
   if [[ "${gated_written}" != *ORIGINAL-CONTENT* ]]; then
     pass "an output redirection on an allow-listed non-git command truncates the file it names"
@@ -2060,6 +2068,30 @@ if ((settings_readable)); then
     fail "a redirection onto a process substitution writes the file the substitution names" \
       "the file kept its contents; re-derive why a substitution after a redirection is its target"
   fi
+  if [[ "${arg_subst_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "a process substitution argument writes the file its body names"
+  else
+    fail "a process substitution argument writes the file its body names" \
+      "the file kept its contents; re-derive why a substitution in a gated command is refused"
+  fi
+  if [[ "${wrapper_ran}" == "RAN-BEHIND-WRAPPER" ]]; then
+    pass "command -p bash -n +n -c COMMAND runs the command behind the wrapper's option"
+  else
+    fail "command -p bash -n +n -c COMMAND runs the command behind the wrapper's option" \
+      "got '${wrapper_ran}'; re-derive why the prefix restarts at a later candidate name"
+  fi
+  # shellcheck disable=SC2016 # the substitution is a spelling handed to the hook, not run here
+  for subst_command in \
+    'df -T >(cat >cosign.pub)' \
+    '>(cat >cosign.pub) df -T' \
+    'podman ps <(true)' \
+    'bash -n <(printf x >written)' \
+    'bash -n >(cat) tests/run-tests.sh' \
+    'git status; findmnt -J >(tee cosign.pub)' \
+    'echo $(podman images >(cat >cosign.pub))'; do
+    assert_hook_refuses_naming "the hook refuses a process substitution in an allow-listed command: ${subst_command}" \
+      "${subst_command}" 'process substitution'
+  done
   # The list of gated commands lives in the hook; this is what keeps it from
   # drifting. The commands are derived from the settings file rather than
   # restated, so an allow rule added there with a trailing `*` fails here
@@ -2111,7 +2143,10 @@ if ((settings_readable)); then
     'shellcheck tests/run-tests.sh 2>&1 | tee x; df -T >out' \
     'df -T > >(cat >cosign.pub)' \
     'podman images >>(tee cosign.pub)' \
-    'shellcheck tests/run-tests.sh 2> >(cat >cosign.pub)'; do
+    'shellcheck tests/run-tests.sh 2> >(cat >cosign.pub)' \
+    'shellcheck tests/run-tests.sh >cosign.pub # a comment after the write' \
+    "shellcheck tests/run-tests.sh '#' >cosign.pub" \
+    'command -p shellcheck tests/run-tests.sh >cosign.pub'; do
     assert_hook_refuses_naming "the hook refuses an output redirection inside an allow-listed command: ${redirect_command}" \
       "${redirect_command}" 'allow-listed command'
   done
@@ -2149,7 +2184,12 @@ if ((settings_readable)); then
     'bash -n tests/run-tests.sh; { bash -n missing.sh; } >cosign.pub' \
     '(shellcheck tests/run-tests.sh) >cosign.pub' \
     'echo x > >(cat >cosign.pub)' \
-    'cat < <(podman images)'; do
+    'cat < <(podman images)' \
+    'cat <(podman images)' \
+    'command -v shellcheck' \
+    'shellcheck tests/run-tests.sh # output > file' \
+    'bash -n tests/run-tests.sh # +n' \
+    'git diff HEAD # > cosign.pub'; do
     assert_hook_permits "a redirection on a command no allow rule covers is unprompted: ${redirect_command}" \
       "${redirect_command}"
   done
@@ -2165,6 +2205,8 @@ if ((settings_readable)); then
     "bash -n +nv -c 'id'" \
     'bash -n "+n" -c id' \
     'git status; bash -n +n -c id' \
+    'git status; command -p bash -n +n -c id' \
+    'command -- bash -n +n -c id' \
     'bash -n {+,+}n -c id' \
     'bash -n $X tests/run-tests.sh' \
     'bash -n $(printf +n) -c id' \
@@ -2172,9 +2214,7 @@ if ((settings_readable)); then
     'bash -n --norc {+,+}n -c id' \
     'bash -n ?n -c id' \
     'bash -n [+]n -c id' \
-    'bash -n tests/*.sh' \
-    'bash -n <(printf x >written)' \
-    'bash -n >(cat) tests/run-tests.sh'; do
+    'bash -n tests/*.sh'; do
     assert_hook_refuses_naming "the hook refuses a + word or an expansion in a bash -n invocation: ${noexec_command}" \
       "${noexec_command}" '+n'
   done
