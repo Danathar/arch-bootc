@@ -2043,6 +2043,10 @@ if ((settings_readable)); then
   (cd "${gated_dir}" && bash --norc --noprofile -c 'df -T >(cat >victim3); wait' >/dev/null 2>&1 </dev/null)
   arg_subst_written="$(cat "${gated_dir}/victim3" 2>/dev/null)"
   wrapper_ran="$(bash --norc --noprofile -c "command -p bash -n +n -c 'printf RAN-BEHIND-WRAPPER'" 2>/dev/null </dev/null)"
+  time_ran="$(bash --norc --noprofile -c "time -p bash -n +n -c 'printf RAN-BEHIND-TIME'" 2>/dev/null </dev/null)"
+  printf 'ORIGINAL-CONTENT\n' >"${gated_dir}/victim4"
+  (cd "${gated_dir}" && bash --norc --noprofile -c 'df -T $(printf x >victim4)' >/dev/null 2>&1 </dev/null)
+  cmd_subst_written="$(cat "${gated_dir}/victim4" 2>/dev/null)"
   rm -rf "${gated_dir}"
   if [[ "${gated_written}" != *ORIGINAL-CONTENT* ]]; then
     pass "an output redirection on an allow-listed non-git command truncates the file it names"
@@ -2080,6 +2084,18 @@ if ((settings_readable)); then
     fail "command -p bash -n +n -c COMMAND runs the command behind the wrapper's option" \
       "got '${wrapper_ran}'; re-derive why the prefix restarts at a later candidate name"
   fi
+  if [[ "${time_ran}" == "RAN-BEHIND-TIME" ]]; then
+    pass "time -p bash -n +n -c COMMAND runs the command behind time's option"
+  else
+    fail "time -p bash -n +n -c COMMAND runs the command behind time's option" \
+      "got '${time_ran}'; re-derive why the name scan steps over time's -p"
+  fi
+  if [[ "${cmd_subst_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "a command substitution argument writes the file its body names"
+  else
+    fail "a command substitution argument writes the file its body names" \
+      "the file kept its contents; re-derive why a substitution in a gated command is refused"
+  fi
   # shellcheck disable=SC2016 # the substitution is a spelling handed to the hook, not run here
   for subst_command in \
     'df -T >(cat >cosign.pub)' \
@@ -2088,9 +2104,13 @@ if ((settings_readable)); then
     'bash -n <(printf x >written)' \
     'bash -n >(cat) tests/run-tests.sh' \
     'git status; findmnt -J >(tee cosign.pub)' \
-    'echo $(podman images >(cat >cosign.pub))'; do
-    assert_hook_refuses_naming "the hook refuses a process substitution in an allow-listed command: ${subst_command}" \
-      "${subst_command}" 'process substitution'
+    'echo $(podman images >(cat >cosign.pub))' \
+    'df -T $(touch cosign.pub)' \
+    'podman images `printf x >cosign.pub`' \
+    'findmnt $(pwd) >cosign.pub' \
+    'df -T < <(printf x >cosign.pub)'; do
+    assert_hook_refuses_naming "the hook refuses a substitution in an allow-listed command: ${subst_command}" \
+      "${subst_command}" 'substitution'
   done
   # The list of gated commands lives in the hook; this is what keeps it from
   # drifting. The commands are derived from the settings file rather than
@@ -2137,7 +2157,6 @@ if ((settings_readable)); then
     'FOO=bar >cosign.pub shellcheck tests/run-tests.sh' \
     'time shellcheck tests/run-tests.sh >cosign.pub' \
     'command podman images >cosign.pub' \
-    'findmnt $(pwd) >cosign.pub' \
     'echo $(podman images >cosign.pub)' \
     'ls | podman images >cosign.pub' \
     'shellcheck tests/run-tests.sh 2>&1 | tee x; df -T >out' \
@@ -2173,6 +2192,7 @@ if ((settings_readable)); then
   # subshell is refused by the Bash tool before any rule or hook sees it
   # ("does not accept compound statements with redirection", 2.1.267), so
   # the hook does not restate that refusal.
+  # shellcheck disable=SC2016 # the substitutions are spellings handed to the hook, not run here
   for redirect_command in \
     'echo x >cosign.pub' \
     'cat tests/run-tests.sh >cosign.pub' \
@@ -2187,6 +2207,9 @@ if ((settings_readable)); then
     'cat < <(podman images)' \
     'cat <(podman images)' \
     'command -v shellcheck' \
+    'time -p ls' \
+    'x=$(podman images); echo $x' \
+    'echo $(podman images)' \
     'shellcheck tests/run-tests.sh # output > file' \
     'bash -n tests/run-tests.sh # +n' \
     'git diff HEAD # > cosign.pub'; do
@@ -2207,6 +2230,7 @@ if ((settings_readable)); then
     'git status; bash -n +n -c id' \
     'git status; command -p bash -n +n -c id' \
     'command -- bash -n +n -c id' \
+    'git status; time -p bash -n +n -c id' \
     'bash -n {+,+}n -c id' \
     'bash -n $X tests/run-tests.sh' \
     'bash -n $(printf +n) -c id' \
