@@ -2007,6 +2007,317 @@ if ((settings_readable)); then
   assert_hook_refuses_naming "a brace wins over a redirection refusal" \
     'git diff HEAD >cosign.{pub,key}' 'expands braces'
 
+  # The write primitive is not git's alone. Six other allow rows end in `*`
+  # -- "this command with any arguments" -- and a shell output redirection
+  # is part of the string that rule matches, so `shellcheck
+  # tests/run-tests.sh >cosign.pub` truncated the trust anchor before a line
+  # was linted and `podman images >.claude/settings.json` overwrote the file
+  # holding these rules, neither prompted (zfs-kinoite-complex#224, the same
+  # hook). Shown first, against a stand-in in a temporary directory: bash
+  # opens the target before the command runs, so the file is emptied even
+  # when the command then fails. `bash -n` is used because it is always
+  # present; shellcheck may not be.
+  gated_dir="$(mktemp -d)"
+  printf 'ORIGINAL-CONTENT\n' >"${gated_dir}/victim"
+  (cd "${gated_dir}" && bash --norc --noprofile -c 'bash -n ./no-such-script.sh >victim' >/dev/null 2>&1 </dev/null)
+  gated_written="$(cat "${gated_dir}/victim" 2>/dev/null)"
+  # And the flag form: `-n` reads a script without running it, and a later
+  # `+n` on the same command line turns that back off, so the linter's allow
+  # rule runs whatever follows.
+  noexec_ran="$(bash --norc --noprofile -c "bash -n +n -c 'printf RAN-UNDER-BASH-N'" 2>/dev/null </dev/null)"
+  # And the glob form (review on aurora-zfs-simple#211): beside a file named
+  # `+n`, `?n` reaches bash as `+n`.
+  touch "${gated_dir}/+n"
+  glob_ran="$(cd "${gated_dir}" && bash --norc --noprofile -c "bash -n ?n -c 'printf RAN-VIA-GLOB'" 2>/dev/null </dev/null)"
+  # And a process substitution as the redirection's target: bash connects the
+  # command's output to a command of its own, which writes wherever it likes
+  # (review on #322).
+  printf 'ORIGINAL-CONTENT\n' >"${gated_dir}/victim2"
+  (cd "${gated_dir}" && bash --norc --noprofile -c 'df -T > >(cat >victim2); wait' >/dev/null 2>&1 </dev/null)
+  subst_written="$(cat "${gated_dir}/victim2" 2>/dev/null)"
+  # A process substitution as an ordinary argument runs its body as part of
+  # the approved string, and the body is held to no rule; and a wrapper's
+  # option before the name (`command -p bash -n +n ...`) is still that
+  # command (review on #322).
+  printf 'ORIGINAL-CONTENT\n' >"${gated_dir}/victim3"
+  (cd "${gated_dir}" && bash --norc --noprofile -c 'df -T >(cat >victim3); wait' >/dev/null 2>&1 </dev/null)
+  arg_subst_written="$(cat "${gated_dir}/victim3" 2>/dev/null)"
+  wrapper_ran="$(bash --norc --noprofile -c "command -p bash -n +n -c 'printf RAN-BEHIND-WRAPPER'" 2>/dev/null </dev/null)"
+  time_ran="$(bash --norc --noprofile -c "time -p bash -n +n -c 'printf RAN-BEHIND-TIME'" 2>/dev/null </dev/null)"
+  printf 'ORIGINAL-CONTENT\n' >"${gated_dir}/victim4"
+  (cd "${gated_dir}" && bash --norc --noprofile -c 'df -T $(printf x >victim4)' >/dev/null 2>&1 </dev/null)
+  cmd_subst_written="$(cat "${gated_dir}/victim4" 2>/dev/null)"
+  rm -rf "${gated_dir}"
+  if [[ "${gated_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "an output redirection on an allow-listed non-git command truncates the file it names"
+  else
+    fail "an output redirection on an allow-listed non-git command truncates the file it names" \
+      "the file kept its contents; re-derive why the gated-prefix refusal exists"
+  fi
+  if [[ "${noexec_ran}" == "RAN-UNDER-BASH-N" ]]; then
+    pass "bash -n +n -c COMMAND runs the command the -n was meant to keep from running"
+  else
+    fail "bash -n +n -c COMMAND runs the command the -n was meant to keep from running" \
+      "got '${noexec_ran}'; re-derive why the +n refusal exists"
+  fi
+  if [[ "${glob_ran}" == "RAN-VIA-GLOB" ]]; then
+    pass "bash -n ?n -c COMMAND runs the command when a file named +n exists"
+  else
+    fail "bash -n ?n -c COMMAND runs the command when a file named +n exists" \
+      "got '${glob_ran}'; re-derive why the glob refusal exists"
+  fi
+  if [[ "${subst_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "a redirection onto a process substitution writes the file the substitution names"
+  else
+    fail "a redirection onto a process substitution writes the file the substitution names" \
+      "the file kept its contents; re-derive why a substitution after a redirection is its target"
+  fi
+  if [[ "${arg_subst_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "a process substitution argument writes the file its body names"
+  else
+    fail "a process substitution argument writes the file its body names" \
+      "the file kept its contents; re-derive why a substitution in a gated command is refused"
+  fi
+  if [[ "${wrapper_ran}" == "RAN-BEHIND-WRAPPER" ]]; then
+    pass "command -p bash -n +n -c COMMAND runs the command behind the wrapper's option"
+  else
+    fail "command -p bash -n +n -c COMMAND runs the command behind the wrapper's option" \
+      "got '${wrapper_ran}'; re-derive why the prefix restarts at a later candidate name"
+  fi
+  if [[ "${time_ran}" == "RAN-BEHIND-TIME" ]]; then
+    pass "time -p bash -n +n -c COMMAND runs the command behind time's option"
+  else
+    fail "time -p bash -n +n -c COMMAND runs the command behind time's option" \
+      "got '${time_ran}'; re-derive why the name scan steps over time's -p"
+  fi
+  if [[ "${cmd_subst_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "a command substitution argument writes the file its body names"
+  else
+    fail "a command substitution argument writes the file its body names" \
+      "the file kept its contents; re-derive why a substitution in a gated command is refused"
+  fi
+  # A here-document with an unquoted delimiter is expanded before the
+  # command runs, so a substitution on a body line runs under the prefix
+  # (review on #322).
+  heredoc_dir="$(mktemp -d)"
+  printf 'ORIGINAL-CONTENT\n' >"${heredoc_dir}/victim5"
+  (cd "${heredoc_dir}" && bash --norc --noprofile -c $'df -T <<EOF\n$(printf x >victim5)\nEOF' >/dev/null 2>&1 </dev/null)
+  heredoc_written="$(cat "${heredoc_dir}/victim5" 2>/dev/null)"
+  rm -rf "${heredoc_dir}"
+  if [[ "${heredoc_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "a substitution on the body line of an unquoted heredoc writes the file it names"
+  else
+    fail "a substitution on the body line of an unquoted heredoc writes the file it names" \
+      "the file kept its contents; re-derive why an unquoted heredoc on a gated command is refused"
+  fi
+  # shellcheck disable=SC2016 # the substitutions are spellings handed to the hook, not run here
+  for heredoc_command in \
+    $'df -T <<EOF\necho $(printf x >cosign.pub)\nEOF' \
+    $'podman images <<EOF\nplain text\nEOF' \
+    $'bash -n <<-EOF\n\tx\nEOF' \
+    $'git status; findmnt <<EOF\nx\nEOF'; do
+    assert_hook_refuses_naming "the hook refuses an unquoted here-document on an allow-listed command: ${heredoc_command//$'\n'/ | }" \
+      "${heredoc_command}" 'Quote the delimiter'
+  done
+  # An assignment before the name is an environment the command runs
+  # under, and for these commands that changes what runs or where it goes
+  # (review on sensi#244, the Python twin of this hook); git keeps
+  # `FOO=bar git diff`.
+  for assigned_command in \
+    'LD_PRELOAD=x.so shellcheck tests/run-tests.sh' \
+    'BASH_ENV=f bash -n tests/run-tests.sh' \
+    'CONTAINERS_CONF=f podman ps' \
+    'FOO=1 df -T' \
+    'git status; FOO=1 findmnt'; do
+    assert_hook_refuses_naming "the hook refuses an assignment before an allow-listed command: ${assigned_command}" \
+      "${assigned_command}" 'assignment before'
+  done
+  for assigned_command in \
+    'FOO=bar git diff HEAD' \
+    'PAGER=cat git log -1' \
+    'FOO=1 echo x; podman images' \
+    'x=1; podman images'; do
+    assert_hook_permits "an assignment before git, or on another command, is unprompted: ${assigned_command}" \
+      "${assigned_command}"
+  done
+  # shellcheck disable=SC2016 # the substitution is a spelling handed to the hook, not run here
+  for heredoc_command in \
+    $'bash -n <<\'EOF\'\necho hi\nEOF' \
+    $'bash -n <<"EOF"\necho $(id)\nEOF' \
+    $'cat <<EOF\nplain\nEOF; podman images' \
+    'podman images <in'; do
+    assert_hook_permits "a quoted here-document, or one on another command, is unprompted: ${heredoc_command//$'\n'/ | }" \
+      "${heredoc_command}"
+  done
+  # shellcheck disable=SC2016 # the substitution is a spelling handed to the hook, not run here
+  for subst_command in \
+    'df -T >(cat >cosign.pub)' \
+    '>(cat >cosign.pub) df -T' \
+    'podman ps <(true)' \
+    'bash -n <(printf x >written)' \
+    'bash -n >(cat) tests/run-tests.sh' \
+    'git status; findmnt -J >(tee cosign.pub)' \
+    'echo $(podman images >(cat >cosign.pub))' \
+    'df -T $(touch cosign.pub)' \
+    'podman images `printf x >cosign.pub`' \
+    'findmnt $(pwd) >cosign.pub' \
+    'df -T < <(printf x >cosign.pub)' \
+    'podman images <"$(printf x >cosign.pub)"' \
+    'df -T <<<"$(printf x >cosign.pub)"' \
+    'podman images <`printf in`' \
+    'shellcheck tests/run-tests.sh <"$(printf x >cosign.pub)"' \
+    'shellcheck tests/run-tests.sh < <(printf x >cosign.pub)' \
+    'df -T "$(printf x >cosign.pub)"' \
+    'podman images $X' \
+    'findmnt "$FLAGS"' \
+    "podman images 'a \$b'"; do
+    assert_hook_refuses_naming "the hook refuses a substitution in an allow-listed command: ${subst_command}" \
+      "${subst_command}" 'substitution'
+  done
+  # The list of gated commands lives in the hook; this is what keeps it from
+  # drifting. The commands are derived from the settings file rather than
+  # restated, so an allow rule added there with a trailing `*` fails here
+  # until the hook lists it. The git rows are the scan above's; the exact
+  # rows (`just test`, the virsh inventories) carry no `*`, so a redirection
+  # makes the string match no row and Claude Code prompts.
+  gated_rows=0
+  while IFS= read -r gated_prefix; do
+    [[ -n "${gated_prefix}" ]] || continue
+    [[ "${gated_prefix}" == "git "* ]] && continue
+    gated_rows=$((gated_rows + 1))
+    assert_hook_refuses_naming "every allow rule with arguments is refused a writing redirection: ${gated_prefix} >cosign.pub" \
+      "${gated_prefix} >cosign.pub" 'allow-listed command'
+  done < <(jq -r '.permissions.allow[]? | select(startswith("Bash(") and endswith("*)")) | .[5:-2] | sub(" $"; "")' "${CLAUDE_SETTINGS}")
+  if ((gated_rows >= 6)); then
+    pass "the settings file still carries the allow rows the gated-prefix scan covers (${gated_rows})"
+  else
+    fail "the settings file still carries the allow rows the gated-prefix scan covers" \
+      "found ${gated_rows} Bash(...*) rows other than git's; expected at least 6"
+  fi
+  # Every operator that opens a path, in every position bash accepts it: after
+  # the command, before its name, after an assignment or `time`, carried
+  # across a `$(...)` in the same command, and on the longer last word the
+  # `df -T*` row also matches.
+  # shellcheck disable=SC2016 # the substitutions are spellings handed to the hook, not run here
+  for redirect_command in \
+    'shellcheck tests/run-tests.sh >cosign.pub' \
+    'shellcheck tests/run-tests.sh >> out' \
+    'shellcheck tests/run-tests.sh 2>.claude/settings.json' \
+    'shellcheck >| cosign.pub' \
+    'bash -n tests/run-tests.sh &>cosign.pub' \
+    'bash -n tests/run-tests.sh &>>cosign.pub' \
+    'podman images >&cosign.pub' \
+    'podman ps -a <>cosign.pub' \
+    'podman ps {fd}>cosign.pub' \
+    'findmnt -J >/dev/null' \
+    'df -T >cosign.pub' \
+    'df -Th > .claude/hooks/gate-git-diff.sh' \
+    'podman images 2>&1 >cosign.pub' \
+    '>cosign.pub shellcheck tests/run-tests.sh' \
+    'git status; >cosign.pub podman images' \
+    'FOO=bar shellcheck tests/run-tests.sh >cosign.pub' \
+    'FOO=bar >cosign.pub shellcheck tests/run-tests.sh' \
+    'time shellcheck tests/run-tests.sh >cosign.pub' \
+    'command podman images >cosign.pub' \
+    'echo $(podman images >cosign.pub)' \
+    'ls | podman images >cosign.pub' \
+    'shellcheck tests/run-tests.sh 2>&1 | tee x; df -T >out' \
+    'df -T > >(cat >cosign.pub)' \
+    'podman images >>(tee cosign.pub)' \
+    'shellcheck tests/run-tests.sh 2> >(cat >cosign.pub)' \
+    'shellcheck tests/run-tests.sh >cosign.pub # a comment after the write' \
+    "shellcheck tests/run-tests.sh '#' >cosign.pub" \
+    'command -p shellcheck tests/run-tests.sh >cosign.pub'; do
+    assert_hook_refuses_naming "the hook refuses an output redirection inside an allow-listed command: ${redirect_command}" \
+      "${redirect_command}" 'allow-listed command'
+  done
+  # The refusal is the operator that opens a path for writing. A pipe, a
+  # descriptor form and an input redirection open none.
+  for redirect_command in \
+    'shellcheck tests/run-tests.sh 2>&1 | tail -5' \
+    'podman images | grep arch-bootc' \
+    'findmnt -T / -o TARGET,SOURCE' \
+    'shellcheck tests/run-tests.sh <tests/run-tests.sh' \
+    'podman ps >&2' \
+    'df -T 2>&-' \
+    'bash -n tests/run-tests.sh </dev/null' \
+    'shellcheck -x tests/run-tests.sh' \
+    'bash -n tests/run-tests.sh' \
+    'df -Th'; do
+    assert_hook_permits "reading the output of an allow-listed command is unprompted: ${redirect_command}" \
+      "${redirect_command}"
+  done
+  # The hook re-gates what the permission rules wave through. A command no
+  # allow rule covers prompts on its own, and a redirection on another
+  # command of the same string is that command's own. The last two are
+  # decided by Claude Code itself: a redirection on a brace group or a
+  # subshell is refused by the Bash tool before any rule or hook sees it
+  # ("does not accept compound statements with redirection", 2.1.267), so
+  # the hook does not restate that refusal.
+  # shellcheck disable=SC2016 # the substitutions are spellings handed to the hook, not run here
+  for redirect_command in \
+    'echo x >cosign.pub' \
+    'cat tests/run-tests.sh >cosign.pub' \
+    'df -h >cosign.pub' \
+    'just test >cosign.pub' \
+    'echo x >out; shellcheck tests/run-tests.sh' \
+    'shellcheck tests/run-tests.sh | tee out' \
+    '>out echo x; podman images' \
+    'bash -n tests/run-tests.sh; { bash -n missing.sh; } >cosign.pub' \
+    '(shellcheck tests/run-tests.sh) >cosign.pub' \
+    'echo x > >(cat >cosign.pub)' \
+    'cat < <(podman images)' \
+    'cat <(podman images)' \
+    'command -v shellcheck' \
+    'time -p ls' \
+    'x=$(podman images); echo $x' \
+    'echo $(podman images)' \
+    'podman images --format "{{.ID}}"' \
+    'findmnt -J -o TARGET,SOURCE' \
+    'shellcheck tests/run-tests.sh # output > file' \
+    'bash -n tests/run-tests.sh # +n' \
+    'git diff HEAD # > cosign.pub'; do
+    assert_hook_permits "a redirection on a command no allow rule covers is unprompted: ${redirect_command}" \
+      "${redirect_command}"
+  done
+  # The flag that undoes `bash -n`. `+n` and `+o noexec` turn execution back
+  # on for the rest of the command line, so a word beginning with `+` in a
+  # `bash -n` invocation is refused, along with the spellings bash rebuilds
+  # -- a brace, a `$` or a backtick -- since `{+,+}n` reaches bash as `+n`.
+  # shellcheck disable=SC2016 # the substitutions are spellings handed to the hook, not run here
+  for noexec_command in \
+    "bash -n +n -c 'cat ./cosign.key'" \
+    'bash -n +o noexec tests/run-tests.sh' \
+    'bash -n tests/run-tests.sh +n' \
+    "bash -n +nv -c 'id'" \
+    'bash -n "+n" -c id' \
+    'git status; bash -n +n -c id' \
+    'git status; command -p bash -n +n -c id' \
+    'command -- bash -n +n -c id' \
+    'git status; time -p bash -n +n -c id' \
+    'bash -n {+,+}n -c id' \
+    'bash -n $X tests/run-tests.sh' \
+    'bash -n $(printf +n) -c id' \
+    'bash -n `printf +n` -c id' \
+    'bash -n --norc {+,+}n -c id' \
+    'bash -n ?n -c id' \
+    'bash -n [+]n -c id' \
+    'bash -n tests/*.sh'; do
+    assert_hook_refuses_naming "the hook refuses a + word or an expansion in a bash -n invocation: ${noexec_command}" \
+      "${noexec_command}" '+n'
+  done
+  # shellcheck disable=SC2016 # the $x is a spelling handed to the hook, not expanded here
+  for noexec_command in \
+    'bash -n tests/run-tests.sh' \
+    'bash -n scripts/quickstart.sh tests/run-tests.sh' \
+    'bash -n -- tests/run-tests.sh' \
+    "bash -n '?n'" \
+    'bash +n -c id' \
+    'echo $x; bash -n tests/run-tests.sh'; do
+    assert_hook_permits "a syntax check, and a bash no allow rule covers, are unprompted: ${noexec_command}" \
+      "${noexec_command}"
+  done
+
   # A `(` behind an unquoted `<` or `>` is a process substitution, not a
   # subshell: it hands git a /dev/fd path as an operand the scan never
   # counted, and the first split reset the operand count at its `(` instead.
@@ -2377,12 +2688,14 @@ if ((settings_readable)); then
   # same way, which is why the operand after it is still checked.
   assert_hook_refuses_naming "an optional-argument flag does not swallow the operand" \
     'shellcheck -C always /etc/shadow' 'shellcheck prints the source line'
-  # The word need not start the command: an operator boundary or an
-  # environment assignment in front of it changes nothing.
+  # The word need not start the command: an operator boundary in front of
+  # it changes nothing, and an environment assignment in front of it is
+  # refused for itself first (see the gated-prefix scan), so the read
+  # behind it never runs either way.
   assert_hook_refuses_naming "the hook refuses a shellcheck read behind another command" \
     'ls -l && shellcheck ./.env' 'shellcheck prints the source line'
   assert_hook_refuses_naming "the hook refuses a shellcheck read behind an env assignment" \
-    'FOO=bar shellcheck ./.env' 'shellcheck prints the source line'
+    'FOO=bar shellcheck ./.env' 'assignment before'
 
   # Bash rewrites some words before shellcheck sees them, and the gate reads
   # the words as typed. Two of those rewrites turned a checked operand into a
