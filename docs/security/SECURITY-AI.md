@@ -339,9 +339,38 @@ must be described as such.
   first, by running ShellCheck at a synthetic file and finding the file's line
   in its output.
 
-  `bash -n`, the other allowed linter, is not the same case: it echoes at most
-  the one line of a syntax error, and the key and `.env` shapes parse cleanly
-  and print nothing.
+  `bash -n`, the other allowed linter, is not the same case for reads: it
+  echoes at most the one line of a syntax error, and the key and `.env` shapes
+  parse cleanly and print nothing. It has a flag problem of its own instead:
+  `-n` reads a script without running it, and a later `+n` or `+o noexec` on
+  the same command line turns that back off, so `bash -n +n -c 'cat
+  ./cosign.key'` ran the command under the linter's allow rule — the rule
+  matches the `bash -n` prefix and the `+n` is the rest of the string. The
+  hook refuses a word beginning with `+` in a `bash -n` invocation, and a
+  brace, `$` or backtick in one of its words, since `{+,+}n` reaches Bash as
+  `+n`.
+- **The write primitive is not git's alone either.** Six allow rows end in
+  `*` — `shellcheck *`, `bash -n *`, `podman images*`, `podman ps*`,
+  `findmnt *`, `df -T*` — which means "this command with any arguments", and
+  a shell output redirection is part of the string that rule matches. So
+  `shellcheck tests/run-tests.sh >cosign.pub` truncated the trust anchor
+  before a line was linted (Bash opens the target first, so the file is
+  emptied even when the command then fails) and `podman images
+  >.claude/settings.json` overwrote the file holding these rules, neither
+  with a prompt. The hook now decides every simple command in the string
+  against those rows and refuses an output redirection inside one of them,
+  wherever it is written — after the command, before its name, after an
+  assignment or `time`, or carried across a `$(...)` in the same command —
+  and on the longer last word the no-space rows also match (`df -Th
+  >cosign.pub` is allowed on `df -T*`). A redirection to `/dev/null` is
+  refused with the rest, because the rule is the operator rather than a list
+  of harmless targets. Pipes, descriptor forms and input redirections are
+  untouched, and a command no allow rule covers is left alone, since that one
+  prompts on its own. `tests/check-invariants.sh` derives the gated list from
+  `.claude/settings.json`, so a row added there with a trailing `*` fails
+  until the hook lists it, and shows both exposures in a temporary directory
+  before asserting the refusals. Same fix as
+  [zfs-kinoite-complex#224](https://github.com/Danathar/zfs-kinoite-complex/pull/224).
 
 - Workflow permissions are declared explicitly and minimally per job. A workflow
   that needs `packages: write` says so in that job only; it does not get it at

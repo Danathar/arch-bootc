@@ -122,6 +122,24 @@
 # is assigned, because ShellCheck reads file operands out of it too. Linting
 # this repository's own scripts is unaffected.
 #
+# The write primitive is not git's alone, either. Six other allow rows in
+# `.claude/settings.json` end in `*` -- "this command with any arguments" --
+# and a shell output redirection is part of the string that rule matches, so
+# the shell opened the target before the command ran and nothing prompted:
+# `shellcheck tests/run-tests.sh >cosign.pub` truncated the trust anchor
+# before a line was linted (the file is emptied even when the command then
+# fails), and `podman images >.claude/settings.json` overwrote the file
+# holding these rules. Those commands are named in `GATED_PREFIXES` below,
+# and an output redirection inside any of them is refused the way one inside
+# a git invocation is; descriptor forms, input redirections, pipes and a
+# command no allow rule covers are left alone. One of them also carries a
+# flag that undoes the read: `bash -n` parses a script without running it,
+# and a later `+n` or `+o noexec` on the same command line turns that back
+# off, so `bash -n +n -c 'cat ./cosign.key'` ran the command under the
+# linter's allow rule. A word beginning with `+` in a `bash -n` invocation
+# is refused, and so is a brace, a `$` or a backtick in one of its words,
+# since `{+,+}n` reaches bash as `+n`.
+#
 # So this looks at the operands git would actually receive, and refuses the
 # two-operand form unless every operand resolves as a revision -- which is what
 # separates `git diff main feature` from `git diff /dev/null ./cosign.key`.
@@ -182,6 +200,15 @@ SHELLCHECK_MSG='blocked: shellcheck prints the source line above every diagnosti
 SHELLCHECK_EXPAND_MSG='blocked: bash rewrites this word before shellcheck sees it, and this gate reads the words as typed, so the path checked here is not the path shellcheck would open: an unquoted leading ~ is $HOME to bash and a literal directory inside this checkout to the gate (shellcheck ~/.aws/credentials), an unquoted glob character (*, ? or a bracket) is what bash expands into files this gate never saw (shellcheck .env*), a brace bash would expand is two words (shellcheck {tests/run-tests.sh,/etc/shadow}), and a $, a backtick or a process substitution supplies operands at runtime. Expanding them correctly means reimplementing bash inside a hook, so they are refused inside a shellcheck invocation instead. Spell every path out in full, relative to the checkout. SHELLCHECK_OPTS= is refused for the same reason: shellcheck reads file operands out of it, so pass options on the command line.'
 
 OUT_MSG='blocked: git --output=FILE (and the space form) writes this diff or log to the path it names instead of stdout, overwriting any file this uid can reach -- cosign.pub, .claude/settings.json, this hook, ~/.ssh/authorized_keys -- with no Read(...) or Write(...) deny rule in its way. git diff, git log and git show print to stdout; read that instead. --output-indicator-* is a different flag and is unaffected.'
+
+# shellcheck disable=SC2016 # the message quotes shell spellings as literal text
+GATED_REDIRECT_MSG='blocked: an output redirection (>, >>, >|, &>, &>>, N>, >&FILE, <>) inside an allow-listed command makes the shell open its target for writing before the command runs, and the allow rule matches a command prefix while the redirection is the rest of the string, so nothing prompts: `shellcheck tests/run-tests.sh >cosign.pub` truncates the trust anchor before a line is linted, and `podman images >.claude/settings.json` overwrites the file holding these rules. It is the same write .claude/hooks/gate-git-diff.sh already refuses for `git diff HEAD >cosign.pub`. These commands print to stdout; read that, or pipe it. Descriptor forms (2>&1, >&2, >&-) and input redirections (<, <<, <<<, <&) are not affected, and a command no allow rule covers is left alone -- that one prompts on its own.'
+
+# shellcheck disable=SC2016 # the backticks quote a command spelling for the reader
+BASH_NOEXEC_MSG='blocked: `bash -n` is allow-listed because -n reads a script without running it, and a later +n or +o noexec on the same command line turns that off again, so `bash -n +n -c COMMAND` and `bash -n +o noexec script.sh` run whatever they name under the linter'"'"'s allow rule with no prompt. A word beginning with + in a bash -n invocation is refused. Check syntax with bash -n FILE and nothing else; to run a script, run it as itself so the permission rules see it.'
+
+# shellcheck disable=SC2016 # the literal ${VAR} and $(...) are what the reader has to see
+BASH_EXPAND_MSG='blocked: a brace bash could expand, a $ or a backtick in a word of a bash -n invocation is refused rather than expanded, for the reason BRACE_MSG and EXPAND_MSG give for git: bash rewrites the words before the inner bash sees them, so `{+,+}n` matches no spelling here and reaches bash as +n, which turns noexec off, and $(...), ${VAR} and a backtick supply a word this gate never saw. Write the command out in full.'
 
 # shellcheck disable=SC2016 # the backticks quote command spellings for the reader
 REDIRECT_MSG='blocked: an output redirection (>, >>, >|, &>, &>>, N>, >&FILE, <>) inside a git invocation makes the shell open its target for writing before git runs -- `git diff HEAD >cosign.pub` truncates the trust anchor, and `>> .claude/settings.json` or `2> .claude/hooks/gate-git-diff.sh` reach any file this uid can write -- and the allow rule for git diff, git log and git show sees none of it. These commands print to stdout; read that instead. Descriptor forms (2>&1, >&2, >&-) and input redirections (<, <<, <<<, <&) are not affected, and a redirection on another command of the same string is that command'"'"'s own.'
@@ -640,6 +667,151 @@ for ((idx = 0; idx < ${#raw_words[@]}; idx++)); do
   fi
 done
 ((writing_redirect)) && refuse "${REDIRECT_MSG}"
+
+# The same write, reached by the allow-listed commands that are not git.
+#
+# Everything above is scoped to a `git` word (and the operand tests to a
+# `shellcheck` one), and the write primitive is not git's alone.
+# `.claude/settings.json` allows six other command prefixes with a trailing
+# `*` -- "this command with any arguments" -- and an output redirection is
+# part of the string that rule matches, so the shell opens the target before
+# the command runs and nothing prompts: `shellcheck tests/run-tests.sh
+# >cosign.pub` truncates the trust anchor before a line is linted, and the
+# file stays empty when shellcheck then fails; `podman images
+# >.claude/settings.json` overwrites the file that holds these rules. The
+# `Read(...)` deny rows gate the Read tool and say nothing about it, exactly
+# as they say nothing about `git diff HEAD >cosign.pub`.
+#
+# One of those commands also carries a flag that undoes its read-only mode.
+# `bash -n` is allowed because `-n` reads a script without running it, and
+# bash lets a later `+n` (or `+o noexec`) on the same command line turn the
+# option back off, so `bash -n +n -c 'cat ./cosign.key'` ran the command --
+# the allow rule matches the `bash -n` prefix and the `+n` is the rest of the
+# string. A word beginning with `+` in a `bash -n` invocation is refused, and
+# so is a brace, a `$` or a backtick in one of its words, because `{+,+}n` is
+# the rebuild that reopened the git half of this gate twice.
+#
+# The patterns below are the allow rows ending in `*` other than git's,
+# spelled as the settings file spells them, because the two shapes match
+# differently: `shellcheck *` and `findmnt *` name the command and then
+# anything, while `podman images*` and `df -T*` also match a longer last
+# word, so `df -Th >cosign.pub` is allowed on the `df -T*` row and has to be
+# gated on it. The git rows are covered by the scan above, which refuses an
+# output redirection in every git invocation, `git status` and `git ls-files`
+# included. The exact rows (`just test`, `./tests/run-tests.sh`, the virsh
+# inventories) carry no `*`, so a redirection makes the string match no row
+# and Claude Code prompts. tests/check-invariants.sh derives this list from
+# the settings file rather than restating it, so a rule added there fails
+# that test until it is listed here.
+GATED_PREFIXES=(
+  'shellcheck *'
+  'bash -n *'
+  'podman images*'
+  'podman ps*'
+  'findmnt *'
+  'df -T*'
+)
+
+# Whether the words of a command so far, space-joined, are what one of the
+# rows above matches: `shellcheck` alone for `shellcheck *` (the rest of the
+# string may be the redirection), and any continuation of `df -T` for
+# `df -T*`.
+command_is_gated() {
+  local joined="$1" rule prefix
+  for rule in "${GATED_PREFIXES[@]}"; do
+    prefix="${rule%\*}"
+    if [[ "${rule}" == *' *' ]]; then
+      [[ "${joined}" == "${prefix% }" ]] && return 0
+    else
+      [[ "${joined}" == "${prefix}"* ]] && return 0
+    fi
+  done
+  return 1
+}
+
+# The command that just ended. Only two facts about it are kept -- whether its
+# leading words matched one of the rows above, and whether a redirection in
+# it opens a path -- because a redirection can be written before the name
+# (`>cosign.pub shellcheck tests/run-tests.sh` is the same command as
+# `shellcheck tests/run-tests.sh >cosign.pub`), so neither fact is complete
+# until the command ends.
+check_gated_command() {
+  ((cmd_gated && cmd_writes)) && refuse "${GATED_REDIRECT_MSG}"
+  return 0
+}
+
+reset_command() {
+  cmd_prefix=''
+  cmd_writes=0
+  cmd_bash=0
+  cmd_named=0
+  cmd_gated=0
+}
+
+# The words of a command from its *name* onward: a leading assignment
+# (`FOO=bar shellcheck ...`) is not part of the prefix an allow rule matches,
+# and neither is a redirection's target, which is the shell's word rather
+# than the command's. `command_names` above marks the name, and every word
+# after it belongs to the same command until a separator.
+cmd_prefix='' # the words so far, space-joined, while a prefix is still possible
+cmd_writes=0  # a redirection in this command opens a path for writing
+cmd_bash=0    # its name is bash, so the +n and expansion rules apply once gated
+cmd_named=0   # the name has been seen; every later word belongs to it
+cmd_gated=0   # its leading words matched one of GATED_PREFIXES
+cmd_stack=()  # the outer command's state, while a `$(...)` is being read
+reset_command
+for ((idx = 0; idx < ${#words[@]}; idx++)); do
+  case "${kinds[idx]}" in
+  sep)
+    # A `$(...)` or a backtick inside a gated bash invocation builds a word
+    # this gate never saw, the way one inside a git invocation does.
+    # shellcheck disable=SC2016 # the literal `$(` is the separator's name
+    if ((cmd_bash && cmd_gated)) && [[ "${words[idx]}" == '$(' || "${words[idx]}" == *'`'* ]]; then
+      refuse "${BASH_EXPAND_MSG}"
+    fi
+    # A `$(...)` substitution is a nested command: it is decided on its own,
+    # and the command around it -- including a redirection of its own already
+    # seen -- resumes at the `)` rather than starting over, so
+    # `shellcheck $(git ls-files '*.sh') >cosign.pub` is still that command's
+    # write.
+    # shellcheck disable=SC2016 # the literal `$(` is the separator's name
+    if [[ "${words[idx]}" == '$(' ]]; then
+      cmd_stack+=("${cmd_writes} ${cmd_bash} ${cmd_named} ${cmd_gated} ${cmd_prefix}")
+      reset_command
+      continue
+    fi
+    if [[ "${words[idx]}" == '$)' ]] && ((${#cmd_stack[@]})); then
+      check_gated_command
+      read -r cmd_writes cmd_bash cmd_named cmd_gated cmd_prefix <<<"${cmd_stack[-1]}"
+      unset 'cmd_stack[-1]'
+      continue
+    fi
+    check_gated_command
+    reset_command
+    continue
+    ;;
+  target)
+    redirection_writes_a_path "${redirects[idx]}" "${words[idx]}" && cmd_writes=1
+    continue
+    ;;
+  *) ;;
+  esac
+  ((cmd_named)) || ((${command_names[idx]:-0})) || continue
+  if ((cmd_named == 0)); then
+    cmd_named=1
+    [[ "${words[idx]}" == "bash" ]] && cmd_bash=1
+  fi
+  if ((cmd_gated == 0)); then
+    cmd_prefix="${cmd_prefix:+${cmd_prefix} }${words[idx]}"
+    command_is_gated "${cmd_prefix}" && cmd_gated=1
+  fi
+  ((cmd_bash && cmd_gated)) || continue
+  [[ "${words[idx]}" == '+'* ]] && refuse "${BASH_NOEXEC_MSG}"
+  if brace_would_expand "${raw_words[idx]}" || [[ "${raw_words[idx]}" == *'$'* ]]; then
+    refuse "${BASH_EXPAND_MSG}"
+  fi
+done
+check_gated_command
 
 # The whole string with quoting removed, for the one test that is a substring
 # match rather than a word: the shell removes quotes and backslashes on the

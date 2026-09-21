@@ -2007,6 +2007,150 @@ if ((settings_readable)); then
   assert_hook_refuses_naming "a brace wins over a redirection refusal" \
     'git diff HEAD >cosign.{pub,key}' 'expands braces'
 
+  # The write primitive is not git's alone. Six other allow rows end in `*`
+  # -- "this command with any arguments" -- and a shell output redirection
+  # is part of the string that rule matches, so `shellcheck
+  # tests/run-tests.sh >cosign.pub` truncated the trust anchor before a line
+  # was linted and `podman images >.claude/settings.json` overwrote the file
+  # holding these rules, neither prompted (zfs-kinoite-complex#224, the same
+  # hook). Shown first, against a stand-in in a temporary directory: bash
+  # opens the target before the command runs, so the file is emptied even
+  # when the command then fails. `bash -n` is used because it is always
+  # present; shellcheck may not be.
+  gated_dir="$(mktemp -d)"
+  printf 'ORIGINAL-CONTENT\n' >"${gated_dir}/victim"
+  (cd "${gated_dir}" && bash --norc --noprofile -c 'bash -n ./no-such-script.sh >victim' >/dev/null 2>&1 </dev/null)
+  gated_written="$(cat "${gated_dir}/victim" 2>/dev/null)"
+  # And the flag form: `-n` reads a script without running it, and a later
+  # `+n` on the same command line turns that back off, so the linter's allow
+  # rule runs whatever follows.
+  noexec_ran="$(bash --norc --noprofile -c "bash -n +n -c 'printf RAN-UNDER-BASH-N'" 2>/dev/null </dev/null)"
+  rm -rf "${gated_dir}"
+  if [[ "${gated_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "an output redirection on an allow-listed non-git command truncates the file it names"
+  else
+    fail "an output redirection on an allow-listed non-git command truncates the file it names" \
+      "the file kept its contents; re-derive why the gated-prefix refusal exists"
+  fi
+  if [[ "${noexec_ran}" == "RAN-UNDER-BASH-N" ]]; then
+    pass "bash -n +n -c COMMAND runs the command the -n was meant to keep from running"
+  else
+    fail "bash -n +n -c COMMAND runs the command the -n was meant to keep from running" \
+      "got '${noexec_ran}'; re-derive why the +n refusal exists"
+  fi
+  # The list of gated commands lives in the hook; this is what keeps it from
+  # drifting. The commands are derived from the settings file rather than
+  # restated, so an allow rule added there with a trailing `*` fails here
+  # until the hook lists it. The git rows are the scan above's; the exact
+  # rows (`just test`, the virsh inventories) carry no `*`, so a redirection
+  # makes the string match no row and Claude Code prompts.
+  gated_rows=0
+  while IFS= read -r gated_prefix; do
+    [[ -n "${gated_prefix}" ]] || continue
+    [[ "${gated_prefix}" == "git "* ]] && continue
+    gated_rows=$((gated_rows + 1))
+    assert_hook_refuses_naming "every allow rule with arguments is refused a writing redirection: ${gated_prefix} >cosign.pub" \
+      "${gated_prefix} >cosign.pub" 'allow-listed command'
+  done < <(jq -r '.permissions.allow[]? | select(startswith("Bash(") and endswith("*)")) | .[5:-2] | sub(" $"; "")' "${CLAUDE_SETTINGS}")
+  if ((gated_rows >= 6)); then
+    pass "the settings file still carries the allow rows the gated-prefix scan covers (${gated_rows})"
+  else
+    fail "the settings file still carries the allow rows the gated-prefix scan covers" \
+      "found ${gated_rows} Bash(...*) rows other than git's; expected at least 6"
+  fi
+  # Every operator that opens a path, in every position bash accepts it: after
+  # the command, before its name, after an assignment or `time`, carried
+  # across a `$(...)` in the same command, and on the longer last word the
+  # `df -T*` row also matches.
+  # shellcheck disable=SC2016 # the substitutions are spellings handed to the hook, not run here
+  for redirect_command in \
+    'shellcheck tests/run-tests.sh >cosign.pub' \
+    'shellcheck tests/run-tests.sh >> out' \
+    'shellcheck tests/run-tests.sh 2>.claude/settings.json' \
+    'shellcheck >| cosign.pub' \
+    'bash -n tests/run-tests.sh &>cosign.pub' \
+    'bash -n tests/run-tests.sh &>>cosign.pub' \
+    'podman images >&cosign.pub' \
+    'podman ps -a <>cosign.pub' \
+    'podman ps {fd}>cosign.pub' \
+    'findmnt -J >/dev/null' \
+    'df -T >cosign.pub' \
+    'df -Th > .claude/hooks/gate-git-diff.sh' \
+    'podman images 2>&1 >cosign.pub' \
+    '>cosign.pub shellcheck tests/run-tests.sh' \
+    'git status; >cosign.pub podman images' \
+    'FOO=bar shellcheck tests/run-tests.sh >cosign.pub' \
+    'FOO=bar >cosign.pub shellcheck tests/run-tests.sh' \
+    'time shellcheck tests/run-tests.sh >cosign.pub' \
+    'command podman images >cosign.pub' \
+    'findmnt $(pwd) >cosign.pub' \
+    'echo $(podman images >cosign.pub)' \
+    'ls | podman images >cosign.pub' \
+    'shellcheck tests/run-tests.sh 2>&1 | tee x; df -T >out'; do
+    assert_hook_refuses_naming "the hook refuses an output redirection inside an allow-listed command: ${redirect_command}" \
+      "${redirect_command}" 'allow-listed command'
+  done
+  # The refusal is the operator that opens a path for writing. A pipe, a
+  # descriptor form and an input redirection open none.
+  for redirect_command in \
+    'shellcheck tests/run-tests.sh 2>&1 | tail -5' \
+    'podman images | grep arch-bootc' \
+    'findmnt -T / -o TARGET,SOURCE' \
+    'shellcheck tests/run-tests.sh <tests/run-tests.sh' \
+    'podman ps >&2' \
+    'df -T 2>&-' \
+    'bash -n tests/run-tests.sh </dev/null' \
+    'shellcheck -x tests/run-tests.sh' \
+    'bash -n tests/run-tests.sh' \
+    'df -Th'; do
+    assert_hook_permits "reading the output of an allow-listed command is unprompted: ${redirect_command}" \
+      "${redirect_command}"
+  done
+  # The hook re-gates what the permission rules wave through. A command no
+  # allow rule covers prompts on its own, and a redirection on another
+  # command of the same string is that command's own.
+  for redirect_command in \
+    'echo x >cosign.pub' \
+    'cat tests/run-tests.sh >cosign.pub' \
+    'df -h >cosign.pub' \
+    'just test >cosign.pub' \
+    'echo x >out; shellcheck tests/run-tests.sh' \
+    'shellcheck tests/run-tests.sh | tee out' \
+    '>out echo x; podman images'; do
+    assert_hook_permits "a redirection on a command no allow rule covers is unprompted: ${redirect_command}" \
+      "${redirect_command}"
+  done
+  # The flag that undoes `bash -n`. `+n` and `+o noexec` turn execution back
+  # on for the rest of the command line, so a word beginning with `+` in a
+  # `bash -n` invocation is refused, along with the spellings bash rebuilds
+  # -- a brace, a `$` or a backtick -- since `{+,+}n` reaches bash as `+n`.
+  # shellcheck disable=SC2016 # the substitutions are spellings handed to the hook, not run here
+  for noexec_command in \
+    "bash -n +n -c 'cat ./cosign.key'" \
+    'bash -n +o noexec tests/run-tests.sh' \
+    'bash -n tests/run-tests.sh +n' \
+    "bash -n +nv -c 'id'" \
+    'bash -n "+n" -c id' \
+    'git status; bash -n +n -c id' \
+    'bash -n {+,+}n -c id' \
+    'bash -n $X tests/run-tests.sh' \
+    'bash -n $(printf +n) -c id' \
+    'bash -n `printf +n` -c id' \
+    'bash -n --norc {+,+}n -c id'; do
+    assert_hook_refuses_naming "the hook refuses a + word or an expansion in a bash -n invocation: ${noexec_command}" \
+      "${noexec_command}" '+n'
+  done
+  # shellcheck disable=SC2016 # the $x is a spelling handed to the hook, not expanded here
+  for noexec_command in \
+    'bash -n tests/run-tests.sh' \
+    'bash -n scripts/quickstart.sh tests/run-tests.sh' \
+    'bash -n -- tests/run-tests.sh' \
+    'bash +n -c id' \
+    'echo $x; bash -n tests/run-tests.sh'; do
+    assert_hook_permits "a syntax check, and a bash no allow rule covers, are unprompted: ${noexec_command}" \
+      "${noexec_command}"
+  done
+
   # A `(` behind an unquoted `<` or `>` is a process substitution, not a
   # subshell: it hands git a /dev/fd path as an operand the scan never
   # counted, and the first split reset the operand count at its `(` instead.
