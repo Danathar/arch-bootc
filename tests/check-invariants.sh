@@ -5460,6 +5460,683 @@ fi
 
 fi
 
+
+# ---------------------------------------------------------------------------
+group "Customizations inventory (docs/customizations.md: 'This repo already includes the following opinionated changes')"
+
+# docs/customizations.md is the answer to "what did this image change, and why
+# does it behave differently from stock Arch?". Every bullet in it is a hand
+# copy of one of three package lists or of a Containerfile step. Nothing read
+# it: its only appearance under tests/ was the Vendored Flathub group far
+# above, which borrows a single sentence about the remote being vendored.
+#
+# Two directions drift here, and they fail differently:
+#
+#   - A package the document names that nothing in the tree installs sends a
+#     reader looking for something the image does not have. `xfce4-terminal`
+#     was exactly that shape: it is installed, but only as a member of the
+#     `xfce4` group, and no file in this tree said where it came from.
+#   - A flavor tag that no longer matches the list the package lives in is
+#     worse than no tag at all, because a tag reads as verified. The document
+#     states its own rule in the opening paragraph -- the flavors share
+#     everything except where a flavor is called out -- so an untagged package
+#     belongs in packages-base.txt or in both desktop lists, and a tagged one
+#     belongs in that flavor's list and not the other's.
+#
+# The needles are read out of the document rather than restated here. A bullet
+# that renames, re-tags or deletes a package changes what these checks compare,
+# which is the property that makes this a join and not a second copy.
+#
+# What is deliberately not asserted: whether a package is installed as an Arch
+# *group* rather than as a package (`xfce4`, `plasma-meta`), and what a group
+# or meta-package pulls in. That is a property of the Arch repositories, not of
+# this tree, and resolving it needs a network and a pacman database. Where the
+# document leans on it, it now says so with a `via \`<package>\`` clause, and
+# the clause is what these checks accept in place of an install.
+
+CUSTOM_DOC="docs/customizations.md"
+PACKAGES_BASE="packages-base.txt"
+PACKAGES_KDE="packages-kde.txt"
+PACKAGES_XFCE="packages-xfce.txt"
+
+if [[ ! -f "${CUSTOM_DOC}" ]]; then
+  fail "${CUSTOM_DOC} exists" "the customizations document is gone"
+else
+
+# The bullets of the "Current Customizations" section, each folded onto one
+# line: the document wraps, and a claim that spans two lines is still one
+# claim. The Upstream Compatibility section below it is prose about the
+# bootstrapping work rather than an inventory, and is asserted separately at
+# the end of this group.
+custom_bullets="$(awk '
+  /^## Current Customizations In This Repo$/ { inside = 1; next }
+  /^## / { inside = 0 }
+  !inside { next }
+  /^- / { if (bullet != "") print bullet; bullet = $0; next }
+  /^[[:space:]]+[^[:space:]]/ { if (bullet != "") { sub(/^[[:space:]]+/, " "); bullet = bullet $0 }; next }
+  { if (bullet != "") { print bullet; bullet = "" } }
+  END { if (bullet != "") print bullet }
+' "${CUSTOM_DOC}")"
+
+custom_bullet_count="$(grep -c '^- ' <<<"${custom_bullets}" || true)"
+if ((custom_bullet_count >= 20)); then
+  pass "the customizations inventory still reads as a bulleted list (${custom_bullet_count} bullets)"
+else
+  fail "the customizations inventory still reads as a bulleted list" \
+    "found ${custom_bullet_count} bullet(s) under 'Current Customizations In This Repo'; the checks below read their contents, so a rewrite that drops the list silently stops asserting anything"
+fi
+
+# Every backticked name in those bullets, paired with the flavor the document
+# attributes it to.
+#
+# A backticked `kde`/`xfce` directly after an opening parenthesis is a flavor
+# tag, not a package. A tag covers the clause it closes: every name back to
+# the previous tag, or to a semicolon, or to the start of the bullet. So in
+#
+#   `distrobox`, `flatpak`, and `firefox` installed; `konsole` (`kde`) or
+#   `xfce4-terminal` (`xfce`, ...)
+#
+# the `kde` tag reaches back only as far as the semicolon and covers `konsole`
+# alone, and in "`kde-applications-meta`/`plasma-meta` (`kde`), or the
+# `xfce4`/`xfce4-goodies` groups plus ... (`xfce`)" each tag covers the pair
+# of names in its own clause. A name no tag covers is untagged and therefore
+# shared, whatever the rest of the bullet says: the document's rule is that
+# the flavors share everything except where a flavor is called out, and a tag
+# on a different clause is not a call-out for this one. That is what keeps
+# `firefox` checked against both desktop lists, and keeps `distrobox` from
+# borrowing whichever tag happens to sit later in the same bullet. A name
+# introduced by "via" is the package or group the document says provides the
+# name before it, and is what the install check below accepts in place of an
+# install.
+#
+custom_claims="$(awk '
+  {
+    n = 0
+    rest = $0
+    while (match(rest, /`[^`]+`/)) {
+      n++
+      befores[n] = substr(rest, 1, RSTART - 1)
+      spans[n] = substr(rest, RSTART + 1, RLENGTH - 2)
+      rest = substr(rest, RSTART + RLENGTH)
+      if (n > 1) afters[n - 1] = befores[n]
+    }
+    afters[n] = rest
+    for (i = 1; i <= n; i++) {
+      provider_of[i] = ""
+      is_marker[i] = ((spans[i] == "kde" || spans[i] == "xfce") && befores[i] ~ /\($/)
+      is_provider[i] = (befores[i] ~ /via( the)? $/)
+    }
+    # Three things a bullet can be doing with a name, and they want opposite
+    # assertions: claiming the image has it, claiming the image does not, or
+    # naming it in passing to say where something else comes from. The middle
+    # one is why `nano` and `base-devel` are in the document at all; the last
+    # is the aside about what the upstream `base` package does not ship, which
+    # is a claim about Arch rather than about this image.
+    for (i = 1; i <= n; i++) {
+      role[i] = "claim"
+      if (afters[i] ~ /^ is \*\*not\*\* shipped/ || afters[i] ~ /^ removed from the image/) role[i] = "absent"
+      else if (befores[i] ~ /not shipped by [^`]*$/) role[i] = "mention"
+      else if (i > 1 && role[i - 1] == "mention" && befores[i] ~ /^[\/,[:space:]]*(and |or )?$/) role[i] = "mention"
+    }
+    # A "via" clause backs the name it follows, not every name in the bullet:
+    # walking back from the clause to the nearest name before it is what keeps
+    # `konsole` from borrowing the `xfce4` group that stands behind
+    # `xfce4-terminal` two words later.
+    for (j = 1; j <= n; j++) {
+      if (!is_provider[j]) continue
+      for (i = j - 1; i >= 1; i--) {
+        if (is_marker[i] || is_provider[i]) continue
+        if (spans[i] ~ /^[^A-Za-z]/ || spans[i] ~ / /) continue
+        provider_of[i] = spans[j]
+        break
+      }
+    }
+    for (i = 1; i <= n; i++) {
+      if (is_marker[i] || is_provider[i]) continue
+      # Walk forward to the tag that closes this clause. afters[k] is the text
+      # between name k and name k + 1, so a semicolon in it ends the clause
+      # before any tag is reached, and the name stays shared.
+      flavor = "untagged"
+      for (k = i; k < n; k++) {
+        if (afters[k] ~ /;/) break
+        if (is_marker[k + 1]) { flavor = spans[k + 1]; break }
+      }
+      # A literal dash stands in for "no via clause": consecutive tabs are one
+      # delimiter to `read`, so an empty field here would shift `role` into
+      # `provider` and silently drop every role distinction below.
+      printf "%s\t%s\t%s\t%s\n", spans[i], flavor, (provider_of[i] == "" ? "-" : provider_of[i]), role[i]
+    }
+    delete spans; delete befores; delete afters; delete is_marker; delete is_provider
+    delete provider_of; delete role
+  }
+' <<<"${custom_bullets}")"
+
+# A package name, as opposed to a unit name, a path, a size expression or a
+# command line: one word, no glob, and not a systemd unit. Case is folded
+# because the document writes NetworkManager the way the project spells it and
+# the package list writes it the way pacman does.
+package_shaped() {
+  local token="$1"
+  [[ "${token}" =~ ^[A-Za-z][A-Za-z0-9@._+-]*$ ]] || return 1
+  [[ "${token}" =~ \.(service|socket|slice|target|timer|conf|cfg|json|txt|md|sh)$ ]] && return 1
+  return 0
+}
+
+# Same shape as assert_present, for the same reason: `grep -v ... | grep -q`
+# under `set -o pipefail` fails at random when the second grep exits on its
+# first match and the first takes SIGPIPE. The uncommented lines are captured
+# once and the match runs against the variable, so there is no pipeline.
+packages_in() {
+  local file="$1" token="$2"
+  [[ -f "${file}" ]] || return 1
+  local active
+  active="$(grep -vE '^[[:space:]]*#|^[[:space:]]*$' "${file}")"
+  grep -qxF -- "${token}" <<<"${active}"
+}
+
+# The active (non-comment) lines of the Containerfile and Justfile, read once
+# for the loop below rather than re-read and re-piped per package.
+custom_containerfile_active="$(grep -vE '^[[:space:]]*#' "${CONTAINERFILE}")"
+custom_justfile_active="$(grep -vE '^[[:space:]]*#' "${JUSTFILE}")"
+
+custom_uninstalled=""
+custom_mistagged=""
+custom_shipped_anyway=""
+custom_checked=0
+while IFS=$'\t' read -r token flavor provider role; do
+  [[ -n "${token}" ]] || continue
+  package_shaped "${token}" || continue
+  [[ "${role}" == "mention" ]] && continue
+  token="${token,,}"
+  custom_checked=$((custom_checked + 1))
+
+  in_base=0; in_kde=0; in_xfce=0
+  packages_in "${PACKAGES_BASE}" "${token}" && in_base=1
+  packages_in "${PACKAGES_KDE}" "${token}" && in_kde=1
+  packages_in "${PACKAGES_XFCE}" "${token}" && in_xfce=1
+
+  # A bullet that exists to say a package is *not* in the image inverts both
+  # checks: `nano` and `base-devel` are named there precisely because they are
+  # absent, so finding them installed is the failure.
+  if [[ "${role}" == "absent" ]]; then
+    ((in_base + in_kde + in_xfce == 0)) || custom_shipped_anyway+="${token} "
+    continue
+  fi
+
+  if ((in_base + in_kde + in_xfce == 0)); then
+    # Not installed by name. The tree may still account for it: the
+    # Containerfile installs or removes it as part of a step (bootc's build
+    # dependencies, `nano`), the Justfile names it (the build recipes), or the
+    # document itself names the group or meta-package it arrives in.
+    accounted=0
+    grep -qwF -- "${token}" <<<"${custom_containerfile_active}" && accounted=1
+    grep -qwF -- "${token}" <<<"${custom_justfile_active}" && accounted=1
+    if [[ -n "${provider}" && "${provider}" != "-" ]] &&
+      { packages_in "${PACKAGES_BASE}" "${provider}" ||
+        packages_in "${PACKAGES_KDE}" "${provider}" ||
+        packages_in "${PACKAGES_XFCE}" "${provider}"; }; then
+      accounted=1
+    fi
+    ((accounted == 1)) || custom_uninstalled+="${token}(doc:${flavor}) "
+    continue
+  fi
+
+  where=""
+  ((in_base == 1)) && where+="base,"
+  ((in_kde == 1)) && where+="kde,"
+  ((in_xfce == 1)) && where+="xfce,"
+  case "${flavor}" in
+    kde)
+      ((in_kde == 1 && in_xfce == 0)) ||
+        custom_mistagged+="${token}(doc:kde,lists:${where%,}) "
+      ;;
+    xfce)
+      ((in_xfce == 1 && in_kde == 0)) ||
+        custom_mistagged+="${token}(doc:xfce,lists:${where%,}) "
+      ;;
+    untagged)
+      # Untagged means every flavor gets it: from the base list, or from each
+      # desktop list. Name the desktop list it is missing from, since that is
+      # the list the reader has to look in.
+      missing=""
+      ((in_kde == 1)) || missing+="kde,"
+      ((in_xfce == 1)) || missing+="xfce,"
+      ((in_base == 1 || (in_kde == 1 && in_xfce == 1))) ||
+        custom_mistagged+="${token}(doc:untagged,lists:${where%,},missing:${missing%,}) "
+      ;;
+  esac
+done <<<"${custom_claims}"
+
+if ((custom_checked >= 40)); then
+  pass "the inventory still names packages for these checks to read (${custom_checked})"
+else
+  fail "the inventory still names packages for these checks to read" \
+    "only ${custom_checked} package name(s) were found in ${CUSTOM_DOC}; the two checks below have nothing to compare"
+fi
+
+if [[ -z "${custom_uninstalled}" ]]; then
+  pass "every package ${CUSTOM_DOC} names is installed by this tree, or the document names what provides it"
+else
+  fail "every package ${CUSTOM_DOC} names is installed by this tree, or the document names what provides it" \
+    "no package list, Containerfile step or Justfile recipe names: ${custom_uninstalled}"
+fi
+
+if [[ -z "${custom_shipped_anyway}" ]]; then
+  pass "every package ${CUSTOM_DOC} says is not in the image is in no package list"
+else
+  fail "every package ${CUSTOM_DOC} says is not in the image is in no package list" \
+    "a package list installs: ${custom_shipped_anyway}"
+fi
+
+if [[ -z "${custom_mistagged}" ]]; then
+  pass "every flavor tag in ${CUSTOM_DOC} matches the list the package is in"
+else
+  fail "every flavor tag in ${CUSTOM_DOC} matches the list the package is in" \
+    "the document's opening paragraph says the flavors share everything except where a flavor is called out: ${custom_mistagged}"
+fi
+
+# The tags the document uses are the flavors this repo actually builds. A
+# third desktop flavor added to the Containerfile and never mentioned here
+# leaves the inventory describing an image nobody builds any more.
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_doc_flavors="$(grep -oE '\(`(kde|xfce)`' <<<"${custom_bullets}" | tr -d '(`' | sort -u | tr '\n' ' ')"
+custom_tree_flavors="$(sed -n 's/^FROM base-core AS \([a-z0-9-]*\).*/\1/p' "${CONTAINERFILE}" |
+  grep -vxF base | sort -u | tr '\n' ' ')"
+assert_equal "the flavor tags ${CUSTOM_DOC} uses name exactly the desktop flavors the Containerfile builds" \
+  "${custom_doc_flavors}" "${custom_tree_flavors}"
+
+# "sharing everything below except where a flavor is called out", read against
+# the enablement symlinks: the desktop stages must switch on the same units.
+# A unit enabled in one stage and not the other is a difference the document
+# does not record, whichever way round it is.
+#
+# The one difference it does record is the first bullet -- a graphical login
+# per flavor -- so each stage's display manager is taken out of the comparison
+# and checked on its own terms below. The display manager is identified by the
+# alias the stage materializes rather than by name, so renaming one does not
+# quietly grow the exception.
+#
+custom_stage_display_manager() {
+  local stage="$1"
+  awk -v stage="${stage}" '
+    $0 ~ "^FROM base-core AS " stage "$" { inside = 1; next }
+    /^FROM / { inside = 0 }
+    inside && /\/display-manager\.service/ {
+      if (match($0, /system\/[A-Za-z0-9@._-]+ \/usr\/lib\/systemd\/system\/display-manager\.service/)) {
+        split(substr($0, RSTART, RLENGTH), parts, " ")
+        sub(/.*\//, "", parts[1])
+        print parts[1]
+      }
+    }
+  ' "${CONTAINERFILE}" | sort -u | tr '\n' ' '
+}
+
+custom_stage_units() {
+  local stage="$1"
+  local display_manager="$2"
+  awk -v stage="${stage}" '
+    $0 ~ "^FROM base-core AS " stage "$" { inside = 1; next }
+    /^FROM / { inside = 0 }
+    inside && /\.wants\// {
+      while (match($0, /\.wants\/[A-Za-z0-9@._-]+/)) {
+        unit = substr($0, RSTART + 7, RLENGTH - 7)
+        print unit
+        $0 = substr($0, RSTART + RLENGTH)
+      }
+    }
+  ' "${CONTAINERFILE}" | grep -vxF "${display_manager}" | sort -u | tr '\n' ' '
+}
+
+custom_kde_dm="$(custom_stage_display_manager kde)"
+custom_xfce_dm="$(custom_stage_display_manager xfce)"
+custom_kde_dm="${custom_kde_dm% }"
+custom_xfce_dm="${custom_xfce_dm% }"
+
+assert_equal "the two desktop stages enable the same units apart from the graphical login, as ${CUSTOM_DOC} says they share everything untagged" \
+  "$(custom_stage_units kde "${custom_kde_dm}")" "$(custom_stage_units xfce "${custom_xfce_dm}")"
+
+# The first bullet is the exception, and it is an exception in both stages:
+# each desktop flavor has exactly one display manager, and they are different
+# ones. A stage that lost its display manager, or gained a second, would pass
+# the comparison above by symmetry alone.
+for custom_flavor in kde xfce; do
+  custom_flavor_dm="${custom_kde_dm}"
+  [[ "${custom_flavor}" == "xfce" ]] && custom_flavor_dm="${custom_xfce_dm}"
+  if [[ "${custom_flavor_dm}" =~ ^[A-Za-z0-9@._-]+$ ]]; then
+    pass "the ${custom_flavor} stage installs exactly one graphical login (${custom_flavor_dm}), as ${CUSTOM_DOC}'s first bullet says"
+  else
+    fail "the ${custom_flavor} stage installs exactly one graphical login, as ${CUSTOM_DOC}'s first bullet says" \
+      "the stage aliases display-manager.service to: ${custom_flavor_dm:-nothing}"
+  fi
+done
+# The carve-out above is only legitimate while the document still records the
+# difference. A bullet that loses its per-flavor tags turns a documented
+# difference into an undocumented one, and the comparison would go on
+# excusing it.
+custom_login_bullet="$(grep -i '^- Graphical login' <<<"${custom_bullets}")"
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_login_tags="$(grep -oE '\(`(kde|xfce)`\)' <<<"${custom_login_bullet}" | tr -d '()`' | sort -u | tr '\n' ' ')"
+assert_equal "${CUSTOM_DOC} still calls out a graphical login for each flavor, which is the difference the comparison above excuses" \
+  "${custom_login_tags}" "${custom_tree_flavors}"
+
+if [[ -n "${custom_kde_dm}" && "${custom_kde_dm}" != "${custom_xfce_dm}" ]]; then
+  pass "the flavors log in through different display managers, which is why ${CUSTOM_DOC} tags that bullet per flavor"
+else
+  fail "the flavors log in through different display managers, which is why ${CUSTOM_DOC} tags that bullet per flavor" \
+    "both stages alias display-manager.service to '''${custom_kde_dm}'''"
+fi
+
+# "Root has a default password (`changeme`)": the word in the document is the
+# word the Containerfile sets. The expiry and the sshd drop-in are asserted in
+# the Root-login group above; what is new here is that this second hand copy of
+# the password still matches.
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_doc_password="$(grep -oE 'default password \(`[^`]+`\)' "${CUSTOM_DOC}" |
+  sed -e 's/.*(`//' -e 's/`)$//')"
+custom_tree_password="$(grep -oE "echo '[a-z]+:[^']+' \| chpasswd" "${CONTAINERFILE}" |
+  sed -e "s/.*://" -e "s/' | chpasswd//")"
+assert_equal "the default root password ${CUSTOM_DOC} quotes is the one the Containerfile sets" \
+  "${custom_doc_password}" "${custom_tree_password}"
+
+# "reachable only from a physical console -- SSH (`PermitRootLogin ...`)": the
+# setting the document quotes is the setting the drop-in writes, verbatim.
+custom_doc_sshd="$(grep -oE 'PermitRootLogin [a-z-]+' "${CUSTOM_DOC}" | sort -u | tr '\n' ' ')"
+custom_tree_sshd="$(grep -oE 'PermitRootLogin [a-z-]+' "${CONTAINERFILE}" | sort -u | tr '\n' ' ')"
+assert_equal "the sshd setting ${CUSTOM_DOC} quotes is the one the Containerfile writes" \
+  "${custom_doc_sshd}" "${custom_tree_sshd}"
+
+# "`nano` removed from the image": removed by name, and absent from every list
+# that would put it back.
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_doc_removed="$(grep -oE '`[a-z0-9-]+` removed from the image' "${CUSTOM_DOC}" | tr -d '`' | awk '{print $1}')"
+if [[ -z "${custom_doc_removed}" ]]; then
+  fail "${CUSTOM_DOC} still records which package is removed from the image" \
+    "no '\`<package>\` removed from the image' bullet found, so the two checks below have no needle"
+else
+  assert_present "the package ${CUSTOM_DOC} says is removed is removed by name" \
+    "${CONTAINERFILE}" "pacman -Rns[^&]*\b${custom_doc_removed}\b"
+  if packages_in "${PACKAGES_BASE}" "${custom_doc_removed}" ||
+    packages_in "${PACKAGES_KDE}" "${custom_doc_removed}" ||
+    packages_in "${PACKAGES_XFCE}" "${custom_doc_removed}"; then
+    fail "the package ${CUSTOM_DOC} says is removed is in no package list" \
+      "${custom_doc_removed} is listed for installation, so the removal and the list disagree"
+  else
+    pass "the package ${CUSTOM_DOC} says is removed is in no package list"
+  fi
+fi
+
+# "`base-devel` is **not** shipped in the final image": nothing installs it,
+# in any list or in any active Containerfile line. The Containerfile carries a
+# commented-out recipe for an AUR build that does install it, which is why the
+# active-line form matters here.
+assert_absent "no active Containerfile line installs base-devel" \
+  "${CONTAINERFILE}" 'pacman -S[^|&]*base-devel'
+if packages_in "${PACKAGES_BASE}" "base-devel" ||
+  packages_in "${PACKAGES_KDE}" "base-devel" ||
+  packages_in "${PACKAGES_XFCE}" "base-devel"; then
+  fail "base-devel is in no package list, as ${CUSTOM_DOC} says" \
+    "a package list installs base-devel, so the final image ships it"
+else
+  pass "base-devel is in no package list, as ${CUSTOM_DOC} says"
+fi
+
+# "only `rust make go-md2man elfutils` are installed for that and removed again
+# by name in the same layer": both halves, read as the set the document names.
+custom_active_containerfile="$(grep -vE '^[[:space:]]*#' "${CONTAINERFILE}")"
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_doc_builddeps="$(grep -oE '`rust[^`]*`' "${CUSTOM_DOC}" | tr -d '`' | tr ' ' '\n' | sort -u | tr '\n' ' ')"
+custom_installed_builddeps="$(grep -oE 'pacman -S --needed --asdeps --noconfirm [a-z0-9 -]+' <<<"${custom_active_containerfile}" |
+  sed 's/pacman -S --needed --asdeps --noconfirm //' | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')"
+custom_removed_builddeps="$(grep -oE 'pacman -Rns --noconfirm [a-z0-9 -]+' <<<"${custom_active_containerfile}" |
+  sed 's/pacman -Rns --noconfirm //' | tr ' ' '\n' | grep -v '^$' | grep -vxF "${custom_doc_removed:-nano}" |
+  sort -u | tr '\n' ' ')"
+assert_equal "the build dependencies ${CUSTOM_DOC} names are the ones installed for the bootc build" \
+  "${custom_installed_builddeps}" "${custom_doc_builddeps}"
+assert_equal "the same set is removed again by name" \
+  "${custom_removed_builddeps}" "${custom_doc_builddeps}"
+
+# "zram swap enabled by default (zstd-compressed, sized `min(RAM/2, 4GiB)`)":
+# the size expression the document quotes is the one the generator drop-in
+# sets, compared with whitespace and unit spelling normalized -- 4GiB there,
+# 4096 (MiB) in the config, which is the same number in the units each side
+# uses.
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_doc_zram="$(grep -oE 'sized `min\([^`]+\)`' "${CUSTOM_DOC}" |
+  sed -e 's/.*`min(//' -e 's/)`$//' -e 's/[[:space:]]//g' -e 's|RAM/2|ram/2|' -e 's/4GiB/4096/')"
+custom_tree_zram="$(grep -oE 'zram-size = min\([^)]*\)' "${CONTAINERFILE}" |
+  sed -e 's/.*min(//' -e 's/)$//' -e 's/[[:space:]]//g')"
+assert_equal "the zram size ${CUSTOM_DOC} quotes is the one the generator drop-in sets" \
+  "${custom_tree_zram}" "${custom_doc_zram}"
+assert_present "zram is compressed with the algorithm ${CUSTOM_DOC} names" \
+  "${CONTAINERFILE}" "compression-algorithm = $(grep -oE '[a-z0-9]+-compressed' "${CUSTOM_DOC}" | head -n 1 | sed 's/-compressed//')"
+
+# "`systemd-oomd` tuned with drop-ins (`-.slice`, `user@.service`)": a drop-in
+# for each unit the document names, under /usr/lib so a package upgrade cannot
+# drop it.
+while IFS= read -r custom_oomd_unit; do
+  [[ -n "${custom_oomd_unit}" ]] || continue
+  assert_present "the ${custom_oomd_unit} drop-in ${CUSTOM_DOC} names is written under /usr/lib" \
+    "${CONTAINERFILE}" "/usr/lib/systemd/system/${custom_oomd_unit}\.d/"
+done < <(grep -oE 'drop-ins \(`[^)]+\)' "${CUSTOM_DOC}" | tr -d '()`' | sed 's/drop-ins //' | tr ',' '\n' | tr -d ' ')
+
+# "`systemd-networkd-wait-online.service` disabled to avoid startup delays".
+#
+# The Containerfile masks it, and says in the same breath why: the unit has no
+# enablement symlink of its own, so `systemctl disable` against it exits 0 and
+# changes nothing. The document's word for that is "disabled", which is what a
+# reader wants to know; the check is that the tree still does the thing that
+# actually works, and that nobody has since replaced the mask with the no-op
+# the Containerfile's comment warns about.
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_doc_disabled="$(grep -oE '`systemd-networkd-wait-online\.service` disabled' "${CUSTOM_DOC}" |
+  tr -d '`' | awk '{print $1}')"
+if [[ -z "${custom_doc_disabled}" ]]; then
+  fail "${CUSTOM_DOC} still records which unit is disabled for startup time" \
+    "no 'systemd-networkd-wait-online.service disabled' bullet found"
+else
+  assert_present "the unit ${CUSTOM_DOC} says is disabled is masked, which is what stops it" \
+    "${CONTAINERFILE}" "systemctl mask ${custom_doc_disabled}"
+  assert_absent "it is not merely disabled, which the Containerfile records as a no-op for this unit" \
+    "${CONTAINERFILE}" "systemctl disable[^&]*${custom_doc_disabled}"
+fi
+
+# "Printing stack installed and enabled, socket-activated via `cups.socket`":
+# the unit the document names is what each desktop stage enables, and the
+# service it is deliberately not is enabled nowhere.
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_doc_cups="$(grep -oE 'socket-activated via `[a-z.]+`' "${CUSTOM_DOC}" | tr -d '`' | awk '{print $3}')"
+if [[ -z "${custom_doc_cups}" ]]; then
+  fail "${CUSTOM_DOC} still records which unit socket-activates printing" \
+    "no 'socket-activated via \`<unit>\`' clause found"
+else
+  for custom_flavor in kde xfce; do
+    custom_flavor_dm="${custom_kde_dm}"
+    [[ "${custom_flavor}" == "xfce" ]] && custom_flavor_dm="${custom_xfce_dm}"
+    if grep -qF "${custom_doc_cups}" <<<"$(custom_stage_units "${custom_flavor}" "${custom_flavor_dm}")"; then
+      pass "the ${custom_flavor} stage enables the ${custom_doc_cups} the document names"
+    else
+      fail "the ${custom_flavor} stage enables the ${custom_doc_cups} the document names" \
+        "no .wants symlink for ${custom_doc_cups} in the ${custom_flavor} stage"
+    fi
+  done
+  assert_absent "cups.service is never enabled, only the socket the document names" \
+    "${CONTAINERFILE}" 'wants/cups\.service'
+fi
+
+# The services the document says are "installed and enabled" for every flavor.
+# The package name and the unit name differ for two of these (bluez ships
+# bluetooth.service, avahi ships avahi-daemon.service), so the pairing is
+# spelled out rather than derived -- but each unit is checked in both desktop
+# stages, so a service switched on for one desktop only still fails.
+for custom_unit in power-profiles-daemon.service bluetooth.service avahi-daemon.service; do
+  custom_missing=""
+  for custom_flavor in kde xfce; do
+    custom_flavor_dm="${custom_kde_dm}"
+    [[ "${custom_flavor}" == "xfce" ]] && custom_flavor_dm="${custom_xfce_dm}"
+    grep -qF "${custom_unit}" <<<"$(custom_stage_units "${custom_flavor}" "${custom_flavor_dm}")" ||
+      custom_missing+="${custom_flavor} "
+  done
+  if [[ -z "${custom_missing}" ]]; then
+    pass "${custom_unit} is enabled in both desktop stages, as ${CUSTOM_DOC} says"
+  else
+    fail "${custom_unit} is enabled in both desktop stages, as ${CUSTOM_DOC} says" \
+      "no enablement symlink in: ${custom_missing}"
+  fi
+done
+
+# "Network discovery / mDNS configured and enabled (`avahi`, `nss-mdns`)":
+# nss-mdns is a resolver plugin, so installing it does nothing until
+# nsswitch.conf names it. That edit is the "configured" half of the bullet.
+assert_present "nsswitch.conf is edited to resolve mDNS names, which is what nss-mdns needs to do anything" \
+  "${CONTAINERFILE}" 'nsswitch\.conf'
+
+# "`NetworkManager` installed and enabled for first-boot DHCP" and "`firewalld`
+# installed and enabled": both are base-stage units, so neither appears in the
+# per-flavor sets above.
+for custom_unit in NetworkManager.service firewalld.service; do
+  assert_present "${custom_unit} is enabled, as ${CUSTOM_DOC} says" \
+    "${CONTAINERFILE}" "multi-user\.target\.wants/${custom_unit}"
+done
+
+# "`cloud-init` installed and enabled, pinned to the NoCloud datasource": the
+# datasource the document names is the one the pin sets, and the target is
+# actually switched on.
+custom_doc_datasource="$(grep -oE 'pinned to the [A-Za-z]+ datasource' "${CUSTOM_DOC}" | awk '{print $4}')"
+assert_present "cloud-init is pinned to the datasource ${CUSTOM_DOC} names" \
+  "${CONTAINERFILE}" "datasource_list: \[ ${custom_doc_datasource} \]"
+assert_present "cloud-init.target is enabled, as ${CUSTOM_DOC} says" \
+  "${CONTAINERFILE}" 'multi-user\.target\.wants/cloud-init\.target'
+
+# "`qemu-guest-agent` installed for host-driven VM access (udev-activated only
+# when run under QEMU/libvirt)": "udev-activated only" is a claim about what is
+# *not* there. Force-enabling it restart-loops on bare metal, which is the
+# failure the bullet exists to prevent.
+assert_absent "qemu-guest-agent is enabled by no .wants symlink, as ${CUSTOM_DOC} says it is udev-activated" \
+  "${CONTAINERFILE}" 'wants/qemu-guest-agent\.service'
+
+# "`sudo` installed, with `wheel` group members granted password-prompted sudo
+# via `/etc/sudoers.d/10-wheel`": the path the document names, and the
+# "password-prompted" half, which is one NOPASSWD away from being false.
+custom_doc_sudoers="$(grep -oE '/etc/sudoers\.d/[0-9a-z-]+' "${CUSTOM_DOC}" | sort -u | head -n 1)"
+assert_present "the sudoers drop-in ${CUSTOM_DOC} names is the one the Containerfile writes" \
+  "${CONTAINERFILE}" "> ${custom_doc_sudoers}"
+assert_present "that drop-in is installed 0440, so visudo and sudo will read it" \
+  "${CONTAINERFILE}" "chmod 0440 ${custom_doc_sudoers}"
+assert_absent "wheel sudo still prompts for a password, as ${CUSTOM_DOC} says" \
+  "${CONTAINERFILE}" 'NOPASSWD'
+
+# "Container images pulled from `ghcr.io/danathar` ... require a valid cosign
+# signature": the namespace the document names is the namespace policy.json
+# protects. The signature chain itself is asserted in its own group above; what
+# is checked here is that the document names the same namespace.
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_doc_namespace="$(grep -oE '`ghcr\.io/[a-z0-9-]+`' "${CUSTOM_DOC}" | tr -d '`' | sort -u | head -n 1)"
+if command -v jq >/dev/null 2>&1 && jq -e . "${POLICY}" >/dev/null 2>&1; then
+  assert_equal "the namespace ${CUSTOM_DOC} says is signature-gated is the one policy.json gates" \
+    "${custom_doc_namespace}" \
+    "$(jq -r '.transports.docker | keys[]' "${POLICY}" | sort -u | head -n 1)"
+else
+  fail "the namespace ${CUSTOM_DOC} says is signature-gated is the one policy.json gates" \
+    "jq is not on PATH or ${POLICY} is not valid JSON"
+fi
+
+# "Local `just build-containerfile` / `build-base` / `build-xfce` (aliases for
+# `just build-flavor kde/base/xfce`) use `--security-opt label=disable`": the
+# aliases the document pairs with flavors, in the order it pairs them, and the
+# flag it quotes.
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_doc_recipes="$(grep -oE 'Local `just [a-z-]+`[^(]*\(aliases for `just build-flavor [a-z/]+`\)' "${CUSTOM_DOC}")"
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_alias_names="$(grep -oE '`(just )?build-[a-z-]+`' <<<"${custom_doc_recipes}" |
+  tr -d '`' | sed -e 's/^just //' | grep -vxF 'build-flavor')"
+custom_alias_flavors="$(grep -oE 'build-flavor [a-z/]+' <<<"${custom_doc_recipes}" |
+  sed 's/build-flavor //' | tr '/' '\n')"
+if [[ -z "${custom_alias_names}" || -z "${custom_alias_flavors}" ]]; then
+  fail "${CUSTOM_DOC} still pairs each local build alias with the flavor it builds" \
+    "the 'aliases for \`just build-flavor ...\`' bullet no longer parses, so the checks below have no needles"
+else
+  custom_alias_index=0
+  mapfile -t custom_alias_flavor_list <<<"${custom_alias_flavors}"
+  while IFS= read -r custom_alias; do
+    [[ -n "${custom_alias}" ]] || continue
+    custom_alias_flavor="${custom_alias_flavor_list[${custom_alias_index}]:-}"
+    custom_alias_index=$((custom_alias_index + 1))
+    assert_present "\`just ${custom_alias}\` builds the ${custom_alias_flavor} flavor ${CUSTOM_DOC} pairs it with" \
+      "${JUSTFILE}" "^${custom_alias} .*\(build-flavor \"${custom_alias_flavor}\""
+  done <<<"${custom_alias_names}"
+fi
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_doc_build_flag="$(grep -oE '`--security-opt [a-z=]+`' "${CUSTOM_DOC}" | tr -d '`' | head -n 1)"
+assert_present "the local build passes the flag ${CUSTOM_DOC} quotes" \
+  "${JUSTFILE}" "${custom_doc_build_flag}"
+
+# --- Upstream Bootcrew Compatibility Work ---
+#
+# The second half of the document lists the bootstrapping steps that make an
+# Arch container behave like a bootc image, and ends by saying that removing
+# any of them may break `bootc install/switch`. Each step below is read out of
+# that section.
+
+custom_upstream="$(awk '
+  /^## Upstream Bootcrew Compatibility Work/ { inside = 1; next }
+  /^## / { inside = 0 }
+  inside { print }
+' "${CUSTOM_DOC}")"
+
+# "bootc is built from upstream source (`https://...`) during image build":
+# the URL the document quotes is the one the build clones. The tag and commit
+# pins are asserted in the bootc provenance group above and are deliberately
+# not restated here -- they move on every upstream release, the document does
+# not quote them, and a check that reads a version out of this file would fail
+# every time Renovate does its job.
+custom_doc_bootc_url="$(grep -oE 'https://github\.com/[a-z0-9./-]+\.git' <<<"${custom_upstream}" | sort -u | head -n 1)"
+assert_present "bootc is cloned from the repository ${CUSTOM_DOC} names" \
+  "${CONTAINERFILE}" "git clone .*${custom_doc_bootc_url//./\\.}"
+
+# "pacman `/var` paths are relocated into `/usr/lib/sysimage`"
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_doc_sysimage="$(grep -oE '`/usr/lib/[a-z]+`' <<<"${custom_upstream}" | tr -d '`' | sort -u | head -n 1)"
+assert_present "pacman's paths are relocated into the directory ${CUSTOM_DOC} names" \
+  "${CONTAINERFILE}" "= ${custom_doc_sysimage}"
+
+# "`NoExtract` rules are disabled so language/help content can be installed"
+assert_present "the NoExtract rules ${CUSTOM_DOC} names are commented out of pacman.conf" \
+  "${CONTAINERFILE}" 'NoExtract'
+
+# "`glibc` is explicitly named alongside the other base packages in the main
+# install step" -- the whole point is that it is a literal target on the
+# pacman line rather than a line in packages-base.txt, so this reads the
+# Containerfile's install step and not the list.
+assert_present "glibc is an explicit target of the base install, as ${CUSTOM_DOC} says" \
+  "${CONTAINERFILE}" 'pacman -Syu --noconfirm glibc'
+
+# "Initramfs and boot integration are prepared with `dracut` config for
+# `ostree` + `bootc` modules."
+assert_present "the dracut config adds the initramfs modules ${CUSTOM_DOC} names" \
+  "${CONTAINERFILE}" 'add_dracutmodules\+=" ostree bootc "'
+
+# "Bootc/ostree filesystem layout and symlink structure is enforced
+# (`/sysroot`, `/ostree`, `/var/home`, etc.) with composefs enabled."
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_layout_paths="$(grep -oE 'symlink structure is enforced \([^)]*\)' <<<"${custom_upstream}" |
+  grep -oE '`/[a-z/]+`' | tr -d '`')"
+while IFS= read -r custom_layout_path; do
+  [[ -n "${custom_layout_path}" ]] || continue
+  assert_present "the layout path ${CUSTOM_DOC} names (${custom_layout_path}) is created or linked" \
+    "${CONTAINERFILE}" "${custom_layout_path}"
+done < <(printf '%s\n' "${custom_layout_paths}")
+assert_present "composefs is enabled, as ${CUSTOM_DOC} says" \
+  "${CONTAINERFILE}" '\[composefs\]'
+
+# "Required metadata label is set for bootc-compatible images:
+# `containers.bootc=1`."
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+custom_doc_label="$(grep -oE '`containers\.bootc=[0-9]+`' <<<"${custom_upstream}" | tr -d '`' | head -n 1)"
+assert_present "the metadata label ${CUSTOM_DOC} names is set on the image" \
+  "${CONTAINERFILE}" "LABEL ${custom_doc_label/=/ }"
+
+fi
+
 # ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then

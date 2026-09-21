@@ -21,7 +21,7 @@ everything below except where a flavor is called out.
 
 **Media & applications**
 - GStreamer media codecs (`gst-plugins-*`, `gst-libav`)
-- `distrobox`, `flatpak`, and `firefox` installed; `konsole` (`kde`) or `xfce4-terminal` (`xfce`) as the terminal
+- `distrobox`, `flatpak`, and `firefox` installed; `konsole` (`kde`) or `xfce4-terminal` (`xfce`, via the `xfce4` group) as the terminal
 - Flathub remote pre-configured system-wide (vendored into the image at build time, not fetched over the network during the build)
 - Homebrew integration via `ublue-os/brew` (pre-configured to extract on first boot for UID 1000)
 
