@@ -2029,6 +2029,12 @@ if ((settings_readable)); then
   # `+n`, `?n` reaches bash as `+n`.
   touch "${gated_dir}/+n"
   glob_ran="$(cd "${gated_dir}" && bash --norc --noprofile -c "bash -n ?n -c 'printf RAN-VIA-GLOB'" 2>/dev/null </dev/null)"
+  # And a process substitution as the redirection's target: bash connects the
+  # command's output to a command of its own, which writes wherever it likes
+  # (review on #322).
+  printf 'ORIGINAL-CONTENT\n' >"${gated_dir}/victim2"
+  (cd "${gated_dir}" && bash --norc --noprofile -c 'df -T > >(cat >victim2); wait' >/dev/null 2>&1 </dev/null)
+  subst_written="$(cat "${gated_dir}/victim2" 2>/dev/null)"
   rm -rf "${gated_dir}"
   if [[ "${gated_written}" != *ORIGINAL-CONTENT* ]]; then
     pass "an output redirection on an allow-listed non-git command truncates the file it names"
@@ -2047,6 +2053,12 @@ if ((settings_readable)); then
   else
     fail "bash -n ?n -c COMMAND runs the command when a file named +n exists" \
       "got '${glob_ran}'; re-derive why the glob refusal exists"
+  fi
+  if [[ "${subst_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "a redirection onto a process substitution writes the file the substitution names"
+  else
+    fail "a redirection onto a process substitution writes the file the substitution names" \
+      "the file kept its contents; re-derive why a substitution after a redirection is its target"
   fi
   # The list of gated commands lives in the hook; this is what keeps it from
   # drifting. The commands are derived from the settings file rather than
@@ -2096,7 +2108,10 @@ if ((settings_readable)); then
     'findmnt $(pwd) >cosign.pub' \
     'echo $(podman images >cosign.pub)' \
     'ls | podman images >cosign.pub' \
-    'shellcheck tests/run-tests.sh 2>&1 | tee x; df -T >out'; do
+    'shellcheck tests/run-tests.sh 2>&1 | tee x; df -T >out' \
+    'df -T > >(cat >cosign.pub)' \
+    'podman images >>(tee cosign.pub)' \
+    'shellcheck tests/run-tests.sh 2> >(cat >cosign.pub)'; do
     assert_hook_refuses_naming "the hook refuses an output redirection inside an allow-listed command: ${redirect_command}" \
       "${redirect_command}" 'allow-listed command'
   done
@@ -2132,7 +2147,9 @@ if ((settings_readable)); then
     'shellcheck tests/run-tests.sh | tee out' \
     '>out echo x; podman images' \
     'bash -n tests/run-tests.sh; { bash -n missing.sh; } >cosign.pub' \
-    '(shellcheck tests/run-tests.sh) >cosign.pub'; do
+    '(shellcheck tests/run-tests.sh) >cosign.pub' \
+    'echo x > >(cat >cosign.pub)' \
+    'cat < <(podman images)'; do
     assert_hook_permits "a redirection on a command no allow rule covers is unprompted: ${redirect_command}" \
       "${redirect_command}"
   done
