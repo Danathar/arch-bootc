@@ -12,8 +12,8 @@ check was built rather than evidence about the thing it checked.
 
 **What happened.** `check-invariants.sh` asserted the root-login controls with
 `grep -Eq 'pam_wheel\.so use_uid' Containerfile`. Deleting the executable line
-that enables it — line 166, the `sed` that uncomments Arch's own
-`pam_wheel.so use_uid` — left the check green:
+that enables it — line 166 as the file then stood, the `sed` that uncomments
+Arch's own `pam_wheel.so use_uid` — left the check green:
 
 ```
 $ sed -i '166d' Containerfile && ./tests/check-invariants.sh; echo $?
@@ -25,7 +25,7 @@ password.
 
 **Why it was possible.** This repository comments heavily, and a good rationale
 comment necessarily uses the same words as the instruction it explains.
-`pam_wheel.so use_uid` appears in the `sed` *and* in three comments about it;
+`pam_wheel.so use_uid` appeared in the `sed` *and* in three comments about it;
 `PermitRootLogin prohibit-password` appears in the sshd drop-in *and* in the
 comment above it. A plain `grep` is therefore satisfied by the surviving
 *explanation* of a control that has been deleted — which is exactly backwards,
@@ -45,6 +45,16 @@ review that found it and the reasoning at the time are in #162.
 that breaks the property. A broad mutation proves the check reacts to
 *something*, which is not the claim being made. When the mutation is bigger than
 the property, the test is measuring the mutation.
+
+**Correction (2026-09-21).** Both counts above describe the tree as it stood
+then, and both have moved since. The `sed` is line 188 of today's
+`Containerfile`, not 166, and `pam_wheel.so use_uid` appears in one comment
+rather than three — the rationale block above the step was rewritten when the
+edit gained a `grep` that checks its own result. The transcript is left exactly
+as it was run, because it is the evidence. What changed is that
+[`tests/check-invariants.sh`](../../tests/check-invariants.sh) now reads both
+numbers out of this file and resolves them against the tree, so the next move
+fails a check instead of leaving a plausible-looking pointer here.
 
 ## 2. `grep -q` downstream of a pipe, under `pipefail`
 

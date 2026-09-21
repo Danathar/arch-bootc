@@ -62,7 +62,7 @@ fail() {
 # rationale comment using the same words as the instruction that implements it:
 # `PermitRootLogin prohibit-password` appears both in the sshd drop-in and in
 # the comment above it, and `pam_wheel.so use_uid` appears in the sed that
-# uncomments it and in three comments explaining why. A plain grep is therefore
+# uncomments it and in one comment explaining why. A plain grep is therefore
 # satisfied by the *explanation* of a control that has been deleted -- which is
 # exactly backwards, since the comment is what survives a careless edit.
 assert_present() {
@@ -7153,6 +7153,505 @@ else
     fail "the body the document says is read for its env: block is still a workflow step" \
       "no run: step is named ${quality_env_only}"
   fi
+fi
+
+fi
+
+# ---------------------------------------------------------------------------
+group "Reflections (docs/reflections/README.md: 'why a mistake was possible, how it was caught, and what would catch it next time')"
+
+# docs/reflections/ is the third place this repository keeps knowledge, and the
+# only one nothing read. README.md's documentation table, .memory/README.md and
+# .claude/session-summary.md all send a writer here; the contract states a
+# filename form, a five-part template and a prohibition on host inventory; and
+# the one entry is a chain of claims about the Containerfile, this file and
+# .github/workflows/ai-fix.yml.
+#
+# A stale reflection is worse than a stale runbook, for the reason the quality
+# document is: a runbook that names a missing flag fails in the reader's hands,
+# while a reflection is read to decide whether a class of mistake is already
+# handled. Two of its claims had already gone stale by the time anything looked.
+# It named the `sed` that uncomments `pam_wheel.so use_uid` by line number, and
+# that line had moved from 166 to 188 -- so the transcript's `sed -i '166d'`
+# now deletes a comment, which is the exact failure the section is about. And it
+# said the string appears in three comments, which was true when the rationale
+# block was three paragraphs and is one today. The same count was restated in
+# this file's own `assert_present` comment, so both copies were wrong together.
+#
+# Every number and name the entry states about the tree is therefore read out of
+# the prose here and resolved against the tree, rather than restated. The
+# contract's own rules are enforced the same way: the filename form, the
+# template's parts and the table of places are parsed from the document, so
+# changing the contract fails this group until the entries follow it.
+#
+# What is deliberately not asserted: the pull request numbers (#161, #162, #163)
+# and every sentence about why a mistake was possible. Those are history and
+# judgement -- neither is a hand copy of something in the tree.
+
+REFLECTIONS_DIR="docs/reflections"
+REFLECTIONS_README="${REFLECTIONS_DIR}/README.md"
+REFLECTION_PAM_ENTRY="${REFLECTIONS_DIR}/2026-09-03-checks-that-passed-for-the-wrong-reason.md"
+AI_FIX_WORKFLOW=".github/workflows/ai-fix.yml"
+SECURITY_AI_DOC="docs/security/SECURITY-AI.md"
+CORRECTIONS_LOG=".memory/corrections.jsonl"
+MEMORY_README=".memory/README.md"
+SESSION_SUMMARY=".claude/session-summary.md"
+INVARIANTS_SELF="tests/check-invariants.sh"
+
+# A document flattened to one line, with any leading comment marker removed.
+# Both sides of these joins wrap: the reflection's sentences wrap mid-phrase in
+# Markdown, and this file's own rationale comments wrap behind a `#`. A phrase
+# looked for in either as written is missed for a reason that has nothing to do
+# with what it says.
+reflection_flat() {
+  sed -E 's/^[[:space:]]*#[[:space:]]?//' "$1" | tr '\n' ' ' | tr -s ' '
+}
+
+# Every relative link in a document resolves. This is `assert_doc_links_resolve`
+# with one difference that matters here: the contract links to directories --
+# `docs/` as the place a rule lands, `.memory/` as the place a one-liner does --
+# and a directory is not a file. Anchors are still checked, for the targets that
+# are files.
+assert_reflection_links() {
+  local doc="$1"
+  local doc_dir="${doc%/*}"
+  local link target anchor target_file slugs
+  local link_problems="" links_checked=0
+  while IFS= read -r link; do
+    [[ -n "${link}" ]] || continue
+    target="${link%%#*}"
+    anchor="${link#*#}"
+    [[ "${link}" == *#* ]] || anchor=""
+    if [[ -n "${target}" ]]; then
+      target_file="${doc_dir}/${target}"
+    else
+      target_file="${doc}"
+    fi
+    links_checked=$((links_checked + 1))
+    if [[ ! -e "${target_file}" ]]; then
+      link_problems+="${link} (no such path) "
+      continue
+    fi
+    [[ -n "${anchor}" && -f "${target_file}" ]] || continue
+    slugs="$(grep -E '^#{1,6} ' "${target_file}" | sed -E 's/^#{1,6} //' |
+      tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9 -]//g; s/ /-/g')"
+    grep -qx -- "${anchor}" <<<"${slugs}" || link_problems+="${link} (no such anchor) "
+  done < <(grep -oE '\]\([^):]*\)' "${doc}" | sed 's/^](//; s/)$//' | sort -u)
+
+  if ((links_checked == 0)); then
+    fail "every relative link in ${doc} resolves" "no relative links found"
+  elif [[ -z "${link_problems}" ]]; then
+    pass "every relative link in ${doc} resolves (${links_checked})"
+  else
+    fail "every relative link in ${doc} resolves" "${link_problems}"
+  fi
+}
+
+if [[ ! -f "${REFLECTIONS_README}" ]]; then
+  fail "the reflections contract exists" \
+    "${REFLECTIONS_README} is missing; README.md's documentation table, ${MEMORY_README} and ${SESSION_SUMMARY} all send a writer to it"
+else
+
+shopt -s nullglob
+reflection_dir_files=("${REFLECTIONS_DIR}"/*.md)
+shopt -u nullglob
+reflection_entries=()
+for reflection_file in "${reflection_dir_files[@]}"; do
+  [[ "${reflection_file}" == "${REFLECTIONS_README}" ]] || reflection_entries+=("${reflection_file}")
+done
+
+# --- The contract is still reachable -----------------------------------------
+#
+# Three documents send a writer here, and the split between them is the whole
+# reason this directory exists. A hand-off that stops pointing at it turns the
+# contract into a file nobody is sent to.
+
+assert_present "README.md's documentation table still links to the reflections" \
+  "README.md" '\]\(docs/reflections/\)'
+
+assert_present "${MEMORY_README} still hands the long-form lesson to the reflections" \
+  "${MEMORY_README}" '\]\(\.\./docs/reflections/\)'
+
+# The link in the session summary's table of places, not merely the directory
+# name: both documents also discuss the split in prose a few lines further
+# down, so a check that accepts any mention is satisfied by the paragraph
+# *about* the row after the row is gone.
+assert_present "${SESSION_SUMMARY}'s table of places still names the reflections" \
+  "${SESSION_SUMMARY}" '\|[[:space:]]*\[docs/reflections/\]'
+
+assert_reflection_links "${REFLECTIONS_README}"
+
+# --- The table of places names paths that exist ------------------------------
+#
+# "This is the third place this repository keeps knowledge, so the first thing
+# it owes you is a reason to exist rather than to be one of the other two." The
+# reason is the table: three rows, each naming where a shape of knowledge lands.
+# A row pointing at a path that no longer exists is an argument for a split that
+# is no longer the split.
+
+reflection_table="$(awk '
+  /^\| Where \| Shape \| Lifetime \|/ { in_table = 1; next }
+  in_table && /^\|[ -]*-/ { next }
+  in_table && /^\|/ { print; next }
+  in_table { exit }
+' "${REFLECTIONS_README}")"
+
+reflection_table_rows="$(grep -c '^|' <<<"${reflection_table}" || true)"
+[[ -n "${reflection_table}" ]] || reflection_table_rows=0
+assert_equal "the contract's table still names the three places knowledge lands" \
+  "${reflection_table_rows}" "3"
+
+while IFS= read -r reflection_row; do
+  [[ -n "${reflection_row}" ]] || continue
+  # shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+  reflection_place="$(grep -oE '`[^`]+`' <<<"${reflection_row}" | head -n 1 | tr -d '`')"
+  if [[ -z "${reflection_place}" ]]; then
+    fail "every place the contract's table names exists" "a row names no path: ${reflection_row}"
+  elif [[ -e "${reflection_place}" ]]; then
+    pass "the place the contract's table names exists: ${reflection_place}"
+  else
+    fail "the place the contract's table names exists: ${reflection_place}" \
+      "no such path in the tree"
+  fi
+done <<<"${reflection_table}"
+
+# "One line of JSON: an instruction was wrong, here is the correction." That is
+# a shape claim about a file this table sends a writer to, and a line that does
+# not parse makes the index it describes ungreppable in the one way that
+# matters -- by field.
+if [[ ! -f "${CORRECTIONS_LOG}" ]]; then
+  fail "the corrections index the contract's table names exists" "${CORRECTIONS_LOG} is missing"
+elif ! command -v jq >/dev/null 2>&1; then
+  fail "every line of ${CORRECTIONS_LOG} is one JSON object, as the contract's table says" \
+    "jq is not on PATH, so the shape could not be checked"
+else
+  reflection_bad_lines=""
+  reflection_json_lines=0
+  while IFS= read -r reflection_line; do
+    [[ -n "${reflection_line//[[:space:]]/}" ]] || continue
+    reflection_json_lines=$((reflection_json_lines + 1))
+    jq -e 'type == "object"' >/dev/null 2>&1 <<<"${reflection_line}" ||
+      reflection_bad_lines+="${reflection_line:0:40}... "
+  done <"${CORRECTIONS_LOG}"
+  if ((reflection_json_lines == 0)); then
+    fail "every line of ${CORRECTIONS_LOG} is one JSON object, as the contract's table says" \
+      "the file has no entries, so the claim is unverifiable"
+  elif [[ -z "${reflection_bad_lines}" ]]; then
+    pass "every line of ${CORRECTIONS_LOG} is one JSON object, as the contract's table says (${reflection_json_lines})"
+  else
+    fail "every line of ${CORRECTIONS_LOG} is one JSON object, as the contract's table says" \
+      "does not parse as an object: ${reflection_bad_lines}"
+  fi
+fi
+
+# --- The entries follow the contract -----------------------------------------
+
+if ((${#reflection_entries[@]} > 0)); then
+  pass "the reflections directory still holds at least one entry (${#reflection_entries[@]})"
+else
+  fail "the reflections directory still holds at least one entry" \
+    "${REFLECTIONS_DIR} has only a README, so every rule below is asserted against nothing"
+fi
+
+# "One file per episode, named `YYYY-MM-DD-short-topic.md`." The form is read
+# out of the contract rather than restated, so renaming the convention is
+# checked against the files in the same commit.
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+reflection_name_form="$(grep -oE '`[A-Z]{4}-[A-Z]{2}-[A-Z]{2}-[a-z-]+\.md`' "${REFLECTIONS_README}" |
+  head -n 1 | tr -d '`')"
+if [[ -z "${reflection_name_form}" ]]; then
+  fail "the contract still states the filename form" \
+    "${REFLECTIONS_README} no longer names a YYYY-MM-DD-topic form"
+else
+  pass "the contract still states the filename form: ${reflection_name_form}"
+  reflection_name_regex="^$(sed -E 's/YYYY/[0-9]{4}/; s/MM/[0-9]{2}/; s/DD/[0-9]{2}/; s/short-topic/[a-z0-9-]+/; s/\.md$/\\.md/' <<<"${reflection_name_form}")$"
+  for reflection_entry in "${reflection_entries[@]}"; do
+    reflection_base="${reflection_entry##*/}"
+    if [[ "${reflection_base}" =~ ${reflection_name_regex} ]]; then
+      pass "the entry filename follows the form the contract states: ${reflection_base}"
+    else
+      fail "the entry filename follows the form the contract states: ${reflection_base}" \
+        "does not match ${reflection_name_regex}"
+    fi
+  done
+fi
+
+# The date in the filename is the date in the heading. A reflection is written
+# after the thing is settled, and the date is how a reader places it against the
+# tree it describes -- two dates disagreeing makes that placement a guess.
+for reflection_entry in "${reflection_entries[@]}"; do
+  reflection_base="${reflection_entry##*/}"
+  reflection_file_date="$(grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}' <<<"${reflection_base}")"
+  reflection_heading_date="$(grep -m 1 -E '^# ' "${reflection_entry}" |
+    grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -n 1)"
+  assert_equal "the heading date of ${reflection_base} matches its filename" \
+    "${reflection_heading_date}" "${reflection_file_date}"
+done
+
+# The template's parts, read out of the fenced block in the contract. The entry
+# may carry them as bold labels or as headings -- what is asserted is that the
+# part is there, since the template is what makes a reflection transfer rather
+# than read as a story.
+reflection_template="$(awk '
+  /^```markdown$/ { in_template = 1; next }
+  /^```$/ { in_template = 0 }
+  in_template
+' "${REFLECTIONS_README}")"
+reflection_parts="$(grep -oE '^\*\*[^*]+\*\*' <<<"${reflection_template}" |
+  sed -E 's/^\*\*//; s/\*\*$//; s/\.$//')"
+
+if [[ -z "${reflection_parts}" ]]; then
+  fail "the contract's template still names the parts a reflection carries" \
+    "no bold labels in the template block of ${REFLECTIONS_README}"
+else
+  pass "the contract's template still names the parts a reflection carries ($(grep -c . <<<"${reflection_parts}"))"
+  for reflection_entry in "${reflection_entries[@]}"; do
+    reflection_base="${reflection_entry##*/}"
+    reflection_entry_flat="$(reflection_flat "${reflection_entry}")"
+    while IFS= read -r reflection_part; do
+      [[ -n "${reflection_part}" ]] || continue
+      if grep -Fq -- "${reflection_part}" <<<"${reflection_entry_flat}"; then
+        pass "${reflection_base} carries the template's '${reflection_part}' part"
+      else
+        fail "${reflection_base} carries the template's '${reflection_part}' part" \
+          "the phrase does not appear"
+      fi
+    done <<<"${reflection_parts}"
+    assert_reflection_links "${reflection_entry}"
+  done
+fi
+
+# "Prompts, transcripts, credentials, personal data, or host inventory -- no VM
+# names, pool names, disk paths, or IP addresses." Quoted command output is
+# expected here, which is exactly why the prohibition needs a check: the
+# evidence a reflection stands on is pasted from a real host.
+reflection_host_detail="$(grep -rnE '\b[0-9]{1,3}(\.[0-9]{1,3}){3}\b' "${REFLECTIONS_DIR}" |
+  tr '\n' ' ' || true)"
+if [[ -z "${reflection_host_detail}" ]]; then
+  pass "no reflection carries an IP address, which the contract lists as host inventory"
+else
+  fail "no reflection carries an IP address, which the contract lists as host inventory" \
+    "${reflection_host_detail}"
+fi
+
+# --- The 2026-09-03 entry's claims, resolved against the tree -----------------
+
+if [[ ! -f "${REFLECTION_PAM_ENTRY}" ]]; then
+  fail "the 2026-09-03 reflection is still here" \
+    "${REFLECTION_PAM_ENTRY} is missing; the contract says a reflection that turns out to be wrong is corrected in place, not deleted"
+else
+
+reflection_pam_flat="$(reflection_flat "${REFLECTION_PAM_ENTRY}")"
+
+# The section is an argument about a line number, so the line number is the
+# claim. It has moved once already, from 166 to 188, and the transcript that
+# deletes 166 is left in place as the evidence it is -- which means the pointer
+# a reader acts on is the sentence, and the sentence is what is resolved here.
+reflection_sed_line="$(grep -oE 'line [0-9]+ of today' <<<"${reflection_pam_flat}" |
+  grep -oE '[0-9]+' | head -n 1)"
+if [[ -z "${reflection_sed_line}" ]]; then
+  fail "the reflection still points at the sed it is about by line number" \
+    "no \"line N of today's Containerfile\" sentence in ${REFLECTION_PAM_ENTRY}"
+else
+  reflection_sed_text="$(sed -n "${reflection_sed_line}p" "${CONTAINERFILE}")"
+  if [[ "${reflection_sed_text}" =~ ^[[:space:]]*# ]]; then
+    fail "the line the reflection names is the sed that uncomments pam_wheel.so use_uid" \
+      "${CONTAINERFILE}:${reflection_sed_line} is a comment line -- deleting it proves nothing, which is this section's own subject"
+  elif grep -Fq -- 'pam_wheel.so use_uid' <<<"${reflection_sed_text}" &&
+    grep -Fq -- 'sed -i' <<<"${reflection_sed_text}"; then
+    pass "the line the reflection names is the sed that uncomments pam_wheel.so use_uid (${CONTAINERFILE}:${reflection_sed_line})"
+  else
+    fail "the line the reflection names is the sed that uncomments pam_wheel.so use_uid" \
+      "${CONTAINERFILE}:${reflection_sed_line} is: ${reflection_sed_text}"
+  fi
+fi
+
+# How many comments carry the string is the other half of the same argument, and
+# it is stated in two places: the reflection's correction, and this file's own
+# `assert_present` comment. Both are counted against the Containerfile, so the
+# pair cannot go stale together again.
+reflection_pam_comments="$(grep -cE '^[[:space:]]*#.*pam_wheel\.so use_uid' "${CONTAINERFILE}")"
+reflection_pam_word="$(grep -oE 'appears in [a-z]+ comment rather than' <<<"${reflection_pam_flat}" |
+  awk '{print $3}')"
+assert_equal "the reflection's correction counts the comments that carry pam_wheel.so use_uid" \
+  "${reflection_pam_word}" "$(number_word "${reflection_pam_comments}")"
+
+if [[ ! -f "${INVARIANTS_SELF}" ]]; then
+  fail "assert_present's own comment counts them the same way" "${INVARIANTS_SELF} is missing"
+else
+  # Only the helper's own comment block, not the whole file: the extraction
+  # pattern below spells the phrase it looks for, so searching everything would
+  # let this assertion be satisfied by its own source after the comment is gone.
+  reflection_helper_comment="$(sed -n '1,130p' "${INVARIANTS_SELF}" |
+    sed -E 's/^[[:space:]]*#[[:space:]]?//' | tr '\n' ' ' | tr -s ' ')"
+  reflection_helper_word="$(grep -oE 'uncomments it and in [a-z]+ comment' <<<"${reflection_helper_comment}" |
+    awk '{print $5}')"
+  assert_equal "assert_present's own comment counts them the same way" \
+    "${reflection_helper_word}" "$(number_word "${reflection_pam_comments}")"
+fi
+
+# The other example the same paragraph gives.
+reflection_sshd_active="$(grep -cE '^[^#]*PermitRootLogin prohibit-password' "${CONTAINERFILE}")"
+assert_equal "the sshd drop-in the reflection names is still one active Containerfile line" \
+  "${reflection_sshd_active}" "1"
+
+reflection_sshd_comments="$(grep -cE '^[[:space:]]*#.*PermitRootLogin prohibit-password' "${CONTAINERFILE}")"
+if ((reflection_sshd_comments > 0)); then
+  pass "and is still restated in a comment, which is what makes a plain grep satisfiable by the explanation (${reflection_sshd_comments})"
+else
+  fail "and is still restated in a comment, which is what makes a plain grep satisfiable by the explanation" \
+    "no comment line in ${CONTAINERFILE} carries PermitRootLogin prohibit-password, so the reflection's example is no longer true of this tree"
+fi
+
+# Section 2's fix: "Both affected sites use a here-string and no pipeline." A
+# pipeline reintroduced at either site brings back a check that fails roughly
+# one run in eight on a tree that is perfectly fine.
+reflection_assert_body="$(awk '
+  /^assert_present\(\) \{/ { in_body = 1 }
+  in_body { print }
+  in_body && /^\}/ { exit }
+' "${INVARIANTS_SELF}")"
+if [[ -z "${reflection_assert_body}" ]]; then
+  fail "assert_present, the first site the reflection names, still exists" \
+    "no assert_present definition in ${INVARIANTS_SELF}"
+else
+  # Comment lines are stripped for the same reason assert_present strips them,
+  # and this assertion is the case that proves the point: the comment inside
+  # that function spells out the pipeline it does not use, so a search over the
+  # whole body finds the *explanation* of the shape and reports the shape.
+  reflection_assert_code="$(grep -Ev '^[[:space:]]*#' <<<"${reflection_assert_body}")"
+  if grep -Fq -- '<<<' <<<"${reflection_assert_code}"; then
+    pass "assert_present still matches from a here-string, as the reflection says"
+  else
+    fail "assert_present still matches from a here-string, as the reflection says" \
+      "no here-string in the function body"
+  fi
+  if grep -Eq '\|[[:space:]]*grep' <<<"${reflection_assert_code}"; then
+    fail "assert_present still pipes nothing into grep, as the reflection says" \
+      "a pipeline into grep is back: under pipefail, grep -q's SIGPIPE on the upstream makes a satisfied assertion report failure"
+  else
+    pass "assert_present still pipes nothing into grep, as the reflection says"
+  fi
+fi
+
+if grep -Eq '^mismatch_branch="\$\(' "${INVARIANTS_SELF}"; then
+  pass "the mismatch_branch assignment, the second site the reflection names, still exists"
+else
+  fail "the mismatch_branch assignment, the second site the reflection names, still exists" \
+    "no mismatch_branch assignment in ${INVARIANTS_SELF}"
+fi
+
+if grep -Eq 'grep [^|]*<<<"\$\{mismatch_branch\}"' "${INVARIANTS_SELF}"; then
+  pass "and still reads it through a here-string rather than a pipeline"
+else
+  fail "and still reads it through a here-string rather than a pipeline" \
+    "mismatch_branch is no longer matched from a here-string"
+fi
+
+# The probe the intermittent failure was found with names a real Containerfile
+# line. A probe against a line that no longer exists would have failed for a
+# reason that has nothing to do with SIGPIPE.
+reflection_probe="$(grep -oE 'ARG [A-Z_]+=' "${REFLECTION_PAM_ENTRY}" | head -n 1)"
+if [[ -z "${reflection_probe}" ]]; then
+  fail "the Containerfile line the reflection's race probe used is still there" \
+    "${REFLECTION_PAM_ENTRY} no longer names an ARG"
+else
+  assert_present "the Containerfile line the reflection's race probe used is still there (${reflection_probe})" \
+    "${CONTAINERFILE}" "^${reflection_probe}"
+fi
+
+# Section 3: the workflow fix. The step name, the ref it pins, the permissions
+# the token carries and the script that would have been run are four hand copies
+# of .github/workflows/ai-fix.yml, and the section stops being about this
+# repository the moment any of them stops matching.
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+reflection_step="$(grep -oE 'the `[^`]+` step' <<<"${reflection_pam_flat}" | head -n 1 |
+  sed -E 's/^the `//; s/` step$//')"
+if [[ -z "${reflection_step}" ]]; then
+  fail "the checkout step the reflection names still exists in ${AI_FIX_WORKFLOW}" \
+    "${REFLECTION_PAM_ENTRY} no longer names a step"
+elif grep -Fq -- "- name: ${reflection_step}" "${AI_FIX_WORKFLOW}"; then
+  pass "the checkout step the reflection names still exists in ${AI_FIX_WORKFLOW}: ${reflection_step}"
+else
+  fail "the checkout step the reflection names still exists in ${AI_FIX_WORKFLOW}" \
+    "no step is named ${reflection_step}"
+fi
+
+# shellcheck disable=SC2016  # the ${{ }} expression is the document's own text, matched literally
+reflection_ref="$(grep -oE '`ref: \$\{\{[^`]+`' <<<"${reflection_pam_flat}" | head -n 1 | tr -d '`')"
+if [[ -z "${reflection_ref}" ]]; then
+  fail "the checkout still pins the ref the reflection says it pins" \
+    "${REFLECTION_PAM_ENTRY} no longer quotes a ref"
+elif grep -Fq -- "${reflection_ref}" "${AI_FIX_WORKFLOW}"; then
+  pass "the checkout still pins the ref the reflection says it pins: ${reflection_ref}"
+else
+  fail "the checkout still pins the ref the reflection says it pins" \
+    "${AI_FIX_WORKFLOW} does not carry: ${reflection_ref}"
+fi
+
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+reflection_perms="$(grep -oE '`[a-z-]+: write`' <<<"${reflection_pam_flat}" | tr -d '`' | sort -u)"
+if [[ -z "${reflection_perms}" ]]; then
+  fail "the job still carries the write permissions that made the reflection's scenario possible" \
+    "${REFLECTION_PAM_ENTRY} no longer names them"
+else
+  while IFS= read -r reflection_perm; do
+    [[ -n "${reflection_perm}" ]] || continue
+    if grep -Eq "^[[:space:]]+${reflection_perm}\$" "${AI_FIX_WORKFLOW}"; then
+      pass "the job still carries the permission the reflection names: ${reflection_perm}"
+    else
+      fail "the job still carries the permission the reflection names: ${reflection_perm}" \
+        "${AI_FIX_WORKFLOW} no longer requests it, so the section describes a token this workflow does not hold"
+    fi
+  done <<<"${reflection_perms}"
+fi
+
+reflection_script="$(grep -oE '\./scripts/[a-z0-9-]+\.sh' <<<"${reflection_pam_flat}" | head -n 1)"
+if [[ -z "${reflection_script}" ]]; then
+  fail "the script the reflection's scenario runs exists and is executable" \
+    "${REFLECTION_PAM_ENTRY} no longer names a script"
+else
+  if [[ -x "${reflection_script}" ]]; then
+    pass "the script the reflection's scenario runs exists and is executable: ${reflection_script}"
+  else
+    fail "the script the reflection's scenario runs exists and is executable" \
+      "${reflection_script} is missing or not executable"
+  fi
+  if grep -Fq -- "${reflection_script}" "${AI_FIX_WORKFLOW}"; then
+    pass "and is still what ${AI_FIX_WORKFLOW} runs, which is what put it behind that token"
+  else
+    fail "and is still what ${AI_FIX_WORKFLOW} runs, which is what put it behind that token" \
+      "${AI_FIX_WORKFLOW} no longer runs ${reflection_script}"
+  fi
+fi
+
+# "The rule had been written down two pull requests earlier." The reflection
+# credits the policy with the rule the workflow was not applying to itself; both
+# sides are checked, so deleting the rule from either fails here rather than
+# leaving a reflection that credits a document with a sentence it no longer has.
+reflection_security_flat="$(reflection_flat "${SECURITY_AI_DOC}")"
+for reflection_policy_phrase in "diff under review" "base revision"; do
+  if ! grep -Fq -- "${reflection_policy_phrase}" <<<"${reflection_pam_flat}"; then
+    fail "${SECURITY_AI_DOC} still states the rule the reflection credits it with: ${reflection_policy_phrase}" \
+      "the reflection no longer states it either"
+  elif grep -Fq -- "${reflection_policy_phrase}" <<<"${reflection_security_flat}"; then
+    pass "${SECURITY_AI_DOC} still states the rule the reflection credits it with: ${reflection_policy_phrase}"
+  else
+    fail "${SECURITY_AI_DOC} still states the rule the reflection credits it with: ${reflection_policy_phrase}" \
+      "the phrase is gone from the policy"
+  fi
+done
+
+# The honest limit: a step with the right shape and the wrong effect passes a
+# static check, and only the VM procedure settles it. That procedure is what
+# CLAUDE.md is.
+if grep -qE '^# .*VM' "CLAUDE.md"; then
+  pass "CLAUDE.md is still the VM procedure the reflection's honest limit defers to"
+else
+  fail "CLAUDE.md is still the VM procedure the reflection's honest limit defers to" \
+    "CLAUDE.md's title no longer names a VM, so the only thing that settles what a static check cannot is unclear"
+fi
+
 fi
 
 fi
