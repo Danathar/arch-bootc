@@ -2118,7 +2118,11 @@ if ((settings_readable)); then
   done
   # The hook re-gates what the permission rules wave through. A command no
   # allow rule covers prompts on its own, and a redirection on another
-  # command of the same string is that command's own.
+  # command of the same string is that command's own. The last two are
+  # decided by Claude Code itself: a redirection on a brace group or a
+  # subshell is refused by the Bash tool before any rule or hook sees it
+  # ("does not accept compound statements with redirection", 2.1.267), so
+  # the hook does not restate that refusal.
   for redirect_command in \
     'echo x >cosign.pub' \
     'cat tests/run-tests.sh >cosign.pub' \
@@ -2126,7 +2130,9 @@ if ((settings_readable)); then
     'just test >cosign.pub' \
     'echo x >out; shellcheck tests/run-tests.sh' \
     'shellcheck tests/run-tests.sh | tee out' \
-    '>out echo x; podman images'; do
+    '>out echo x; podman images' \
+    'bash -n tests/run-tests.sh; { bash -n missing.sh; } >cosign.pub' \
+    '(shellcheck tests/run-tests.sh) >cosign.pub'; do
     assert_hook_permits "a redirection on a command no allow rule covers is unprompted: ${redirect_command}" \
       "${redirect_command}"
   done
@@ -2149,7 +2155,9 @@ if ((settings_readable)); then
     'bash -n --norc {+,+}n -c id' \
     'bash -n ?n -c id' \
     'bash -n [+]n -c id' \
-    'bash -n tests/*.sh'; do
+    'bash -n tests/*.sh' \
+    'bash -n <(printf x >written)' \
+    'bash -n >(cat) tests/run-tests.sh'; do
     assert_hook_refuses_naming "the hook refuses a + word or an expansion in a bash -n invocation: ${noexec_command}" \
       "${noexec_command}" '+n'
   done
