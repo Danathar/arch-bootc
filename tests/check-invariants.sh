@@ -2769,6 +2769,66 @@ if ((settings_readable)); then
     assert_hook_refuses_naming "the hook refuses a SHELLCHECK_OPTS assignment: ${rewrite_command}" \
       "${rewrite_command}" 'SHELLCHECK_OPTS='
   done
+
+  # The operand scan reads the words after `shellcheck`, and an input
+  # redirection puts the path somewhere it never looks. ShellCheck reads
+  # standard input when its operand is `-`, so `shellcheck - < .env` prints the
+  # file back exactly as `shellcheck ./.env` did, with the scan seeing only the
+  # `-` (issue #323). Shown first, against a synthetic file in a temporary
+  # directory of this fixture's own, for the reason the operand exposure above
+  # is shown: the refusals below are worth nothing if the read they name has
+  # stopped happening.
+  stdin_dir="$(mktemp -d)"
+  printf '# synthetic fixture\nSYNTHETIC_STDIN_SECRET=synthetic-value-4\n' \
+    >"${stdin_dir}/fake.env"
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    fail "shellcheck prints the contents of the file it is handed on standard input" \
+      "shellcheck is not on PATH, so the exposure the refusals below exist for could not be reproduced"
+  else
+    stdin_output="$(shellcheck - <"${stdin_dir}/fake.env" 2>&1 || true)"
+    if grep -q '^SYNTHETIC_STDIN_SECRET=synthetic-value-4$' <<<"${stdin_output}"; then
+      pass "shellcheck prints the contents of the file it is handed on standard input"
+    else
+      fail "shellcheck prints the contents of the file it is handed on standard input" \
+        "the synthetic line did not appear; re-derive why the target of a < is checked"
+    fi
+  fi
+  rm -rf "${stdin_dir}"
+  # The target is held to the operand test itself: inside the checkout, none of
+  # the deny shapes, and spelled out. The descriptor form, the attached
+  # operator and the form written before the command name are the same
+  # redirection to bash, so they are the same refusal here.
+  for stdin_command in \
+    'shellcheck - < .env' \
+    'shellcheck -s bash - <./cosign.key' \
+    'shellcheck - 0< system_files/etc/pki/anything.pem' \
+    'shellcheck - < /etc/shadow' \
+    'shellcheck - < /home/someone/.ssh/id_ed25519' \
+    "shellcheck - < ../${checkout_name}/.env" \
+    'shellcheck - < ~/.aws/credentials' \
+    'shellcheck - < {tests/run-tests.sh,.env}' \
+    'shellcheck - < .env*' \
+    '< .env shellcheck -' \
+    'git log -1 && shellcheck - < .env' \
+    'command -p shellcheck - < .env'; do
+    assert_hook_refuses_naming "the hook refuses a shellcheck read through an input redirection: ${stdin_command}" \
+      "${stdin_command}" 'shellcheck reads standard input'
+  done
+  # And nothing else about a `<` changes. A script inside the checkout is the
+  # ordinary way to lint from stdin, `/dev/null` prints nothing back, `<<<` is
+  # content and `<<` a delimiter rather than a path, and the other gated
+  # commands do not read a file from stdin at all.
+  for stdin_command in \
+    'shellcheck - < tests/run-tests.sh' \
+    'shellcheck -s bash - <scripts/quickstart.sh' \
+    'shellcheck - < /dev/null' \
+    'shellcheck tests/run-tests.sh </dev/null' \
+    "shellcheck - <<< 'echo hi'" \
+    'df -T < .env' \
+    'cat < .env'; do
+    assert_hook_permits "an ordinary input redirection is still unprompted: ${stdin_command}" \
+      "${stdin_command}"
+  done
   # A quoted or escaped glob character is the literal word bash would pass,
   # and a `~` that does not lead the word is a character in a filename.
   for rewrite_command in \
