@@ -339,6 +339,21 @@ must be described as such.
   first, by running ShellCheck at a synthetic file and finding the file's line
   in its output.
 
+  That scan reads the words after `shellcheck`, and an input redirection puts
+  the path somewhere it never looks. ShellCheck reads standard input when its
+  operand is `-`, so `shellcheck - < .env` printed the file back exactly as
+  `shellcheck ./.env` did, with the scan seeing only the `-`
+  ([#323](https://github.com/Danathar/arch-bootc/issues/323)). The target of
+  every bare `<` on a shellcheck invocation is therefore held to the operand
+  test — inside the working tree, none of the deny shapes, spelled out with no
+  brace, no leading `~` and no glob — wherever the redirection is written,
+  including the descriptor form (`0<f`) and the form before the command name
+  (`< .env shellcheck -`). `/dev/null` stays allowed, and so does reading a
+  script inside the checkout, which is what `shellcheck -` is for. `<<` and
+  `<<<` carry a delimiter or content rather than a path; `<&` and `<>` are
+  decided by the redirection rules already. Same fix as
+  [atomic-image-builder#423](https://github.com/Danathar/atomic-image-builder/pull/423).
+
   `bash -n`, the other allowed linter, is not the same case for reads: it
   echoes at most the one line of a syntax error, and the key and `.env` shapes
   parse cleanly and print nothing. It has a flag problem of its own instead:
