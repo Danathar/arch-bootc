@@ -347,8 +347,9 @@ must be described as such.
   ./cosign.key'` ran the command under the linter's allow rule — the rule
   matches the `bash -n` prefix and the `+n` is the rest of the string. The
   hook refuses a word beginning with `+` in a `bash -n` invocation, and a
-  brace, `$` or backtick in one of its words, since `{+,+}n` reaches Bash as
-  `+n`.
+  brace, an unquoted glob, `$` or backtick in one of its words, since
+  `{+,+}n` reaches Bash as `+n` and `?n` does the same beside a file of that
+  name.
 - **The write primitive is not git's alone either.** Six allow rows end in
   `*` — `shellcheck *`, `bash -n *`, `podman images*`, `podman ps*`,
   `findmnt *`, `df -T*` — which means "this command with any arguments", and

@@ -2025,6 +2025,10 @@ if ((settings_readable)); then
   # `+n` on the same command line turns that back off, so the linter's allow
   # rule runs whatever follows.
   noexec_ran="$(bash --norc --noprofile -c "bash -n +n -c 'printf RAN-UNDER-BASH-N'" 2>/dev/null </dev/null)"
+  # And the glob form (review on aurora-zfs-simple#211): beside a file named
+  # `+n`, `?n` reaches bash as `+n`.
+  touch "${gated_dir}/+n"
+  glob_ran="$(cd "${gated_dir}" && bash --norc --noprofile -c "bash -n ?n -c 'printf RAN-VIA-GLOB'" 2>/dev/null </dev/null)"
   rm -rf "${gated_dir}"
   if [[ "${gated_written}" != *ORIGINAL-CONTENT* ]]; then
     pass "an output redirection on an allow-listed non-git command truncates the file it names"
@@ -2037,6 +2041,12 @@ if ((settings_readable)); then
   else
     fail "bash -n +n -c COMMAND runs the command the -n was meant to keep from running" \
       "got '${noexec_ran}'; re-derive why the +n refusal exists"
+  fi
+  if [[ "${glob_ran}" == "RAN-VIA-GLOB" ]]; then
+    pass "bash -n ?n -c COMMAND runs the command when a file named +n exists"
+  else
+    fail "bash -n ?n -c COMMAND runs the command when a file named +n exists" \
+      "got '${glob_ran}'; re-derive why the glob refusal exists"
   fi
   # The list of gated commands lives in the hook; this is what keeps it from
   # drifting. The commands are derived from the settings file rather than
@@ -2136,7 +2146,10 @@ if ((settings_readable)); then
     'bash -n $X tests/run-tests.sh' \
     'bash -n $(printf +n) -c id' \
     'bash -n `printf +n` -c id' \
-    'bash -n --norc {+,+}n -c id'; do
+    'bash -n --norc {+,+}n -c id' \
+    'bash -n ?n -c id' \
+    'bash -n [+]n -c id' \
+    'bash -n tests/*.sh'; do
     assert_hook_refuses_naming "the hook refuses a + word or an expansion in a bash -n invocation: ${noexec_command}" \
       "${noexec_command}" '+n'
   done
@@ -2145,6 +2158,7 @@ if ((settings_readable)); then
     'bash -n tests/run-tests.sh' \
     'bash -n scripts/quickstart.sh tests/run-tests.sh' \
     'bash -n -- tests/run-tests.sh' \
+    "bash -n '?n'" \
     'bash +n -c id' \
     'echo $x; bash -n tests/run-tests.sh'; do
     assert_hook_permits "a syntax check, and a bash no allow rule covers, are unprompted: ${noexec_command}" \

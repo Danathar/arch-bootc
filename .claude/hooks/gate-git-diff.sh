@@ -137,8 +137,9 @@
 # and a later `+n` or `+o noexec` on the same command line turns that back
 # off, so `bash -n +n -c 'cat ./cosign.key'` ran the command under the
 # linter's allow rule. A word beginning with `+` in a `bash -n` invocation
-# is refused, and so is a brace, a `$` or a backtick in one of its words,
-# since `{+,+}n` reaches bash as `+n`.
+# is refused, and so is a brace, a glob, a `$` or a backtick in one of its
+# words, since `{+,+}n` reaches bash as `+n` and so does `?n` beside a file
+# of that name.
 #
 # So this looks at the operands git would actually receive, and refuses the
 # two-operand form unless every operand resolves as a revision -- which is what
@@ -208,7 +209,7 @@ GATED_REDIRECT_MSG='blocked: an output redirection (>, >>, >|, &>, &>>, N>, >&FI
 BASH_NOEXEC_MSG='blocked: `bash -n` is allow-listed because -n reads a script without running it, and a later +n or +o noexec on the same command line turns that off again, so `bash -n +n -c COMMAND` and `bash -n +o noexec script.sh` run whatever they name under the linter'"'"'s allow rule with no prompt. A word beginning with + in a bash -n invocation is refused. Check syntax with bash -n FILE and nothing else; to run a script, run it as itself so the permission rules see it.'
 
 # shellcheck disable=SC2016 # the literal ${VAR} and $(...) are what the reader has to see
-BASH_EXPAND_MSG='blocked: a brace bash could expand, a $ or a backtick in a word of a bash -n invocation is refused rather than expanded, for the reason BRACE_MSG and EXPAND_MSG give for git: bash rewrites the words before the inner bash sees them, so `{+,+}n` matches no spelling here and reaches bash as +n, which turns noexec off, and $(...), ${VAR} and a backtick supply a word this gate never saw. Write the command out in full.'
+BASH_EXPAND_MSG='blocked: a brace bash could expand, an unquoted glob character (*, ? or a bracket), an unquoted leading ~, a $ or a backtick in a word of a bash -n invocation is refused rather than expanded, for the reason BRACE_MSG and EXPAND_MSG give for git: bash rewrites the words before the inner bash sees them, so `{+,+}n` matches no spelling here and reaches bash as +n, which turns noexec off, `?n` does the same when a file named +n exists in the working directory, and $(...), ${VAR} and a backtick supply a word this gate never saw. Write the command out in full.'
 
 # shellcheck disable=SC2016 # the backticks quote command spellings for the reader
 REDIRECT_MSG='blocked: an output redirection (>, >>, >|, &>, &>>, N>, >&FILE, <>) inside a git invocation makes the shell open its target for writing before git runs -- `git diff HEAD >cosign.pub` truncates the trust anchor, and `>> .claude/settings.json` or `2> .claude/hooks/gate-git-diff.sh` reach any file this uid can write -- and the allow rule for git diff, git log and git show sees none of it. These commands print to stdout; read that instead. Descriptor forms (2>&1, >&2, >&-) and input redirections (<, <<, <<<, <&) are not affected, and a redirection on another command of the same string is that command'"'"'s own.'
@@ -668,6 +669,93 @@ for ((idx = 0; idx < ${#raw_words[@]}; idx++)); do
 done
 ((writing_redirect)) && refuse "${REDIRECT_MSG}"
 
+# The whole string with quoting removed, for the one test that is a substring
+# match rather than a word: the shell removes quotes and backslashes on the
+# way to git, so `--no-'index'` and `--no-\index` both reach it as
+# `--no-index`.
+normalized="${command_string//[\'\"\\]/}"
+
+case "${normalized}" in
+*--no-index*) refuse "${DIFF_MSG}" ;;
+*) ;;
+esac
+
+# Git's path_inside_repo, which decides on the *spelling* rather than on where
+# the path ends up. That distinction is the whole of this function, and folding
+# `..` before the comparison gets it backwards: `git diff --
+# ../<checkout>/cosign.key -` names a file inside this repository by a route
+# that leaves it and comes back, git's test calls that outside and enters the
+# plain-file mode, and a gate that resolved the path first saw a tidy in-tree
+# path and allowed it -- reading a denied path with two operands that both look
+# local. So every `..` component and the stdin operand `-` count as outside
+# here, before anything is normalized. This also refuses some ordinary
+# pathspecs (e.g. tests/../AGENTS.md); use a direct inside spelling instead.
+# A leading `~` counts as outside too: to bash that is a home directory, never
+# a path under this checkout, and resolving the literal put
+# `~/.aws/credentials` inside the tree.
+# Then both lexical and symlink-resolved containment are required: -s alone
+# does not follow symlinks, while resolution alone admits an outside alias
+# back inside. Anything this cannot decide -- no working tree here, no realpath
+# on the host -- counts as outside, so the gate refuses rather than guesses.
+path_inside_worktree() {
+  local candidate toplevel
+  [[ "$1" == "-" || "$1" == '~'* || "/$1/" == */../* ]] && return 1
+  toplevel="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+  candidate="$(realpath -m -s -- "$1" 2>/dev/null)" || return 1
+  [[ "${candidate}" == "${toplevel}" || "${candidate}" == "${toplevel}"/* ]] || return 1
+  candidate="$(realpath -m -- "$1" 2>/dev/null)" || return 1
+  [[ "${candidate}" == "${toplevel}" || "${candidate}" == "${toplevel}"/* ]]
+}
+
+# The shapes `.claude/settings.json` denies the Read tool. Inside the working
+# tree is not enough on its own: `cosign.key` and a `.env` live there, and they
+# are the two files those rules exist for.
+denied_read_shape() {
+  case "${1##*/}" in
+  cosign.key | .env | .env.* | *.pem | *.p12 | id_rsa | id_ed25519) return 0 ;;
+  *) ;;
+  esac
+  return 1
+}
+
+# Whether bash would rewrite this word, as typed, into something other than
+# the quote-stripped spelling the operand scan checks: an unquoted `~` at the
+# start (tilde expansion to $HOME), an unquoted `*`, `?` or `[` anywhere
+# (pathname expansion), a `$` or backtick anywhere (any expansion; a quoted
+# `$` inside double quotes still expands, and a single-quoted one is refused
+# as the price of not modelling that), a brace bash would expand, or a process
+# substitution. Quote state is tracked so that `'tests/*.sh'` is the literal
+# word bash would pass; a backslash escapes the next character.
+word_bash_would_rewrite() {
+  local raw="$1" quote='' escaped=0 i ch
+  [[ "${raw}" == *'$'* || "${raw}" == *'`'* ]] && return 0
+  [[ "${raw}" == '<(' || "${raw}" == '>(' ]] && return 0
+  brace_would_expand "${raw}" && return 0
+  for ((i = 0; i < ${#raw}; i++)); do
+    ch="${raw:i:1}"
+    if ((escaped)); then
+      escaped=0
+      continue
+    fi
+    if [[ -n "${quote}" ]]; then
+      if [[ "${ch}" == "${quote}" ]]; then
+        quote=''
+      elif [[ "${quote}" == '"' && "${ch}" == $'\\' ]]; then
+        escaped=1
+      fi
+      continue
+    fi
+    case "${ch}" in
+    $'\\') escaped=1 ;;
+    "'" | '"') quote="${ch}" ;;
+    '~') ((i == 0)) && return 0 ;;
+    '*' | '?' | '[') return 0 ;;
+    *) ;;
+    esac
+  done
+  return 1
+}
+
 # The same write, reached by the allow-listed commands that are not git.
 #
 # Everything above is scoped to a `git` word (and the operand tests to a
@@ -688,8 +776,9 @@ done
 # option back off, so `bash -n +n -c 'cat ./cosign.key'` ran the command --
 # the allow rule matches the `bash -n` prefix and the `+n` is the rest of the
 # string. A word beginning with `+` in a `bash -n` invocation is refused, and
-# so is a brace, a `$` or a backtick in one of its words, because `{+,+}n` is
-# the rebuild that reopened the git half of this gate twice.
+# so is a brace, a glob, a `$` or a backtick in one of its words, because
+# `{+,+}n` is the rebuild that reopened the git half of this gate twice and
+# `?n` beside a file named `+n` is the same rebuild by pathname expansion.
 #
 # The patterns below are the allow rows ending in `*` other than git's,
 # spelled as the settings file spells them, because the two shapes match
@@ -807,98 +896,16 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   fi
   ((cmd_bash && cmd_gated)) || continue
   [[ "${words[idx]}" == '+'* ]] && refuse "${BASH_NOEXEC_MSG}"
-  if brace_would_expand "${raw_words[idx]}" || [[ "${raw_words[idx]}" == *'$'* ]]; then
+  # A glob is the third rebuild: with a file named `+n` in the working
+  # directory, `?n` and `[+]n` reach bash as `+n` (review on
+  # aurora-zfs-simple#211), so the rewrite test the shellcheck operands are
+  # held to applies here as well.
+  if brace_would_expand "${raw_words[idx]}" || [[ "${raw_words[idx]}" == *'$'* ]] ||
+    word_bash_would_rewrite "${raw_words[idx]}"; then
     refuse "${BASH_EXPAND_MSG}"
   fi
 done
 check_gated_command
-
-# The whole string with quoting removed, for the one test that is a substring
-# match rather than a word: the shell removes quotes and backslashes on the
-# way to git, so `--no-'index'` and `--no-\index` both reach it as
-# `--no-index`.
-normalized="${command_string//[\'\"\\]/}"
-
-case "${normalized}" in
-*--no-index*) refuse "${DIFF_MSG}" ;;
-*) ;;
-esac
-
-# Git's path_inside_repo, which decides on the *spelling* rather than on where
-# the path ends up. That distinction is the whole of this function, and folding
-# `..` before the comparison gets it backwards: `git diff --
-# ../<checkout>/cosign.key -` names a file inside this repository by a route
-# that leaves it and comes back, git's test calls that outside and enters the
-# plain-file mode, and a gate that resolved the path first saw a tidy in-tree
-# path and allowed it -- reading a denied path with two operands that both look
-# local. So every `..` component and the stdin operand `-` count as outside
-# here, before anything is normalized. This also refuses some ordinary
-# pathspecs (e.g. tests/../AGENTS.md); use a direct inside spelling instead.
-# A leading `~` counts as outside too: to bash that is a home directory, never
-# a path under this checkout, and resolving the literal put
-# `~/.aws/credentials` inside the tree.
-# Then both lexical and symlink-resolved containment are required: -s alone
-# does not follow symlinks, while resolution alone admits an outside alias
-# back inside. Anything this cannot decide -- no working tree here, no realpath
-# on the host -- counts as outside, so the gate refuses rather than guesses.
-path_inside_worktree() {
-  local candidate toplevel
-  [[ "$1" == "-" || "$1" == '~'* || "/$1/" == */../* ]] && return 1
-  toplevel="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
-  candidate="$(realpath -m -s -- "$1" 2>/dev/null)" || return 1
-  [[ "${candidate}" == "${toplevel}" || "${candidate}" == "${toplevel}"/* ]] || return 1
-  candidate="$(realpath -m -- "$1" 2>/dev/null)" || return 1
-  [[ "${candidate}" == "${toplevel}" || "${candidate}" == "${toplevel}"/* ]]
-}
-
-# The shapes `.claude/settings.json` denies the Read tool. Inside the working
-# tree is not enough on its own: `cosign.key` and a `.env` live there, and they
-# are the two files those rules exist for.
-denied_read_shape() {
-  case "${1##*/}" in
-  cosign.key | .env | .env.* | *.pem | *.p12 | id_rsa | id_ed25519) return 0 ;;
-  *) ;;
-  esac
-  return 1
-}
-
-# Whether bash would rewrite this word, as typed, into something other than
-# the quote-stripped spelling the operand scan checks: an unquoted `~` at the
-# start (tilde expansion to $HOME), an unquoted `*`, `?` or `[` anywhere
-# (pathname expansion), a `$` or backtick anywhere (any expansion; a quoted
-# `$` inside double quotes still expands, and a single-quoted one is refused
-# as the price of not modelling that), a brace bash would expand, or a process
-# substitution. Quote state is tracked so that `'tests/*.sh'` is the literal
-# word bash would pass; a backslash escapes the next character.
-word_bash_would_rewrite() {
-  local raw="$1" quote='' escaped=0 i ch
-  [[ "${raw}" == *'$'* || "${raw}" == *'`'* ]] && return 0
-  [[ "${raw}" == '<(' || "${raw}" == '>(' ]] && return 0
-  brace_would_expand "${raw}" && return 0
-  for ((i = 0; i < ${#raw}; i++)); do
-    ch="${raw:i:1}"
-    if ((escaped)); then
-      escaped=0
-      continue
-    fi
-    if [[ -n "${quote}" ]]; then
-      if [[ "${ch}" == "${quote}" ]]; then
-        quote=''
-      elif [[ "${quote}" == '"' && "${ch}" == $'\\' ]]; then
-        escaped=1
-      fi
-      continue
-    fi
-    case "${ch}" in
-    $'\\') escaped=1 ;;
-    "'" | '"') quote="${ch}" ;;
-    '~') ((i == 0)) && return 0 ;;
-    '*' | '?' | '[') return 0 ;;
-    *) ;;
-    esac
-  done
-  return 1
-}
 
 # Every test below reads a word as typed, and bash rewrites the words before
 # git receives them. `$(...)`, `${x}`, `$x` and a backtick each supply words
