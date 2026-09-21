@@ -367,25 +367,40 @@ Stated plainly so nobody mistakes silence for coverage:
   that with the variable set and with `--owner` given alongside it, so the guard
   cannot be satisfied by a script that stopped reading the environment and the
   flag's precedence over it stays pinned.
-- **Three workflow `run:` bodies are executed by tests; the rest are not.**
+- **Most workflow `run:` bodies are executed by tests; six are not.**
   Shell inside a workflow is shipped code that nothing else executes: the shell
   suite runs scripts, and CI runs the workflow only against real
   infrastructure, where a wrong argument shows up as a job that failed for a
   plausible-looking reason. Each covered body is hosted by the test file for
-  the script that body drives, so the two stay next to each other:
-  `tests/test-prune-package-versions.sh` lifts `cleanup_packages`'s two bodies
+  the script or the property that body drives, so the two stay next to each
+  other: `tests/test-prune-package-versions.sh` lifts `cleanup_packages`'s
+  `Prepare environment` and `Delete old ${{ matrix.flavor }} package versions`
   out of `build.yml` and pins the package name, owner scope and retention floor
-  the job passes; `tests/test-nightly-compliance.sh` runs `bootc-pin`'s tag
-  peel; and `tests/test-pr-review-state.sh` runs `ai-fix.yml`'s work-order
-  body, which is that script's only caller in CI. The work-order case covers
+  the job passes, and runs `build_push`'s own `Prepare environment` and
+  `Get current date` against the same fixtures so the two copies of the image
+  reference cannot drift apart; `tests/test-nightly-compliance.sh` runs
+  `bootc-pin`'s tag peel, the `signatures` job's
+  `Verify the published image against cosign.pub`, and the four `build_push`
+  steps a published signature is split across —
+  `Log in to GHCR for the build cache and image signing`,
+  `Rechunk image with chunkah`, `Push To GHCR` and `Sign container image`;
+  `tests/test-pr-review-state.sh` runs `ai-fix.yml`'s
+  `Build and post the work order`, which is that script's only caller in CI,
+  and `labeler.yml`'s `Ensure every configured label exists` catalog drift
+  check; and `tests/test-homebrew-shell-integration.sh` runs the `test` job's
+  `Install fish` and `Allow unprivileged user namespaces`, which are what make
+  its fish cases a failure rather than a skip in CI. The work-order case covers
   what neither side can see alone — that the script is reached by the relative
   path Actions gives it, that its **non-zero exit is the normal result** and
   does not abort the job before the comment is posted, that its stderr is
   captured into the fenced report rather than lost to the job log, and that
   the review-state section appears for a pull request and not for an issue.
-  The remaining bodies are executed by nothing: `labeler.yml`'s label-catalog
-  drift check, the `signatures` job's verification step, and `build.yml`'s
-  `build_push` steps.
+  No test lifts these bodies at all: `ShellCheck`, `Free runner disk space`,
+  `Prune buildah build cache`, `Assert repository invariants` (in both the
+  build and the nightly workflow) and `Run zizmor`.
+  One more, `Run shell tests and enforce coverage floors`, is read for its
+  `env:` block but never executed — it is the step that runs the suite, so
+  running it here would run the suite inside itself.
 - **`Containerfile` has no unit tests.** Its correctness rests on the build's
   own lint steps, the rationale comments, and review.
 - **Signature verification is tested, but not end to end.** The nightly

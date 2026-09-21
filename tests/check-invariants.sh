@@ -6138,6 +6138,713 @@ assert_present "the metadata label ${CUSTOM_DOC} names is set on the image" \
 fi
 
 # ---------------------------------------------------------------------------
+group "Quality signals (docs/quality.md: 'a green check here means something specific and narrower than \"it works\"')"
+
+# docs/quality.md is the inventory of every automated signal this repository
+# produces, what each one proves, and -- the part that decays fastest -- where
+# the gaps are. README.md's documentation table, CONTRIBUTING.md, docs/ci-cd.md,
+# docs/metrics.md and docs/risk-tiers.md all send a reader here, and two groups
+# far above quote it in their own titles. Nothing read it.
+#
+# A stale line in this document is worse than a stale line in a runbook. A
+# runbook that names a missing flag fails in the reader's hands. This document
+# is consulted to decide whether something needs a test at all, so a claim that
+# a path is already covered stops work, and a claim that a path is uncovered
+# sends somebody to write a second copy of a test that exists. Both had already
+# happened: the "Where the gaps are" section said three workflow `run:` bodies
+# were executed by tests and named the `signatures` job's verification step and
+# `build.yml`'s `build_push` steps as executed by nothing, months after
+# tests/test-nightly-compliance.sh started executing both.
+#
+# Every assertion below runs in the same direction as the other document joins
+# in this file: take the identifier out of the prose and compare it with the
+# thing in the tree it is a hand copy of. What is new here is the direction of
+# the coverage claims -- the classification of workflow bodies is computed from
+# the tree and compared with the document's list, so a body that gains or loses
+# a test fails this group until the sentence is rewritten.
+#
+# What is deliberately not asserted, rather than left to be assumed: the
+# traced-line counts the document quotes for two Bash versions (117 and 116
+# lines of ostree-pkg-diff) are properties of an interpreter, not of this tree,
+# and reproducing them needs both interpreters installed. The percentages, the
+# history of which file went ungated in CI, and every sentence about what a
+# signal does *not* prove are judgements, not identifiers.
+
+QUALITY_DOC="docs/quality.md"
+TUNING_POLICY=".github/auto-qa-tuning.json"
+LABELER_CONFIG=".github/labeler.yml"
+ZIZMOR_WORKFLOW=".github/workflows/zizmor.yaml"
+NIGHTLY_WORKFLOW=".github/workflows/nightly-compliance.yml"
+
+if [[ ! -f "${QUALITY_DOC}" ]]; then
+  fail "the quality signals document exists" \
+    "${QUALITY_DOC} is missing; README.md's documentation table and CONTRIBUTING.md both send a reader to it"
+else
+
+shopt -s nullglob
+quality_workflows=(.github/workflows/*.yml .github/workflows/*.yaml)
+quality_test_files=(tests/*.sh tests/e2e/*.sh)
+shopt -u nullglob
+
+# The job names of one workflow, from the mapping under `jobs:` only. Trigger
+# keys (`pull_request:`, `push:`) sit at the same indent under `on:`, so
+# matching two-space keys anywhere in the file would accept a job name that is
+# really a trigger.
+quality_job_names() {
+  awk '
+    /^jobs:$/ { in_jobs = 1; next }
+    /^[A-Za-z_]/ { in_jobs = 0 }
+    in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ { print substr($0, 3, length($0) - 3) }
+  ' "$1"
+}
+
+# Every step name in one workflow, and separately the names of the steps that
+# carry a `run:` body. The second list is what the coverage claims are about:
+# a step that runs an action has no shell of its own for a test to execute.
+quality_step_names() {
+  awk '/^      - name: / { print substr($0, 15) }' "$1"
+}
+
+quality_run_step_names() {
+  awk '
+    /^      - name: / { step = substr($0, 15); next }
+    /^        run:/ { if (step != "") { print step; step = "" } }
+  ' "$1"
+}
+
+# The items of a block sequence introduced by KEY at four-space indent, for the
+# `paths-ignore:`/`paths:` lists under a trigger. Each occurrence is printed as
+# its own record so the pull_request and push copies can be compared separately
+# -- a paths filter that is right on one trigger and wrong on the other is the
+# failure this document's "that touch code" paragraph is about.
+quality_yaml_seq() {
+  awk -v key="$1" '
+    $0 == "    " key ":" { grab = 1; n = 1; next }
+    grab && /^      - / {
+      item = substr($0, 9)
+      gsub(/^"|"$|^'"'"'|'"'"'$/, "", item)
+      printf "%s ", item
+      next
+    }
+    grab { grab = 0; printf "\n" }
+    END { if (grab) printf "\n" }
+  ' "$2"
+}
+
+# An identifier read out of the document, compared with the tree. An identifier
+# that has vanished from *both* sides is a failure, not a match: "" == "" is
+# exactly the silent pass these joins exist to prevent.
+assert_quality_needle() {
+  local description="$1" needle="$2" haystack="$3" where="$4"
+  if [[ -z "${needle}" ]]; then
+    fail "${description}" "${QUALITY_DOC} no longer names it"
+  elif grep -Fq -- "${needle}" <<<"${haystack}"; then
+    pass "${description}"
+  else
+    fail "${description}" "${where} has no such line: ${needle}"
+  fi
+}
+
+# The document as one line, for the guardrail section below. Its bullets wrap
+# mid-command -- `buildah rm\n  --all` -- so a phrase looked for in the file as
+# written is missed for a reason that has nothing to do with what it says.
+quality_doc_flat="$(tr '\n' ' ' <"${QUALITY_DOC}" | tr -s ' ')"
+
+# A permission the guardrail section attributes to one of
+# .claude/settings.json's three arrays. Both sides are checked, and they are
+# spelled separately on purpose: the document describes the command in prose
+# ("workflow dispatch", "secret set") while the rule carries the tool wrapper
+# and the glob (`Bash(gh workflow run*)`). Requiring the document's own wording
+# is what makes a deleted sentence fail here rather than pass quietly.
+assert_quality_permission() {
+  local description="$1" phrase="$2" token="$3" rules="$4" array="$5"
+  if ! grep -Fq -- "${phrase}" <<<"${quality_doc_flat}"; then
+    fail "${description}" "${QUALITY_DOC} no longer says '${phrase}'"
+  elif grep -Fq -- "${token}" <<<"${rules}"; then
+    pass "${description}"
+  else
+    fail "${description}" "no ${array} rule in ${CLAUDE_SETTINGS} carries: ${token}"
+  fi
+}
+
+# --- The document is still reachable ----------------------------------------
+
+assert_present "README.md's documentation table still links to the quality signals document" \
+  "README.md" '\]\(docs/quality\.md\)'
+
+assert_present "CONTRIBUTING.md still sends a contributor to it" \
+  "CONTRIBUTING.md" 'docs/quality\.md'
+
+assert_present "it still hands the process metrics off to docs/metrics.md" \
+  "${QUALITY_DOC}" '\]\(metrics\.md\)'
+
+assert_present "docs/metrics.md still hands the automated signals back to it" \
+  "docs/metrics.md" '\]\(quality\.md\)'
+
+assert_doc_links_resolve "${QUALITY_DOC}" \
+  "no relative links found; the hand-off to ci-cd.md, renovate.md, metrics.md and the tuning policy is gone"
+
+# --- The dashboard table names jobs, steps and workflows that exist ----------
+#
+# "The signals live where they are produced": every row's middle column points
+# at a job, a step or a workflow by name. A renamed job leaves the row pointing
+# at nothing, and the reader concludes the signal was removed. The rows are read
+# out of the document rather than restated here, so a new signal is checked the
+# moment somebody adds its row.
+
+quality_table="$(awk '
+  /^\| Signal \| Where to see it \| Runs on \|/ { in_table = 1; next }
+  in_table && /^\| *-+ *\|/ { next }
+  in_table && /^\|/ { print; next }
+  in_table { exit }
+' "${QUALITY_DOC}")"
+
+quality_table_rows="$(grep -c '^|' <<<"${quality_table}" || true)"
+[[ -n "${quality_table}" ]] || quality_table_rows=0
+if ((quality_table_rows >= 10)); then
+  pass "the dashboard table still lists the signals (${quality_table_rows} rows)"
+else
+  fail "the dashboard table still lists the signals" \
+    "found ${quality_table_rows} rows under '| Signal | Where to see it | Runs on |'; the table has moved or been reworded"
+fi
+
+quality_pointers_checked=0
+while IFS= read -r quality_row; do
+  [[ -n "${quality_row}" ]] || continue
+  quality_where="$(awk -F'|' '{print $3}' <<<"${quality_row}")"
+  # A cell can name a step in one workflow and a job in another, separated by
+  # a semicolon. Each clause carries its own workflow, so they are resolved
+  # one at a time rather than against the union.
+  while IFS= read -r quality_clause; do
+    [[ -n "${quality_clause}" ]] || continue
+    quality_files=()
+    if [[ "${quality_clause}" == *"nightly workflow"* ]]; then
+      quality_files=("${NIGHTLY_WORKFLOW}")
+    elif [[ "${quality_clause}" == *"build workflow"* ]]; then
+      quality_files=("${BUILD_WORKFLOW}")
+    else
+      quality_files=("${quality_workflows[@]+"${quality_workflows[@]}"}")
+    fi
+    # shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+    while IFS= read -r quality_pointer; do
+      [[ -n "${quality_pointer}" ]] || continue
+      quality_kind="${quality_pointer##* }"
+      quality_name="${quality_pointer%\` *}"
+      quality_name="${quality_name#\`}"
+      [[ -n "${quality_name}" ]] || continue
+      quality_found=""
+      for quality_file in "${quality_files[@]+"${quality_files[@]}"}"; do
+        case "${quality_kind}" in
+          job)
+            grep -qxF -- "${quality_name}" <<<"$(quality_job_names "${quality_file}")" && quality_found="${quality_file}"
+            ;;
+          step)
+            grep -qxF -- "${quality_name}" <<<"$(quality_step_names "${quality_file}")" && quality_found="${quality_file}"
+            ;;
+          workflow)
+            grep -qxF -- "name: ${quality_name}" "${quality_file}" && quality_found="${quality_file}"
+            ;;
+        esac
+        [[ -n "${quality_found}" ]] && break
+      done
+      quality_pointers_checked=$((quality_pointers_checked + 1))
+      if [[ -n "${quality_found}" ]]; then
+        pass "the ${quality_kind} the dashboard sends a reader to exists: ${quality_name} (${quality_found##*/})"
+      else
+        fail "the ${quality_kind} the dashboard sends a reader to exists: ${quality_name}" \
+          "no ${quality_kind} of that name in ${quality_files[*]}"
+      fi
+    done < <(grep -oE '`[^`]+` (job|step|workflow)' <<<"${quality_clause}")
+  done < <(tr ';' '\n' <<<"${quality_where}")
+done < <(printf '%s\n' "${quality_table}")
+
+if ((quality_pointers_checked >= 8)); then
+  pass "the dashboard's pointers were read out of the table (${quality_pointers_checked} of them)"
+else
+  fail "the dashboard's pointers were read out of the table" \
+    "only ${quality_pointers_checked} were found; the middle column no longer names its jobs and steps in backticks, so the checks above proved nothing"
+fi
+
+# The on-demand row is the one pointer that names a script rather than a job.
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+quality_review_state="$(grep -oE '`\./scripts/[a-z-]+\.sh`' <<<"${quality_table}" | tr -d '`' | head -n 1)"
+if [[ -z "${quality_review_state}" ]]; then
+  fail "the review-state script the dashboard names exists" "${QUALITY_DOC} no longer names it"
+elif [[ -x "${quality_review_state#./}" ]]; then
+  pass "the review-state script the dashboard names exists and is executable: ${quality_review_state}"
+else
+  fail "the review-state script the dashboard names exists and is executable" \
+    "${quality_review_state} is missing or not executable"
+fi
+
+# "embedded in the `ai-fix-requested` work order" -- the label that reaches it.
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+quality_ai_label="$(grep -oE '`ai-fix-requested`' <<<"${quality_table}" | tr -d '`' | head -n 1)"
+assert_quality_needle "the label the dashboard says carries the review state still triggers ai-fix.yml" \
+  "${quality_ai_label}" "$(cat .github/workflows/ai-fix.yml)" ".github/workflows/ai-fix.yml"
+
+assert_present "the work order the dashboard names still runs that script" \
+  ".github/workflows/ai-fix.yml" "${quality_review_state:-scripts/pr-review-state.sh}"
+
+# --- "that touch code" is load-bearing --------------------------------------
+#
+# The paragraph under the table quotes build.yml's paths-ignore list and draws
+# the conclusion a reader acts on: a pull request showing no checks was skipped,
+# not validated. Three copies of that list exist -- the document's, the
+# workflow's two triggers, and the labeler rule that puts a `documentation`
+# label on exactly the pull requests the workflow skips. All three must agree,
+# or the label asserts that no build ran on a pull request that built.
+
+quality_doc_ignores="$(grep -oE 'paths-ignore: \[[^]]*\]' "${QUALITY_DOC}" | head -n 1 |
+  grep -oE '"[^"]+"' | tr -d '"' | sort | tr '\n' ' ')"
+if [[ -z "${quality_doc_ignores}" ]]; then
+  fail "the document still quotes the build workflow's paths-ignore list" \
+    "no 'paths-ignore: [...]' in ${QUALITY_DOC}; the 'that touch code' paragraph is what this group compares against"
+else
+  pass "the document still quotes the build workflow's paths-ignore list: ${quality_doc_ignores}"
+
+  quality_ignore_blocks=0
+  while IFS= read -r quality_ignore_block; do
+    [[ -n "${quality_ignore_block}" ]] || continue
+    quality_ignore_blocks=$((quality_ignore_blocks + 1))
+    assert_equal "build.yml's paths-ignore filter #${quality_ignore_blocks} is the list ${QUALITY_DOC} quotes" \
+      "$(tr ' ' '\n' <<<"${quality_ignore_block}" | grep -v '^$' | sort | tr '\n' ' ')" \
+      "${quality_doc_ignores}"
+  done < <(quality_yaml_seq paths-ignore "${BUILD_WORKFLOW}")
+
+  # Both triggers, not one. `pull_request` alone would still skip the build on
+  # a documentation PR while a push to main built it, which is the opposite of
+  # what the paragraph tells a reader to expect from the daily schedule.
+  assert_equal "both of build.yml's triggers carry that filter" \
+    "${quality_ignore_blocks}" "2"
+
+  # The labeler's `documentation` rule is the third copy. Its own comment says
+  # it is applied under "exactly the condition under which build.yml's
+  # paths-ignore skips the whole build", which is the claim the table's last
+  # row repeats -- a label that "marks a PR no build ran on".
+  quality_label_globs="$(awk '
+    /^documentation:$/ { grab = 1; next }
+    grab && /^[A-Za-z]/ { exit }
+    grab && /^ *- "/ { item = $0; sub(/^ *- "/, "", item); sub(/"$/, "", item); print item }
+  ' "${LABELER_CONFIG}" | sort | tr '\n' ' ')"
+  assert_equal "the paths the documentation label covers are the paths the build skips" \
+    "${quality_label_globs}" "${quality_doc_ignores}"
+fi
+
+# "Workflow static analysis (zizmor) | ... | Any change under `.github/workflows/**`"
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+quality_zizmor_paths="$(grep -oE '`\.github/workflows/\*\*`' <<<"${quality_table}" | tr -d '`' | head -n 1)"
+if [[ -z "${quality_zizmor_paths}" ]]; then
+  fail "the dashboard still says what zizmor runs on" "${QUALITY_DOC} no longer names the path filter"
+else
+  quality_zizmor_blocks=0
+  while IFS= read -r quality_zizmor_block; do
+    [[ -n "${quality_zizmor_block}" ]] || continue
+    quality_zizmor_blocks=$((quality_zizmor_blocks + 1))
+    assert_equal "zizmor trigger #${quality_zizmor_blocks} runs on the paths ${QUALITY_DOC} names" \
+      "$(tr -d ' ' <<<"${quality_zizmor_block}")" "${quality_zizmor_paths}"
+  done < <(quality_yaml_seq paths "${ZIZMOR_WORKFLOW}")
+  assert_equal "both of the workflow linter's triggers carry that filter" \
+    "${quality_zizmor_blocks}" "2"
+fi
+
+# "plus a daily schedule" -- a cron that is not daily makes the sentence above
+# it ("only the daily schedule and the next code change will exercise those
+# paths again") the wrong advice about how long an unbuilt path stays unbuilt.
+quality_build_cron="$(grep -oE 'cron: "[^"]+"' "${BUILD_WORKFLOW}" | head -n 1 | sed -E 's/.*"(.*)"/\1/')"
+if [[ "${quality_build_cron}" =~ ^[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*$ ]]; then
+  pass "the build workflow's schedule is daily, as the dashboard says (${quality_build_cron})"
+else
+  fail "the build workflow's schedule is daily, as the dashboard says" \
+    "cron is '${quality_build_cron}'; the table's 'plus a daily schedule' no longer describes it"
+fi
+
+# "The README badge tracks the build workflow on `main`."
+assert_present "the README badge tracks the build workflow on main" \
+  "README.md" 'workflows/build\.yml/badge\.svg\?branch=main' \
+  "the badge no longer names build.yml, or no longer pins the branch the document says it tracks"
+
+# --- The coverage gate and its tuning policy --------------------------------
+
+# shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+quality_thresholds="$(grep -oE '`\.coverage-thresholds\.json`' "${QUALITY_DOC}" | tr -d '`' | head -n 1)"
+if [[ -z "${quality_thresholds}" ]]; then
+  fail "the document still names the file the floors live in" "no .coverage-thresholds.json in ${QUALITY_DOC}"
+elif [[ -f "${quality_thresholds}" ]]; then
+  pass "the floors file the document names exists: ${quality_thresholds}"
+else
+  fail "the floors file the document names exists" "no such file: ${quality_thresholds}"
+fi
+
+assert_quality_needle "the coverage gate reads the floors file the document names" \
+  "${quality_thresholds}" "$(cat tests/check-coverage.sh)" "tests/check-coverage.sh"
+
+# "The gate also fails when a new executable Bash entry point under `scripts/`
+# or the shipped `usr/bin` / `usr/libexec` paths has no floor" -- the sweep is
+# what makes the floors a manifest of the image rather than of whatever the
+# suite happened to touch, so each root the sentence names is checked.
+quality_cov_roots="$(awk '
+  /^production_roots=\(/ { grab = 1; next }
+  grab && /^\)/ { exit }
+  grab { gsub(/[ "]/, ""); print }
+' tests/check-coverage.sh)"
+quality_sweep_roots=0
+for quality_root in scripts/ usr/bin usr/libexec; do
+  grep -Fq -- "${quality_root}" "${QUALITY_DOC}" || continue
+  quality_sweep_roots=$((quality_sweep_roots + 1))
+  if grep -q -- "/${quality_root%/}\$" <<<"${quality_cov_roots}"; then
+    pass "the entry-point sweep covers ${quality_root}, as ${QUALITY_DOC} says"
+  else
+    fail "the entry-point sweep covers ${quality_root}, as ${QUALITY_DOC} says" \
+      "no root in tests/check-coverage.sh's production_roots ends in ${quality_root%/}: ${quality_cov_roots//$'\n'/ | }"
+  fi
+done
+assert_equal "all three entry-point roots the document names were checked" \
+  "${quality_sweep_roots}" "3"
+
+if [[ ! -f "${TUNING_POLICY}" ]]; then
+  fail "the tuning policy the document links exists" "no such file: ${TUNING_POLICY}"
+elif ! command -v jq >/dev/null 2>&1; then
+  fail "jq is available to read ${TUNING_POLICY}" "jq is not on PATH"
+else
+  assert_present "the document still links the policy as the place the reasoning lives" \
+    "${QUALITY_DOC}" '\]\(\.\./\.github/auto-qa-tuning\.json\)'
+
+  # The policy's own comment points back here. Two documents that name each
+  # other stay joined; one that stops being named is the one that goes stale.
+  assert_present "the policy still names ${QUALITY_DOC} as its prose half" \
+    "${TUNING_POLICY}" 'docs/quality\.md'
+
+  assert_equal "the floors file the policy governs is the one the document names" \
+    "$(jq -r '.coverage.thresholdsFile // ""' "${TUNING_POLICY}")" "${quality_thresholds}"
+
+  # "**It raises and never lowers,** and the asymmetry is deliberate"
+  assert_equal "the policy is still raise-only, as the document says" \
+    "$(jq -r '.coverage.direction // ""' "${TUNING_POLICY}")" "raise-only"
+
+  # "`--apply` is refused unless every version in the policy's `supportedBash`
+  # list has been observed." Three halves: the document names the key, the
+  # policy carries a non-empty list, and the tool reads that key from that file.
+  # shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+  quality_supported_key="$(grep -oE '`supportedBash`' "${QUALITY_DOC}" | tr -d '`' | head -n 1)"
+  if [[ -z "${quality_supported_key}" ]]; then
+    fail "the document still names the list --apply is gated on" "no supportedBash in ${QUALITY_DOC}"
+  else
+    quality_supported="$(jq -r ".coverage.${quality_supported_key}[]? // empty" "${TUNING_POLICY}" | tr '\n' ' ')"
+    if [[ -n "${quality_supported}" ]]; then
+      pass "the policy lists the Bash versions --apply is gated on: ${quality_supported}"
+    else
+      fail "the policy lists the Bash versions --apply is gated on" \
+        "${TUNING_POLICY} has no non-empty coverage.${quality_supported_key}; the gate the document describes would have nothing to require"
+    fi
+    assert_quality_needle "tests/tune-coverage.sh reads that list out of the policy" \
+      "${quality_supported_key}" "$(cat tests/tune-coverage.sh)" "tests/tune-coverage.sh"
+  fi
+
+  assert_present "tune-coverage.sh reads the policy file the document links" \
+    "tests/tune-coverage.sh" 'auto-qa-tuning\.json'
+
+  assert_present "tune-coverage.sh refuses --apply without an observation from every supported version" \
+    "tests/tune-coverage.sh" 'needs an observation from every supported Bash version' \
+    "the refusal the document calls mechanical is gone, which puts the calibration rule back in prose only"
+fi
+
+# "Nothing runs it on a schedule. It is operator-run." The tool appears in the
+# workflows exactly once, as an operand of the ShellCheck step -- being linted
+# is not being run. Any other mention is a scheduled quality gate adjusting
+# itself, which is the decision the gate exists to force.
+quality_tune_mentions=0
+for quality_workflow in "${quality_workflows[@]+"${quality_workflows[@]}"}"; do
+  quality_tune_mentions=$((quality_tune_mentions + $(grep -c 'tune-coverage\.sh' "${quality_workflow}" || true)))
+done
+quality_tune_linted="$(awk '
+  /^      - name: ShellCheck$/ { grab = 1; next }
+  grab && /^      - name: / { exit }
+  grab { print }
+' "${BUILD_WORKFLOW}" | grep -c 'tune-coverage\.sh' || true)"
+assert_equal "every workflow mention of tune-coverage.sh is the ShellCheck step linting it, not CI running it" \
+  "${quality_tune_mentions}" "${quality_tune_linted}"
+
+quality_tune_apply=""
+for quality_workflow in "${quality_workflows[@]+"${quality_workflows[@]}"}"; do
+  while IFS= read -r quality_hit; do
+    quality_tune_apply+="${quality_workflow}:${quality_hit} "
+  done < <(grep -n 'tune-coverage\.sh[^|;&]*--apply' "${quality_workflow}")
+done
+if [[ -z "${quality_tune_apply}" ]]; then
+  pass "no workflow writes a coverage floor with --apply"
+else
+  fail "no workflow writes a coverage floor with --apply" "${quality_tune_apply}"
+fi
+
+# --- Agent guardrails -------------------------------------------------------
+#
+# The "Agent guardrails" section is a hand copy of .claude/settings.json's three
+# permission arrays, and it is read by somebody deciding whether a mistake is
+# already fenced off. A command the document says is denied and that no rule
+# denies is the one shape of drift that costs something real, so every command
+# spelling the section quotes is looked for in the array it is attributed to.
+
+if ! command -v jq >/dev/null 2>&1; then
+  fail "jq is available to read ${CLAUDE_SETTINGS}" \
+    "jq is not on PATH, so the guardrail section could not be joined to the settings file"
+else
+  quality_deny="$(jq -r '.permissions.deny[]?' "${CLAUDE_SETTINGS}")"
+  quality_ask="$(jq -r '.permissions.ask[]?' "${CLAUDE_SETTINGS}")"
+  quality_allow="$(jq -r '.permissions.allow[]?' "${CLAUDE_SETTINGS}")"
+
+  # Each entry is the document's own wording, then the rule spelling it has to
+  # be carried by.
+  while IFS='|' read -r quality_phrase quality_token; do
+    [[ -n "${quality_phrase}" ]] || continue
+    assert_quality_permission "the document's denied list still matches a deny rule: ${quality_phrase}" \
+      "${quality_phrase}" "${quality_token}" "${quality_deny}" "deny"
+  done <<'QUALITY_DENY_CLAIMS'
+cosign.key|Read(./cosign.key)
+podman system prune|Bash(podman system prune
+rm -a|Bash(podman rm -a
+rmi -a|Bash(podman rmi -a
+buildah rm --all|Bash(buildah rm --all
+snapshot-delete|snapshot-delete
+reset --hard|Bash(git reset --hard
+clean|Bash(git clean
+stash|Bash(git stash
+QUALITY_DENY_CLAIMS
+
+  # The verb families the section names by fragment rather than in full, each
+  # checked against the deny rules for the shared connection only.
+  for quality_denied_verb in "destroy" "undefine" "pool-" "vol-" "net-"; do
+    assert_quality_permission "the irreversible verb the document names is denied on qemu:///system: ${quality_denied_verb}" \
+      "${quality_denied_verb}" "${quality_denied_verb}" \
+      "$(grep -F 'qemu:///system' <<<"${quality_deny}")" "deny"
+  done
+
+  while IFS='|' read -r quality_phrase quality_token; do
+    [[ -n "${quality_phrase}" ]] || continue
+    assert_quality_permission "the document's prompted list still matches an ask rule: ${quality_token}" \
+      "${quality_phrase}" "${quality_token}" "${quality_ask}" "ask"
+  done <<'QUALITY_ASK_CLAIMS'
+sudo|Bash(sudo
+just lint|Bash(just lint)
+virt-install|Bash(virt-install
+virsh|Bash(virsh
+everything else on `qemu:///system`|Bash(virsh -c qemu:///system *)
+branch, commit, push|Bash(git branch
+branch, commit, push|Bash(git commit
+branch, commit, push|Bash(git push
+PR create/edit/merge|Bash(gh pr create
+PR create/edit/merge|Bash(gh pr edit
+PR create/edit/merge|Bash(gh pr merge
+workflow dispatch|Bash(gh workflow run
+secret set|Bash(gh secret set
+QUALITY_ASK_CLAIMS
+
+  # "`git restore` and `git checkout --` prompt rather than deny", because
+  # AGENTS.md names restoring files a failed bind-mount deleted as *the*
+  # documented correction. A rule that moved to `deny` blocks the only
+  # sanctioned repair while this paragraph still says it is available.
+  for quality_prompted in "git restore" "git checkout --"; do
+    assert_quality_permission "the recovery the document says prompts is in ask: ${quality_prompted}" \
+      "${quality_prompted}" "${quality_prompted}" "${quality_ask}" "ask"
+    if grep -Fq -- "${quality_prompted}" <<<"${quality_deny}"; then
+      fail "the recovery the document says prompts is not denied: ${quality_prompted}" \
+        "a deny rule carries it, so the correction AGENTS.md names cannot be made"
+    else
+      pass "the recovery the document says prompts is not denied: ${quality_prompted}"
+    fi
+  done
+
+  # "**Allowed** -- the non-privileged test suite ..." and the manifest
+  # paragraph further up, which is the whole reason tests/test-manifest exists.
+  for quality_allowed in "./tests/run-tests.sh" "just test" "shellcheck" "bash -n"; do
+    assert_quality_permission "the document's allowed list still matches an allow rule: ${quality_allowed}" \
+      "${quality_allowed}" "${quality_allowed}" "${quality_allow}" "allow"
+  done
+
+  # "the read-only VM/pool name inventories on **both** libvirt connections".
+  # The point of allowing the system connection's inventory is that CLAUDE.md
+  # requires inventorying both before picking a test VM name; losing one turns
+  # that preflight into a prompt an agent is invited to work around.
+  for quality_connection in "qemu:///session" "qemu:///system"; do
+    for quality_inventory in "list --all --name" "pool-list --all --name"; do
+      if grep -F "${quality_connection}" <<<"${quality_allow}" | grep -Fq -- "${quality_inventory}"; then
+        pass "the read-only inventory the document allows on both connections is allowed: ${quality_connection} ${quality_inventory}"
+      else
+        fail "the read-only inventory the document allows on both connections is allowed: ${quality_connection} ${quality_inventory}" \
+          "no allow rule carries it"
+      fi
+    done
+  done
+
+  # "Two knobs deliberately left unset, because they are the repository owner's
+  # call": a knob that acquired a value is a decision this document says nobody
+  # made.
+  for quality_knob in defaultMode disableBypassPermissionsMode; do
+    if ! grep -Fq -- "permissions.${quality_knob}" "${QUALITY_DOC}"; then
+      fail "the document still says permissions.${quality_knob} is left unset" \
+        "${QUALITY_DOC} no longer names it"
+    elif [[ "$(jq -r ".permissions.${quality_knob} // \"unset\"" "${CLAUDE_SETTINGS}")" == "unset" ]]; then
+      pass "permissions.${quality_knob} is still unset, as the document says"
+    else
+      fail "permissions.${quality_knob} is still unset, as the document says" \
+        "${CLAUDE_SETTINGS} now sets it to $(jq -r ".permissions.${quality_knob}" "${CLAUDE_SETTINGS}")"
+    fi
+  done
+fi
+
+# --- Where the gaps are -----------------------------------------------------
+#
+# The gaps section is the half a reader acts on when deciding what to write
+# next, and the half that goes stale silently: closing a gap does not fail
+# anything, so the sentence describing it survives the work that ended it.
+
+# "No CI job boots the image." Every other claim in this document is about
+# something that exists; this one is about something that must not.
+quality_boot_hits=""
+for quality_workflow in "${quality_workflows[@]+"${quality_workflows[@]}"}"; do
+  while IFS= read -r quality_hit; do
+    quality_boot_hits+="${quality_workflow}:${quality_hit} "
+  done < <(grep -nE 'virt-install|qemu-system|bootc install' "${quality_workflow}" | grep -v '^[0-9]*:[[:space:]]*#')
+done
+if [[ -z "${quality_boot_hits}" ]]; then
+  pass "no CI job boots or installs the image, as the gaps section says"
+else
+  fail "no CI job boots or installs the image, as the gaps section says" \
+    "the largest stated gap has been closed and the document still calls it open: ${quality_boot_hits}"
+fi
+
+# "PR builds additionally skip the rechunk, push, and sign steps, so a green PR
+# check exercises less than a push to `main` does" -- and the signature row of
+# the dashboard says the same thing about signing ("Pushes to `main` only").
+for quality_gated_step in "Rechunk image with chunkah" "Push To GHCR" "Sign container image"; do
+  quality_step_if="$(awk -v want="${quality_gated_step}" '
+    /^      - name: / { step = substr($0, 15); next }
+    step == want && /^        if: / { print substr($0, 13); exit }
+  ' "${BUILD_WORKFLOW}")"
+  if [[ "${quality_step_if}" == *"!= 'pull_request'"* && "${quality_step_if}" == *"default_branch"* ]]; then
+    pass "a pull request build skips the step the document says it skips: ${quality_gated_step}"
+  else
+    fail "a pull request build skips the step the document says it skips: ${quality_gated_step}" \
+      "its condition is '${quality_step_if}'; a green PR check would now exercise it"
+  fi
+done
+
+# The workflow-body coverage claim, computed rather than restated.
+#
+# A step's body counts as lifted when some test file names that step, quoted,
+# the way every test that executes one does: the name is what `workflow_step_run`
+# is handed, so a test that stopped naming it stopped running it. The comparison
+# runs in both directions -- a body that gains a test and a body that loses one
+# both fail here until the sentence is rewritten, which is the failure this
+# document did not have when it spent months claiming three bodies were covered
+# and naming two covered ones as uncovered.
+
+quality_bodies_bullet="$(awk '
+  /^- \*\*Most workflow `run:` bodies/ { grab = 1; print; next }
+  grab && (/^- \*\*/ || /^#/) { exit }
+  grab { print }
+' "${QUALITY_DOC}" | tr '\n' ' ')"
+
+if [[ -z "${quality_bodies_bullet}" ]]; then
+  fail "the gaps section still classifies the workflow run: bodies" \
+    "no bullet starting '- **Most workflow \`run:\` bodies' in ${QUALITY_DOC}"
+else
+  quality_unlifted_claim="${quality_bodies_bullet#*No test lifts these bodies at all: }"
+  quality_unlifted_claim="${quality_unlifted_claim%%One more*}"
+  # shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+  quality_claimed_unlifted="$(grep -oE '`[^`]+`' <<<"${quality_unlifted_claim}" | tr -d '`' | sort -u)"
+
+  # Every step name in every workflow that carries a run: body, and whether any
+  # test file names it.
+  quality_all_bodies=""
+  for quality_workflow in "${quality_workflows[@]+"${quality_workflows[@]}"}"; do
+    quality_all_bodies+="$(quality_run_step_names "${quality_workflow}")"$'\n'
+  done
+  quality_all_bodies="$(grep -v '^$' <<<"${quality_all_bodies}" | sort -u)"
+
+  quality_computed_unlifted=""
+  while IFS= read -r quality_body; do
+    [[ -n "${quality_body}" ]] || continue
+    quality_named=""
+    for quality_test_file in "${quality_test_files[@]+"${quality_test_files[@]}"}"; do
+      if grep -qF -- "\"${quality_body}\"" "${quality_test_file}" ||
+        grep -qF -- "'${quality_body}'" "${quality_test_file}"; then
+        quality_named="yes"
+        break
+      fi
+    done
+    [[ -n "${quality_named}" ]] || quality_computed_unlifted+="${quality_body}"$'\n'
+  done <<<"${quality_all_bodies}"
+  quality_computed_unlifted="$(grep -v '^$' <<<"${quality_computed_unlifted}" | sort -u)"
+
+  if [[ -z "${quality_claimed_unlifted}" ]]; then
+    fail "the document lists the run: bodies no test lifts" \
+      "the 'No test lifts these bodies at all:' sentence names nothing in backticks"
+  else
+    assert_equal "the run: bodies no test lifts are the ones the document names" \
+      "$(tr '\n' ' ' <<<"${quality_computed_unlifted}")" \
+      "$(tr '\n' ' ' <<<"${quality_claimed_unlifted}")"
+  fi
+
+  # The other direction, per test file: the bullet credits four files by name,
+  # and every workflow step it names inside a file's clause must be a step that
+  # file actually names. A body moved between test files, or a clause left
+  # behind by a deleted case, fails here.
+  quality_covered_claim="${quality_bodies_bullet#*so the two stay next to each other: }"
+  quality_covered_claim="${quality_covered_claim%%The work-order case*}"
+  quality_clauses_checked=0
+  while IFS= read -r quality_clause; do
+    [[ -n "${quality_clause}" ]] || continue
+    # shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+    quality_clause_file="$(grep -oE '`tests/[a-z0-9-]+\.sh`' <<<"${quality_clause}" | tr -d '`' | head -n 1)"
+    [[ -n "${quality_clause_file}" ]] || continue
+    quality_clauses_checked=$((quality_clauses_checked + 1))
+    if [[ ! -f "${quality_clause_file}" ]]; then
+      fail "the test file the document credits exists: ${quality_clause_file}" "no such file"
+      continue
+    fi
+    if grep -qxF -- "${quality_clause_file#tests/}" tests/test-manifest; then
+      pass "the test file the document credits is in the manifest: ${quality_clause_file}"
+    else
+      fail "the test file the document credits is in the manifest: ${quality_clause_file}" \
+        "tests/run-tests.sh refuses to run a file the manifest does not list, so a credited file outside it never runs"
+    fi
+    # shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+    while IFS= read -r quality_token; do
+      quality_token="${quality_token//\`/}"
+      grep -qxF -- "${quality_token}" <<<"${quality_all_bodies}" || continue
+      if grep -qF -- "\"${quality_token}\"" "${quality_clause_file}" ||
+        grep -qF -- "'${quality_token}'" "${quality_clause_file}"; then
+        pass "${quality_clause_file##*/} names the body the document credits it with: ${quality_token}"
+      else
+        fail "${quality_clause_file##*/} names the body the document credits it with: ${quality_token}" \
+          "the document attributes that body to this file and the file does not name it"
+      fi
+    done < <(grep -oE '`[^`]+`' <<<"${quality_clause}")
+  done < <(tr ';' '\n' <<<"${quality_covered_claim}")
+
+  assert_equal "every test file the document credits with a workflow body was checked" \
+    "${quality_clauses_checked}" "4"
+
+  # "One more ... is read for its `env:` block but never executed" -- the suite
+  # step is the one body a test names without running, so it must stay on the
+  # named side of the classification above.
+  quality_env_only="${quality_bodies_bullet#*One more, }"
+  # shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+  quality_env_only="$(grep -oE '`[^`]+`' <<<"${quality_env_only}" | tr -d '`' | head -n 1)"
+  if [[ -z "${quality_env_only}" ]]; then
+    fail "the document still names the body a test reads but does not run" "the 'One more' sentence names nothing"
+  elif grep -qxF -- "${quality_env_only}" <<<"${quality_all_bodies}"; then
+    pass "the body the document says is read for its env: block is still a workflow step: ${quality_env_only}"
+  else
+    fail "the body the document says is read for its env: block is still a workflow step" \
+      "no run: step is named ${quality_env_only}"
+  fi
+fi
+
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then
   printf 'invariants: %d of %d check(s) failed\n' "${failures}" "${checks_run}" >&2
