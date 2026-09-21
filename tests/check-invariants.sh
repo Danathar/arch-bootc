@@ -4695,12 +4695,24 @@ fi
 # attributes it to.
 #
 # A backticked `kde`/`xfce` directly after an opening parenthesis is a flavor
-# tag, not a package: it tags the name before it when it follows that name
-# directly, and otherwise tags the whole bullet. A bullet carrying both tags
-# ("mixed") constrains nothing on its own, so attribution is skipped for the
-# names in it that no tag follows directly. A name introduced by "via" is the
-# package or group the document says provides the name before it, and is what
-# the install check below accepts in place of an install.
+# tag, not a package. A tag covers the clause it closes: every name back to
+# the previous tag, or to a semicolon, or to the start of the bullet. So in
+#
+#   `distrobox`, `flatpak`, and `firefox` installed; `konsole` (`kde`) or
+#   `xfce4-terminal` (`xfce`, ...)
+#
+# the `kde` tag reaches back only as far as the semicolon and covers `konsole`
+# alone, and in "`kde-applications-meta`/`plasma-meta` (`kde`), or the
+# `xfce4`/`xfce4-goodies` groups plus ... (`xfce`)" each tag covers the pair
+# of names in its own clause. A name no tag covers is untagged and therefore
+# shared, whatever the rest of the bullet says: the document's rule is that
+# the flavors share everything except where a flavor is called out, and a tag
+# on a different clause is not a call-out for this one. That is what keeps
+# `firefox` checked against both desktop lists, and keeps `distrobox` from
+# borrowing whichever tag happens to sit later in the same bullet. A name
+# introduced by "via" is the package or group the document says provides the
+# name before it, and is what the install check below accepts in place of an
+# install.
 #
 custom_claims="$(awk '
   {
@@ -4714,19 +4726,11 @@ custom_claims="$(awk '
       if (n > 1) afters[n - 1] = befores[n]
     }
     afters[n] = rest
-    scope = ""
-    markers = 0
     for (i = 1; i <= n; i++) {
       provider_of[i] = ""
       is_marker[i] = ((spans[i] == "kde" || spans[i] == "xfce") && befores[i] ~ /\($/)
       is_provider[i] = (befores[i] ~ /via( the)? $/)
-      if (is_marker[i]) {
-        if (scope == "") { scope = spans[i]; markers = 1 }
-        else if (scope != spans[i]) { markers = 2 }
-      }
     }
-    if (markers == 0) scope = "shared"
-    if (markers == 2) scope = "mixed"
     # Three things a bullet can be doing with a name, and they want opposite
     # assertions: claiming the image has it, claiming the image does not, or
     # naming it in passing to say where something else comes from. The middle
@@ -4754,8 +4758,14 @@ custom_claims="$(awk '
     }
     for (i = 1; i <= n; i++) {
       if (is_marker[i] || is_provider[i]) continue
-      flavor = scope
-      if (i < n && is_marker[i + 1] && befores[i + 1] ~ /^[[:space:],;:)]*\($/) flavor = spans[i + 1]
+      # Walk forward to the tag that closes this clause. afters[k] is the text
+      # between name k and name k + 1, so a semicolon in it ends the clause
+      # before any tag is reached, and the name stays shared.
+      flavor = "untagged"
+      for (k = i; k < n; k++) {
+        if (afters[k] ~ /;/) break
+        if (is_marker[k + 1]) { flavor = spans[k + 1]; break }
+      }
       # A literal dash stands in for "no via clause": consecutive tabs are one
       # delimiter to `read`, so an empty field here would shift `role` into
       # `provider` and silently drop every role distinction below.
@@ -4777,11 +4787,22 @@ package_shaped() {
   return 0
 }
 
+# Same shape as assert_present, for the same reason: `grep -v ... | grep -q`
+# under `set -o pipefail` fails at random when the second grep exits on its
+# first match and the first takes SIGPIPE. The uncommented lines are captured
+# once and the match runs against the variable, so there is no pipeline.
 packages_in() {
   local file="$1" token="$2"
   [[ -f "${file}" ]] || return 1
-  grep -vE '^[[:space:]]*#|^[[:space:]]*$' "${file}" | grep -qxF -- "${token}"
+  local active
+  active="$(grep -vE '^[[:space:]]*#|^[[:space:]]*$' "${file}")"
+  grep -qxF -- "${token}" <<<"${active}"
 }
+
+# The active (non-comment) lines of the Containerfile and Justfile, read once
+# for the loop below rather than re-read and re-piped per package.
+custom_containerfile_active="$(grep -vE '^[[:space:]]*#' "${CONTAINERFILE}")"
+custom_justfile_active="$(grep -vE '^[[:space:]]*#' "${JUSTFILE}")"
 
 custom_uninstalled=""
 custom_mistagged=""
@@ -4813,15 +4834,15 @@ while IFS=$'\t' read -r token flavor provider role; do
     # dependencies, `nano`), the Justfile names it (the build recipes), or the
     # document itself names the group or meta-package it arrives in.
     accounted=0
-    grep -vE '^[[:space:]]*#' "${CONTAINERFILE}" | grep -qwF -- "${token}" && accounted=1
-    grep -vE '^[[:space:]]*#' "${JUSTFILE}" | grep -qwF -- "${token}" && accounted=1
+    grep -qwF -- "${token}" <<<"${custom_containerfile_active}" && accounted=1
+    grep -qwF -- "${token}" <<<"${custom_justfile_active}" && accounted=1
     if [[ -n "${provider}" && "${provider}" != "-" ]] &&
       { packages_in "${PACKAGES_BASE}" "${provider}" ||
         packages_in "${PACKAGES_KDE}" "${provider}" ||
         packages_in "${PACKAGES_XFCE}" "${provider}"; }; then
       accounted=1
     fi
-    ((accounted == 1)) || custom_uninstalled+="${token} "
+    ((accounted == 1)) || custom_uninstalled+="${token}(doc:${flavor}) "
     continue
   fi
 
@@ -4838,11 +4859,16 @@ while IFS=$'\t' read -r token flavor provider role; do
       ((in_xfce == 1 && in_kde == 0)) ||
         custom_mistagged+="${token}(doc:xfce,lists:${where%,}) "
       ;;
-    shared)
+    untagged)
+      # Untagged means every flavor gets it: from the base list, or from each
+      # desktop list. Name the desktop list it is missing from, since that is
+      # the list the reader has to look in.
+      missing=""
+      ((in_kde == 1)) || missing+="kde,"
+      ((in_xfce == 1)) || missing+="xfce,"
       ((in_base == 1 || (in_kde == 1 && in_xfce == 1))) ||
-        custom_mistagged+="${token}(doc:untagged,lists:${where%,}) "
+        custom_mistagged+="${token}(doc:untagged,lists:${where%,},missing:${missing%,}) "
       ;;
-    *) ;;
   esac
 done <<<"${custom_claims}"
 
