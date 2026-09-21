@@ -2121,23 +2121,54 @@ if ((settings_readable)); then
   done
   # An assignment before the name is an environment the command runs
   # under, and for these commands that changes what runs or where it goes
-  # (review on sensi#244, the Python twin of this hook); git keeps
-  # `FOO=bar git diff`.
+  # (review on sensi#244, the Python twin of this hook). Git was exempt until
+  # issue #329, on the reading that a git invocation is decided by the operand
+  # scan; that scan reads words, and an assignment is not one. Shown first in
+  # a temporary repository: `GIT_EXTERNAL_DIFF` names a program git runs once
+  # per changed path, so an allow-listed `git diff` string runs it unprompted.
+  gitenv_dir="$(mktemp -d)"
+  (
+    cd "${gitenv_dir}" || exit 0
+    printf '#!/bin/sh\nprintf RAN-AS-EXTERNAL-DIFF >"%s/ran"\n' "${gitenv_dir}" >prog
+    chmod +x prog
+    git init -q . >/dev/null 2>&1 || exit 0
+    git -c user.email=t@example.invalid -c user.name=t commit -q --allow-empty -m first >/dev/null 2>&1
+    printf 'one\n' >tracked
+    git add tracked >/dev/null 2>&1
+    git -c user.email=t@example.invalid -c user.name=t commit -q -m second >/dev/null 2>&1
+    GIT_EXTERNAL_DIFF="${gitenv_dir}/prog" git diff HEAD~1 >/dev/null 2>&1
+  ) </dev/null
+  gitenv_ran="$(cat "${gitenv_dir}/ran" 2>/dev/null)"
+  rm -rf "${gitenv_dir}"
+  if [[ "${gitenv_ran}" == "RAN-AS-EXTERNAL-DIFF" ]]; then
+    pass "GIT_EXTERNAL_DIFF=prog git diff runs prog, so an assignment before git is code execution"
+  else
+    fail "GIT_EXTERNAL_DIFF=prog git diff runs prog, so an assignment before git is code execution" \
+      "got '${gitenv_ran}'; re-derive why an assignment before git is refused"
+  fi
   for assigned_command in \
     'LD_PRELOAD=x.so shellcheck tests/run-tests.sh' \
     'BASH_ENV=f bash -n tests/run-tests.sh' \
     'CONTAINERS_CONF=f podman ps' \
     'FOO=1 df -T' \
-    'git status; FOO=1 findmnt'; do
+    'git status; FOO=1 findmnt' \
+    'GIT_EXTERNAL_DIFF=/tmp/prog git diff HEAD~1' \
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=/tmp/prog git diff HEAD~1' \
+    'PATH=/tmp/bin git diff HEAD~1' \
+    'FOO=bar git diff HEAD' \
+    'PAGER=cat git log -1' \
+    'GIT_DIR=/tmp/other git ls-files' \
+    'env FOO=bar git diff HEAD' \
+    'git status; FOO=1 git log -1'; do
     assert_hook_refuses_naming "the hook refuses an assignment before an allow-listed command: ${assigned_command}" \
       "${assigned_command}" 'assignment before'
   done
   for assigned_command in \
-    'FOO=bar git diff HEAD' \
-    'PAGER=cat git log -1' \
     'FOO=1 echo x; podman images' \
+    'FOO=1 echo x; git diff HEAD' \
+    'echo FOO=bar; git status' \
     'x=1; podman images'; do
-    assert_hook_permits "an assignment before git, or on another command, is unprompted: ${assigned_command}" \
+    assert_hook_permits "an assignment on another command of the string is unprompted: ${assigned_command}" \
       "${assigned_command}"
   done
   # shellcheck disable=SC2016 # the substitution is a spelling handed to the hook, not run here
@@ -2439,7 +2470,6 @@ if ((settings_readable)); then
   # shellcheck disable=SC2016 # literal $x, $HOME and backticks are the point
   for name_command in \
     'git status; git diff HEAD@{1}' \
-    'FOO=bar git diff HEAD' \
     'X=$(date); git diff HEAD' \
     'echo $HOME; git diff HEAD' \
     'echo `date`; git diff HEAD' \
@@ -2448,7 +2478,6 @@ if ((settings_readable)); then
     'git status; [ -f cosign.pub ]' \
     'for f in $(ls); do echo $f; done' \
     'ls > out; git status' \
-    'env FOO=$x git diff HEAD' \
     'env -i PATH=$PATH git diff HEAD' \
     'env -u X git diff HEAD' \
     'timeout 60 git diff HEAD' \

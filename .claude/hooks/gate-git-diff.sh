@@ -233,7 +233,7 @@ GATED_SUBST_MSG='blocked: a substitution or an expansion -- `$(...)`, a backtick
 GATED_HEREDOC_MSG='blocked: a here-document with an unquoted delimiter (`<<EOF`) on an allow-listed command is expanded by bash before the command runs, so a `$(...)` or a backtick on any line of its body runs as part of the string the allow rule approved on its prefix, and this gate reads those lines as commands of their own: `df -T <<EOF` followed by a `$(printf x >cosign.pub)` line writes the file while df prints as usual. Quote the delimiter (`<<'"'"'EOF'"'"'`) so the body is literal, or pass the input another way.'
 
 # shellcheck disable=SC2016 # the literal NAME=value spellings are what the reader has to see
-GATED_ENV_MSG='blocked: an assignment before an allow-listed command (`NAME=value cmd ...`) is an environment the command runs under, and for these commands that changes what runs or where it goes: `LD_PRELOAD=x.so shellcheck f` loads code before a line is linted, `BASH_ENV=f bash -n x` names a file for bash to read, `GH_HOST=other gh pr list` sends the token elsewhere, `CONTAINERS_CONF=f podman ps` re-points podman. Run the command without the assignment; a git invocation is not affected by this rule.'
+GATED_ENV_MSG='blocked: an assignment before an allow-listed command (`NAME=value cmd ...`) is an environment the command runs under, and for these commands that changes what runs or where it goes: `LD_PRELOAD=x.so shellcheck f` loads code before a line is linted, `BASH_ENV=f bash -n x` names a file for bash to read, `GH_HOST=other gh pr list` sends the token elsewhere, `CONTAINERS_CONF=f podman ps` re-points podman. A git invocation is held to the same rule (issue #329): `GIT_EXTERNAL_DIFF=prog git diff HEAD~1` runs prog once per changed path, `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=prog` reaches that same driver under another name, and `PATH=dir git diff HEAD~1` runs a different git -- each of them arbitrary code from a string the allow rows match on their git prefix. A deny list of variable names is the wrong shape for this, since GIT_DIR, GIT_INDEX_FILE, LD_PRELOAD and PATH all matter and the list would have to track git'"'"'s own. Run the command without the assignment.'
 
 # shellcheck disable=SC2016 # the backticks quote a command spelling for the reader
 BASH_NOEXEC_MSG='blocked: `bash -n` is allow-listed because -n reads a script without running it, and a later +n or +o noexec on the same command line turns that off again, so `bash -n +n -c COMMAND` and `bash -n +o noexec script.sh` run whatever they name under the linter'"'"'s allow rule with no prompt. A word beginning with + in a bash -n invocation is refused. Check syntax with bash -n FILE and nothing else; to run a script, run it as itself so the permission rules see it.'
@@ -248,7 +248,7 @@ REDIRECT_MSG='blocked: an output redirection (>, >>, >|, &>, &>>, N>, >&FILE, <>
 TILDE_MSG='blocked: an unquoted leading ~ is $HOME to bash and a literal directory inside this checkout to this gate, so the path checked here is not the path git would open: `git diff -- ~/.aws/credentials ~/.bashrc` resolved both operands inside the working tree and printed both files out of the home directory as a plain-file diff, past the Read(...) deny rules in .claude/settings.json. A word of a git invocation that begins with an unquoted ~ (~/..., ~user/..., or ~ alone) is refused rather than expanded. Spell the path out in full, relative to the checkout. A tilde inside a word (HEAD~1) and a quoted or escaped one are literals to bash and are not refused by this rule.'
 
 # shellcheck disable=SC2016 # the literal $G and $(...) are what the reader has to see
-CMD_MSG='blocked: the name of a command in this string is not spelled literally -- it is built by an expansion (`$G diff ...`, `$(printf git) diff ...`, a backtick in command position), by a brace (`{,git} diff ...`), or by a glob (`g?t`, `/usr/bin/g[i]t`) -- so neither this gate nor the allow rule that matched the string'"'"'s literal prefix can tell which command bash will run, and `G=git; $G diff /dev/null ./cosign.key` runs the plain-file read this gate exists to refuse. Spell every command name literally, and drop a variable assignment that only exists to build one. After a wrapper such as command, env, exec, timeout or xargs the same holds for every word of that command, since the wrapper'"'"'s own options are not modelled here. A literal name after an assignment (`FOO=bar git diff HEAD`) is fine, and a literal path to git (`/usr/bin/git diff`) is read as git. env -S (--split-string) splits a quoted string into a command this gate never sees and is refused outright.'
+CMD_MSG='blocked: the name of a command in this string is not spelled literally -- it is built by an expansion (`$G diff ...`, `$(printf git) diff ...`, a backtick in command position), by a brace (`{,git} diff ...`), or by a glob (`g?t`, `/usr/bin/g[i]t`) -- so neither this gate nor the allow rule that matched the string'"'"'s literal prefix can tell which command bash will run, and `G=git; $G diff /dev/null ./cosign.key` runs the plain-file read this gate exists to refuse. Spell every command name literally, and drop a variable assignment that only exists to build one. After a wrapper such as command, env, exec, timeout or xargs the same holds for every word of that command, since the wrapper'"'"'s own options are not modelled here. A literal name after an assignment is not what this rule refuses -- the assignment has a refusal of its own -- and a literal path to git (`/usr/bin/git diff`) is read as git. env -S (--split-string) splits a quoted string into a command this gate never sees and is refused outright.'
 
 # shellcheck disable=SC2016 # the literal ${VAR} is what the reader has to see
 BRACE_MSG='blocked: bash expands braces before git sees the words, and this gate reads the words as typed, so a brace rebuilds both spellings it refuses: `git diff {/dev/null,./cosign.key}` passes the operand scan as one word and reaches git as two operands (the plain-file read), and `--outpu{t,t}=FILE` matches no word here and reaches git as --output=FILE. Expanding braces correctly means reimplementing bash inside a hook, so a brace bash could expand -- a { followed, anywhere later in the word, by a comma or a .. and then a }, or a ${VAR} -- is refused instead, and so is a process substitution (`git diff <(...)`), which supplies an operand this gate never saw. Write the command out in full. A brace with neither, such as HEAD@{1} or main@{upstream}, is a literal to bash and is not refused; a .. between two reflog entries (HEAD@{2}..HEAD@{1}) has the refused shape, so write HEAD~2..HEAD~1. Only words of a git invocation are affected: awk and jq programs elsewhere in the string are not.'
@@ -948,6 +948,16 @@ check_gated_command() {
   # A `SHELLCHECK_OPTS=` assignment has a refusal of its own, which names what
   # the linter reads out of it; that one is left to say it.
   ((cmd_gated && cmd_assign)) && [[ "${cmd_prefix}" != shellcheck* || "${cmd_assign_name}" != SHELLCHECK_OPTS ]] && refuse "${GATED_ENV_MSG}"
+  # Git is held to the same rule. It was exempt until issue #329, on the
+  # reading that a git invocation is decided by the operand scan above; that
+  # scan reads words, and an assignment is not one. Git's environment carries
+  # both primitives this gate refuses elsewhere: `GIT_EXTERNAL_DIFF=prog git
+  # diff HEAD~1` runs `prog` once per changed path, `GIT_CONFIG_COUNT=1
+  # GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=prog` reaches the same
+  # driver under another name, and `PATH=dir git diff HEAD~1` picks a
+  # different git altogether -- each of them an unprompted string the allow
+  # rows match on their `git diff` prefix.
+  ((cmd_git && cmd_assign)) && refuse "${GATED_ENV_MSG}"
   return 0
 }
 
@@ -962,6 +972,7 @@ reset_command() {
   cmd_bash=0
   cmd_named=0
   cmd_gated=0
+  cmd_git=0
 }
 
 # The words of a command from its *name* onward: a leading assignment
@@ -979,6 +990,7 @@ cmd_assign_name='' # the variable that assignment sets
 cmd_bash=0    # its name is bash, so the +n and expansion rules apply once gated
 cmd_named=0   # the name has been seen; every later word belongs to it
 cmd_gated=0   # its leading words matched one of GATED_PREFIXES
+cmd_git=0     # its name is git, which the allow rows cover with their own `*`
 cmd_stack=()  # the outer command's state, while a `$(...)` is being read
 reset_command
 for ((idx = 0; idx < ${#words[@]}; idx++)); do
@@ -1009,13 +1021,13 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
     if [[ "${words[idx]}" == '$(' ]] ||
       { [[ "${words[idx]}" == '(' ]] && ((idx > 0)) && [[ "${kinds[idx - 1]}" != sep ]] &&
         [[ "${words[idx - 1]}" == '<(' || "${words[idx - 1]}" == '>(' ]]; }; then
-      cmd_stack+=("${cmd_writes} ${cmd_read} ${cmd_subst} ${cmd_heredoc} ${cmd_assign} ${cmd_bash} ${cmd_named} ${cmd_gated} ${cmd_prefix}")
+      cmd_stack+=("${cmd_writes} ${cmd_read} ${cmd_subst} ${cmd_heredoc} ${cmd_assign} ${cmd_bash} ${cmd_named} ${cmd_gated} ${cmd_git} ${cmd_prefix}")
       reset_command
       continue
     fi
     if [[ "${words[idx]}" == '$)' || "${words[idx]}" == ')' ]] && ((${#cmd_stack[@]})); then
       check_gated_command
-      read -r cmd_writes cmd_read cmd_subst cmd_heredoc cmd_assign cmd_bash cmd_named cmd_gated cmd_prefix <<<"${cmd_stack[-1]}"
+      read -r cmd_writes cmd_read cmd_subst cmd_heredoc cmd_assign cmd_bash cmd_named cmd_gated cmd_git cmd_prefix <<<"${cmd_stack[-1]}"
       unset 'cmd_stack[-1]'
       # The command that resumes here contains a substitution, whether or
       # not its name has been seen yet (`$(touch cosign.pub) df -T`).
@@ -1068,14 +1080,18 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   # An assignment before the name is an environment the command runs under,
   # and for these commands that is a way in: `PYTEST_ADDOPTS`, `PYTHONPATH`,
   # `GH_HOST`, `LD_PRELOAD` each change what the command does or where it
-  # sends what it has (review on sensi#244). The git scan above leaves
-  # `FOO=bar git diff HEAD` alone; these commands are refused the assignment.
+  # sends what it has (review on sensi#244). A git invocation is refused it
+  # too (issue #329): `GIT_EXTERNAL_DIFF` names a program git runs per changed
+  # path, and the operand scan above reads words, which an assignment is not.
   if ((cmd_named == 0)) && [[ "${raw_words[idx]}" =~ ^([A-Za-z_][A-Za-z0-9_]*)(\[[^]]*\])?\+?= ]]; then
     cmd_assign=1
     cmd_assign_name="${BASH_REMATCH[1]}"
     continue
   fi
   ((cmd_named)) || ((${command_names[idx]:-0})) || continue
+  # The name, the first time it is seen. The command-name scan above rewrote
+  # a path spelling (`/usr/bin/git`) to `git`, so this one test covers both.
+  ((cmd_named)) || [[ "${words[idx]}" != git ]] || cmd_git=1
   cmd_named=1
   if ((cmd_gated == 0)); then
     # The words so far cannot grow into a gated prefix and this word may
