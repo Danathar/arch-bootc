@@ -2164,7 +2164,13 @@ if ((settings_readable)); then
     'df -T < <(printf x >cosign.pub)' \
     'podman images <"$(printf x >cosign.pub)"' \
     'df -T <<<"$(printf x >cosign.pub)"' \
-    'podman images <`printf in`'; do
+    'podman images <`printf in`' \
+    'shellcheck tests/run-tests.sh <"$(printf x >cosign.pub)"' \
+    'shellcheck tests/run-tests.sh < <(printf x >cosign.pub)' \
+    'df -T "$(printf x >cosign.pub)"' \
+    'podman images $X' \
+    'findmnt "$FLAGS"' \
+    "podman images 'a \$b'"; do
     assert_hook_refuses_naming "the hook refuses a substitution in an allow-listed command: ${subst_command}" \
       "${subst_command}" 'substitution'
   done
@@ -2266,6 +2272,8 @@ if ((settings_readable)); then
     'time -p ls' \
     'x=$(podman images); echo $x' \
     'echo $(podman images)' \
+    'podman images --format "{{.ID}}"' \
+    'findmnt -J -o TARGET,SOURCE' \
     'shellcheck tests/run-tests.sh # output > file' \
     'bash -n tests/run-tests.sh # +n' \
     'git diff HEAD # > cosign.pub'; do
