@@ -2680,12 +2680,14 @@ if ((settings_readable)); then
   # same way, which is why the operand after it is still checked.
   assert_hook_refuses_naming "an optional-argument flag does not swallow the operand" \
     'shellcheck -C always /etc/shadow' 'shellcheck prints the source line'
-  # The word need not start the command: an operator boundary or an
-  # environment assignment in front of it changes nothing.
+  # The word need not start the command: an operator boundary in front of
+  # it changes nothing, and an environment assignment in front of it is
+  # refused for itself first (see the gated-prefix scan), so the read
+  # behind it never runs either way.
   assert_hook_refuses_naming "the hook refuses a shellcheck read behind another command" \
     'ls -l && shellcheck ./.env' 'shellcheck prints the source line'
   assert_hook_refuses_naming "the hook refuses a shellcheck read behind an env assignment" \
-    'FOO=bar shellcheck ./.env' 'shellcheck prints the source line'
+    'FOO=bar shellcheck ./.env' 'assignment before'
 
   # Bash rewrites some words before shellcheck sees them, and the gate reads
   # the words as typed. Two of those rewrites turned a checked operand into a
