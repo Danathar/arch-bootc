@@ -2096,6 +2096,38 @@ if ((settings_readable)); then
     fail "a command substitution argument writes the file its body names" \
       "the file kept its contents; re-derive why a substitution in a gated command is refused"
   fi
+  # A here-document with an unquoted delimiter is expanded before the
+  # command runs, so a substitution on a body line runs under the prefix
+  # (review on #322).
+  heredoc_dir="$(mktemp -d)"
+  printf 'ORIGINAL-CONTENT\n' >"${heredoc_dir}/victim5"
+  (cd "${heredoc_dir}" && bash --norc --noprofile -c $'df -T <<EOF\n$(printf x >victim5)\nEOF' >/dev/null 2>&1 </dev/null)
+  heredoc_written="$(cat "${heredoc_dir}/victim5" 2>/dev/null)"
+  rm -rf "${heredoc_dir}"
+  if [[ "${heredoc_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "a substitution on the body line of an unquoted heredoc writes the file it names"
+  else
+    fail "a substitution on the body line of an unquoted heredoc writes the file it names" \
+      "the file kept its contents; re-derive why an unquoted heredoc on a gated command is refused"
+  fi
+  # shellcheck disable=SC2016 # the substitutions are spellings handed to the hook, not run here
+  for heredoc_command in \
+    $'df -T <<EOF\necho $(printf x >cosign.pub)\nEOF' \
+    $'podman images <<EOF\nplain text\nEOF' \
+    $'bash -n <<-EOF\n\tx\nEOF' \
+    $'git status; findmnt <<EOF\nx\nEOF'; do
+    assert_hook_refuses_naming "the hook refuses an unquoted here-document on an allow-listed command: ${heredoc_command//$'\n'/ | }" \
+      "${heredoc_command}" 'Quote the delimiter'
+  done
+  # shellcheck disable=SC2016 # the substitution is a spelling handed to the hook, not run here
+  for heredoc_command in \
+    $'bash -n <<\'EOF\'\necho hi\nEOF' \
+    $'bash -n <<"EOF"\necho $(id)\nEOF' \
+    $'cat <<EOF\nplain\nEOF; podman images' \
+    'podman images <in'; do
+    assert_hook_permits "a quoted here-document, or one on another command, is unprompted: ${heredoc_command//$'\n'/ | }" \
+      "${heredoc_command}"
+  done
   # shellcheck disable=SC2016 # the substitution is a spelling handed to the hook, not run here
   for subst_command in \
     'df -T >(cat >cosign.pub)' \
@@ -2108,7 +2140,10 @@ if ((settings_readable)); then
     'df -T $(touch cosign.pub)' \
     'podman images `printf x >cosign.pub`' \
     'findmnt $(pwd) >cosign.pub' \
-    'df -T < <(printf x >cosign.pub)'; do
+    'df -T < <(printf x >cosign.pub)' \
+    'podman images <"$(printf x >cosign.pub)"' \
+    'df -T <<<"$(printf x >cosign.pub)"' \
+    'podman images <`printf in`'; do
     assert_hook_refuses_naming "the hook refuses a substitution in an allow-listed command: ${subst_command}" \
       "${subst_command}" 'substitution'
   done
