@@ -2119,6 +2119,27 @@ if ((settings_readable)); then
     assert_hook_refuses_naming "the hook refuses an unquoted here-document on an allow-listed command: ${heredoc_command//$'\n'/ | }" \
       "${heredoc_command}" 'Quote the delimiter'
   done
+  # An assignment before the name is an environment the command runs
+  # under, and for these commands that changes what runs or where it goes
+  # (review on sensi#244, the Python twin of this hook); git keeps
+  # `FOO=bar git diff`.
+  for assigned_command in \
+    'LD_PRELOAD=x.so shellcheck tests/run-tests.sh' \
+    'BASH_ENV=f bash -n tests/run-tests.sh' \
+    'CONTAINERS_CONF=f podman ps' \
+    'FOO=1 df -T' \
+    'git status; FOO=1 findmnt'; do
+    assert_hook_refuses_naming "the hook refuses an assignment before an allow-listed command: ${assigned_command}" \
+      "${assigned_command}" 'assignment before'
+  done
+  for assigned_command in \
+    'FOO=bar git diff HEAD' \
+    'PAGER=cat git log -1' \
+    'FOO=1 echo x; podman images' \
+    'x=1; podman images'; do
+    assert_hook_permits "an assignment before git, or on another command, is unprompted: ${assigned_command}" \
+      "${assigned_command}"
+  done
   # shellcheck disable=SC2016 # the substitution is a spelling handed to the hook, not run here
   for heredoc_command in \
     $'bash -n <<\'EOF\'\necho hi\nEOF' \
