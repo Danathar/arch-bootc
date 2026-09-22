@@ -3254,6 +3254,261 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Renovate's inventory (docs/renovate.md's 'What is tracked' table is a hand copy of the uses: set, the runner label and the FROM lines)"
+
+# The table in docs/renovate.md is the only inventory of what Renovate moves,
+# and until now one of its four kinds of row was joined to anything: the custom
+# regex managers are counted against renovate.json a few checks up. The rows
+# produced by Renovate's *built-in* managers -- an action SHA, a runner label, a
+# digest-pinned `FROM` -- are a hand copy of files this repo edits far more
+# often than it edits the table, and they fail the quiet way the whole document
+# is about. A pin missing from the table reads as untracked, so nobody looks for
+# the PR that never arrives; a row for a pin nothing carries reads as watched.
+#
+# Both had already happened by the time anything looked. The table named four
+# actions while the workflows pinned six -- `actions/labeler` in labeler.yml and
+# `astral-sh/setup-uv` in zizmor.yaml were tracked by the `github-actions`
+# manager and written down nowhere -- and the runner row said `ubuntu-24.04`
+# while every job in every workflow had moved to `ubuntu-26.04`.
+#
+# What is deliberately not asserted: the Where column is not required to name
+# every file carrying a pin. `actions/checkout` is pinned in all five workflows
+# and its row names one, which is a reasonable thing for a table to do. The file
+# it does name must carry the pin, and the opening paragraph must still name the
+# whole set of places Renovate looks -- that is the claim that goes wrong when a
+# pin lands in a file the sentence never anticipated, which is how the two
+# missing actions got in.
+RENOVATE_DOC="docs/renovate.md"
+
+shopt -s nullglob
+renovate_workflow_files=(.github/workflows/*.yml .github/workflows/*.yaml)
+shopt -u nullglob
+
+renovate_table="$(awk '
+  /^\| Dependency \| Pinned as \| Where \| How Renovate finds it \|/ { in_table = 1; next }
+  in_table && /^\|[ :-]*-/ { next }
+  in_table && /^\|/ { print; next }
+  in_table { exit }
+' "${RENOVATE_DOC}")"
+
+if ((${#renovate_workflow_files[@]} == 0)); then
+  fail "the workflows the table is a copy of exist" ".github/workflows/ holds no workflow file"
+elif [[ -z "${renovate_table}" ]]; then
+  fail "${RENOVATE_DOC} still carries a 'What is tracked' table" \
+    "no table under the header '| Dependency | Pinned as | Where | How Renovate finds it |'"
+else
+  pass "${RENOVATE_DOC} still carries a 'What is tracked' table ($(grep -c '^|' <<<"${renovate_table}") rows)"
+
+  # Cell N of a pipe-table row, trimmed. The row opens with `|`, so awk's field
+  # N+1 is the Nth cell.
+  renovate_cell() {
+    awk -F'|' -v n="$2" '{ cell = $(n + 1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", cell); print cell }' <<<"$1"
+  }
+
+  # The Nth backticked token in a cell, without its backticks. Every literal in
+  # this table is written in backticks and everything around them is prose, so
+  # this is what separates a claim about the tree from a description of it.
+  renovate_ticked() {
+    # shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
+    grep -oE '`[^`]+`' <<<"$1" | sed -n "$2p" | tr -d '`'
+  }
+
+  # `[A-Za-z0-9]` on the first character deliberately: a local action is used as
+  # `./.github/actions/...`, which Renovate's github-actions manager does not
+  # track and which must not be demanded of the table.
+  renovate_used_actions="$(grep -hoE '^[[:space:]]*uses:[[:space:]]*[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._/-]+@' "${renovate_workflow_files[@]}" |
+    sed -E 's/.*uses:[[:space:]]*//; s/@$//' | sort -u)"
+
+  renovate_runner_labels="$(grep -hoE '^[[:space:]]*runs-on:[[:space:]]*\S+' "${renovate_workflow_files[@]}" |
+    sed -E 's/.*runs-on:[[:space:]]*//' | sort -u | tr '\n' ' ')"
+  renovate_runner_labels="${renovate_runner_labels% }"
+
+  renovate_documented_actions=""
+  renovate_documented_runner=""
+
+  while IFS= read -r renovate_row; do
+    [[ -n "${renovate_row}" ]] || continue
+    renovate_dep_cell="$(renovate_cell "${renovate_row}" 1)"
+    renovate_pin_cell="$(renovate_cell "${renovate_row}" 2)"
+    renovate_where_cell="$(renovate_cell "${renovate_row}" 3)"
+    renovate_how_cell="$(renovate_cell "${renovate_row}" 4)"
+
+    renovate_dep="$(renovate_ticked "${renovate_dep_cell}" 1)"
+    [[ -n "${renovate_dep}" ]] || renovate_dep="${renovate_dep_cell}"
+
+    # The Where column names a file by basename -- `build.yml`, `zizmor.yaml` --
+    # or by its path from the repo root. A row pointing at a file that is gone
+    # cannot be checked by hand either.
+    renovate_where_file="$(renovate_ticked "${renovate_where_cell}" 1)"
+    renovate_where_path=""
+    if [[ -n "${renovate_where_file}" && -f "${renovate_where_file}" ]]; then
+      renovate_where_path="${renovate_where_file}"
+    elif [[ -n "${renovate_where_file}" && -f ".github/workflows/${renovate_where_file}" ]]; then
+      renovate_where_path=".github/workflows/${renovate_where_file}"
+    fi
+    if [[ -z "${renovate_where_path}" ]]; then
+      fail "the file the table says carries the ${renovate_dep} pin exists" \
+        "its Where column names ${renovate_where_file:-no file in backticks}"
+      continue
+    fi
+    pass "the file the table says carries the ${renovate_dep} pin exists: ${renovate_where_path}"
+
+    if [[ "${renovate_how_cell}" == *"github-actions"* && "${renovate_dep}" == */* ]]; then
+      renovate_documented_actions+="${renovate_dep}"$'\n'
+      if grep -qF -- "uses: ${renovate_dep}@" "${renovate_where_path}"; then
+        pass "${renovate_where_path##*/} still pins the action its row credits it with: ${renovate_dep}"
+      else
+        fail "${renovate_where_path##*/} still pins the action its row credits it with: ${renovate_dep}" \
+          "no 'uses: ${renovate_dep}@' line in that file"
+      fi
+      continue
+    fi
+
+    if [[ "${renovate_how_cell}" == *"github-actions"* ]]; then
+      # The one built-in-manager row that is not an action: the runner label,
+      # which Renovate bumps like any other pin. Checked against every workflow
+      # below rather than against the file this row happens to name, because a
+      # runner left behind on one workflow is the whole failure.
+      renovate_documented_runner="$(renovate_ticked "${renovate_pin_cell}" 1)"
+      continue
+    fi
+
+    # Every remaining row -- the custom regex managers and the two digest-pinned
+    # `FROM` lines -- states the literal its pin is written as. It is reduced to
+    # the part that does not move when the version does: `cosign-release: vX.Y.Z`
+    # is searched for as `cosign-release`, `quay.io/coreos/chunkah:vX.Y.Z` as the
+    # image path. `…` is the document's own mark for the part that moves and is
+    # read as `.*`, which is what makes `:latest@sha256:…` and `FROM … AS brew`
+    # checkable rather than skippable. A row whose pin cell states no literal at
+    # all -- bootc, pinned as prose by "git tag **and** commit SHA" -- falls back
+    # to the literals in its Where column, which is where it names them.
+    renovate_pin_token="$(renovate_ticked "${renovate_pin_cell}" 1)"
+    if [[ "${renovate_pin_token}" == *"…"* || "${renovate_pin_token}" == *"@"* ]]; then
+      renovate_keys="${renovate_pin_token}"
+    else
+      renovate_keys="${renovate_pin_token%%:*}"
+    fi
+    # The two `dockerfile` manager rows describe references the build resolves
+    # by digest, and the digest is the half that makes the pin a pin -- a tag is
+    # mutable and `:latest` is the most mutable of them. A row reduced to its
+    # tag still matches the line it describes, so the shape is asserted here
+    # rather than left to the search below.
+    if [[ "${renovate_how_cell}" == *"dockerfile"* ]]; then
+      if [[ "${renovate_pin_token}" == *"@sha256:"* ]]; then
+        pass "the ${renovate_dep} row still states the digest the build pins by"
+      else
+        fail "the ${renovate_dep} row still states the digest the build pins by" \
+          "its pin cell reads '${renovate_pin_token}', which describes a mutable tag"
+      fi
+    fi
+
+    # Whatever else the Where column states in backticks after the filename is
+    # a claim about that file too -- the `ARG` names bootc is pinned by, the
+    # `FROM … AS brew` stage the payload is read from. The brew row states both
+    # a digest shape and a stage name, and only the stage name distinguishes it
+    # from the base image row above it.
+    renovate_keys+=$'\n'"$(renovate_ticked "${renovate_where_cell}" 2)"
+    renovate_keys+=$'\n'"$(renovate_ticked "${renovate_where_cell}" 3)"
+
+    while IFS= read -r renovate_key; do
+      [[ -n "${renovate_key}" ]] || continue
+      # A plain substring search reports `quay.io/coreos/chunka` as present in
+      # `quay.io/coreos/chunkah`, so a row that loses a character from an image
+      # path passes -- which is precisely the hand-copy error this exists for.
+      # The key is therefore anchored on both ends against the characters a
+      # name is made of, except where it begins or ends mid-token (`:latest@…`
+      # continues a `FROM` line; a trailing `…` is already open-ended).
+      #
+      # A key that already carries a `:` or `@` is a whole image reference, and
+      # there the tag and digest are part of the token: `…/brew:latest` must
+      # not be satisfied by `…/brew:latest@sha256:<digest>`, or a row that drops
+      # the digest half of a pin reads as checked. Those two characters join the
+      # boundary class for such a key and stay out of it otherwise, since a bare
+      # name like `cosign-release` is followed by the `:` of its own YAML key.
+      renovate_boundary='[^A-Za-z0-9_./-]'
+      [[ "${renovate_key}" == *[:@]* ]] && renovate_boundary='[^A-Za-z0-9_./@:-]'
+      renovate_pattern="$(sed -E 's/[][\\.^$*+?(){}|]/\\&/g' <<<"${renovate_key}")"
+      renovate_pattern="${renovate_pattern//…/.*}"
+      [[ "${renovate_key}" =~ ^[A-Za-z0-9] ]] &&
+        renovate_pattern="(^|${renovate_boundary})${renovate_pattern}"
+      [[ "${renovate_key}" =~ [A-Za-z0-9]$ ]] &&
+        renovate_pattern="${renovate_pattern}(${renovate_boundary}|$)"
+      renovate_found=0
+      grep -qE -- "${renovate_pattern}" "${renovate_where_path}" && renovate_found=1
+      if ((renovate_found)); then
+        pass "${renovate_where_path##*/} still carries the ${renovate_dep} pin as the table writes it: ${renovate_key}"
+      else
+        fail "${renovate_where_path##*/} still carries the ${renovate_dep} pin as the table writes it: ${renovate_key}" \
+          "the row says the pin is there and nothing in that file matches it"
+      fi
+    done <<<"${renovate_keys}"
+  done <<<"${renovate_table}"
+
+  renovate_documented_actions="$(grep -v '^$' <<<"${renovate_documented_actions}" | sort -u)"
+
+  # Both directions, and the omission is the one that hurts: an action added to
+  # a workflow is tracked by Renovate whether the table knows about it or not,
+  # so the table quietly becomes a list of *some* of what is tracked -- which is
+  # indistinguishable, to a reader, from a list of all of it.
+  renovate_untabled=""
+  while IFS= read -r renovate_action; do
+    [[ -n "${renovate_action}" ]] || continue
+    grep -qxF -- "${renovate_action}" <<<"${renovate_documented_actions}" ||
+      renovate_untabled+="${renovate_action} "
+  done <<<"${renovate_used_actions}"
+  assert_equal "every action a workflow pins has a row in the table" "${renovate_untabled% }" ""
+
+  renovate_unused=""
+  while IFS= read -r renovate_action; do
+    [[ -n "${renovate_action}" ]] || continue
+    grep -qxF -- "${renovate_action}" <<<"${renovate_used_actions}" ||
+      renovate_unused+="${renovate_action} "
+  done <<<"${renovate_documented_actions}"
+  assert_equal "every action the table lists is still pinned by a workflow" "${renovate_unused% }" ""
+
+  # One label for every job in every workflow, so the set collapses to one
+  # token and the row either is that token or is stale. If the repo ever runs
+  # two runner images on purpose, this fails until the table says so -- which is
+  # the right outcome for a row a reader treats as "the runner".
+  assert_equal "the runner image the table names is the one every job asks for" \
+    "${renovate_documented_runner}" "${renovate_runner_labels}"
+
+  # The opening sentence names the places Renovate looks. It is the claim a
+  # reader uses to decide whether a new pin is watched, and it said
+  # `Containerfile` and one workflow while four other workflows carried pins.
+  renovate_opening="$(awk '/^## / { exit } { print }' "${RENOVATE_DOC}" | tr '\n' ' ' | tr -s ' ')"
+
+  if grep -qF -- 'Containerfile' <<<"${renovate_opening}"; then
+    pass "the opening still names the Containerfile among the places Renovate looks"
+  else
+    fail "the opening still names the Containerfile among the places Renovate looks" \
+      "it carries the bootc tag and commit and both digest-pinned FROM lines"
+  fi
+
+  renovate_pin_carrying=()
+  for renovate_workflow in "${renovate_workflow_files[@]}"; do
+    grep -qE '^[[:space:]]*uses:[[:space:]]*[A-Za-z0-9]' "${renovate_workflow}" &&
+      renovate_pin_carrying+=("${renovate_workflow}")
+  done
+
+  # Naming the directory covers every file in it, including the next one added.
+  # Naming files individually is accepted too, and then the list must be
+  # complete -- a workflow pinning an action that the sentence does not reach is
+  # exactly the state this check was written in.
+  if grep -qE -- '\.github/workflows/([^A-Za-z0-9_.-]|$)' <<<"${renovate_opening}"; then
+    pass "the opening names the whole workflow directory Renovate looks in (${#renovate_pin_carrying[@]} of those files carry a pin)"
+  else
+    renovate_unnamed=""
+    for renovate_workflow in "${renovate_pin_carrying[@]+"${renovate_pin_carrying[@]}"}"; do
+      grep -qF -- "${renovate_workflow##*/}" <<<"${renovate_opening}" ||
+        renovate_unnamed+="${renovate_workflow##*/} "
+    done
+    assert_equal "the opening names every workflow file that carries a tracked pin" \
+      "${renovate_unnamed% }" ""
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 group "Installation runbook (docs/installation.md is a hand copy of the Justfile, the Containerfile targets and scripts/quickstart.sh)"
 
 # docs/installation.md is the document a new user follows, and every literal in

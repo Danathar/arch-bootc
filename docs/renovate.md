@@ -1,8 +1,9 @@
 # Dependency updates with Renovate
 
 This repo keeps its build tooling up to date with [Renovate](https://docs.renovatebot.com/).
-Renovate watches the pinned versions in `Containerfile` and `.github/workflows/build.yml`,
-opens a PR when something newer exists, and merges that PR itself once the build passes.
+Renovate watches the pinned versions in `Containerfile` and under `.github/workflows/` —
+every workflow there pins at least one action — opens a PR when something newer exists, and
+merges that PR itself once the build passes.
 
 Everything is configured in [`renovate.json`](../renovate.json) at the repo root.
 
@@ -21,17 +22,19 @@ skips forks by default; without that line nothing would run at all.
 | Dependency | Pinned as | Where | How Renovate finds it |
 | --- | --- | --- | --- |
 | `bootc-dev/bootc` | git tag **and** commit SHA, built from source | `Containerfile` `ARG BOOTC_VERSION` + `ARG BOOTC_COMMIT` | custom regex manager (`github-tags`, with digest) |
-| Arch base image | `:latest@sha256:…` | `Containerfile` `FROM` | `dockerfile` manager |
-| `ublue-os/brew` | `:latest@sha256:…` | `Containerfile` `FROM … AS brew` | `dockerfile` manager |
+| Arch base image | `docker.io/archlinux/archlinux:latest@sha256:…` | `Containerfile` `FROM` | `dockerfile` manager |
+| `ublue-os/brew` | `ghcr.io/ublue-os/brew:latest@sha256:…` | `Containerfile` `FROM … AS brew` | `dockerfile` manager |
 | `actions/checkout` | commit SHA | `build.yml` | `github-actions` manager |
 | `docker/metadata-action` | commit SHA | `build.yml` | `github-actions` manager |
 | `redhat-actions/buildah-build` | commit SHA | `build.yml` | `github-actions` manager |
 | `sigstore/cosign-installer` | commit SHA | `build.yml` | `github-actions` manager |
+| `actions/labeler` | commit SHA | `labeler.yml` | `github-actions` manager |
+| `astral-sh/setup-uv` | commit SHA | `zizmor.yaml` | `github-actions` manager |
 | cosign CLI | `cosign-release: vX.Y.Z` | `build.yml` | custom regex manager |
 | chunkah image | `quay.io/coreos/chunkah:vX.Y.Z` | `build.yml` env | custom regex manager |
 | shellcheck image | `docker.io/koalaman/shellcheck:vX.Y.Z` | `build.yml` `SHELLCHECK_IMAGE` env | custom regex manager |
 | zizmor | `ZIZMOR_VERSION: X.Y.Z` | `zizmor.yaml` env | custom regex manager (`pypi`) |
-| runner image | `ubuntu-24.04` | `build.yml` `runs-on` | `github-actions` manager |
+| runner image | `ubuntu-26.04` | `build.yml` `runs-on` | `github-actions` manager |
 
 Three of these need explanation.
 
