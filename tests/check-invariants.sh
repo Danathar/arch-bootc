@@ -3318,11 +3318,14 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' allowed '' \
     'noglob is stepped over like the other wrappers, and the diff behind it is an ordinary one' \
     'noglob git diff HEAD'
-  # A wrapper spelled as a literal path is that wrapper, as a literal path to
-  # git is git. Compared on the whole word, `/usr/bin/xargs` was read as the
-  # name, so the command behind it reached no scan (review on
-  # zfs-kinoite-complex#235). The match runs after the literal-name test, so
-  # a path built at runtime is still refused as a name.
+  # A wrapper spelled as a path is found by its last component, cut at `/`
+  # and at `\` as Claude Code's matcher cuts it. Compared on the whole word,
+  # `/usr/bin/xargs` was read as the name, so the command behind it reached
+  # no scan (review on zfs-kinoite-complex#235). Only `/usr/bin/NAME` and
+  # `/bin/NAME` are stepped over; any other path runs a file of the
+  # caller's choosing while the matcher steps over it, and is refused
+  # (review on atomic-image-builder#438). The match runs after the
+  # literal-name test, so a path built at runtime is still refused as a name.
   corpus_row 'command name' refused 'xargs adds the words' \
     'read as the name, /usr/bin/xargs hid the git behind it from every scan while bash ran xargs all the same' \
     'git status; /usr/bin/xargs git diff'
@@ -3344,6 +3347,50 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' allowed '' \
     'a literal path to a wrapper is stepped over like the wrapper, and the diff behind it is an ordinary one' \
     '/usr/bin/timeout 60 git diff HEAD'
+  corpus_row 'command name' refused 'wrapper written as a path' \
+    'the matcher steps over it as nohup, and bash runs whatever file ./shim/nohup is' \
+    './shim/nohup git diff HEAD'
+  corpus_row 'command name' refused 'wrapper written as a path' \
+    'a file named shim\nohup to bash, and nohup to a matcher that also cuts at a backslash' \
+    "'./shim\nohup' git diff HEAD"
+  corpus_row 'command name' refused 'wrapper written as a path' \
+    'the same in front of an allow-listed command other than git' \
+    '/tmp/timeout 5 shellcheck tests/run-tests.sh'
+  # The command xargs runs is the first word after xargs's own options, read
+  # the way GNU findutils and uutils read them, and the words after it are
+  # its arguments; an option the two read differently, or one neither has,
+  # leaves every later word a possible name (review on
+  # aurora-zfs-simple#224).
+  corpus_row 'command name' refused 'xargs adds the words' \
+    "an xargs option's value in the next word is the option's, and git is the command after it" \
+    'xargs -n 1 git diff <list.txt'
+  corpus_row 'command name' refused 'xargs adds the words' \
+    "the same for a long option's value" \
+    'xargs --max-args 1 git diff <list.txt'
+  corpus_row 'command name' refused 'xargs adds the words' \
+    "-- ends xargs's options" \
+    'xargs -- git diff <list.txt'
+  corpus_row 'command name' refused 'xargs adds the words' \
+    "an option's value spelled as a keyword is still the value, not a keyword" \
+    'xargs -I if git diff <list.txt'
+  corpus_row 'command name' refused 'xargs adds the words' \
+    'xargs running a wrapper: the wrapper is not the command, the git behind it is' \
+    'xargs timeout 5 git diff <list.txt'
+  corpus_row 'command name' refused 'xargs adds the words' \
+    'GNU findutils and uutils read --max-lines with a separate value differently, so every later word may be the name' \
+    'xargs --max-lines 1 git diff <list.txt'
+  corpus_row 'command name' refused 'xargs adds the words' \
+    'an option neither implementation has leaves every later word a possible name' \
+    'xargs -J % git diff <list.txt'
+  corpus_row 'command name' allowed '' \
+    'xargs runs grep, and git is its pattern; grep matches no allow row and prompts on its own' \
+    'git ls-files | xargs grep -l git'
+  corpus_row 'command name' allowed '' \
+    'xargs runs rg, and shellcheck is its argument' \
+    'git ls-files | xargs rg shellcheck'
+  corpus_row 'command name' allowed '' \
+    "an xargs option's attached value is part of the option word" \
+    'git ls-files | xargs -n1 rg shellcheck'
 
   # --- 5. an option that loads or writes -----------------------------------
   corpus_row options refused 'git global option' \
@@ -3653,17 +3700,29 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     'false && wrapper_positional_pending=1' \
     'timeout 60 GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   mutation_row 'the xargs refusal in front of git or an allow-listed command' \
-    '((cmd_xargs && (cmd_gated || cmd_git))) && refuse "${XARGS_MSG}"' \
-    '((cmd_xargs && (cmd_gated || cmd_git))) && true' \
+    '((cmd_xargs && (cmd_gated || cmd_git_name))) && refuse "${XARGS_MSG}"' \
+    '((cmd_xargs && (cmd_gated || cmd_git_name))) && true' \
     "printf '%s\n' /dev/null ./cosign.key | xargs git diff"
   mutation_row 'noglob in the wrapper list' \
     'nohup | noglob | nice' \
     'nohup | nice' \
     'noglob podman ps >out'
   mutation_row 'a literal path to a wrapper read as that wrapper' \
-    'case "${word##*/}" in' \
-    'case "${word}" in' \
+    'is_wrapper "${wrapper_spelling##*[/\\]}" && wrapper_base="${wrapper_spelling##*[/\\]}"' \
+    'is_wrapper "${wrapper_spelling}" && wrapper_base="${wrapper_spelling}"' \
     'git status; /usr/bin/xargs git diff'
+  mutation_row 'refusing a wrapper written as a path other than /usr/bin or /bin' \
+    '*) refuse "${WRAPPER_PATH_MSG}" ;;' \
+    '*) ;;' \
+    './shim/nohup git diff HEAD'
+  mutation_row 'reading the next word as the value of an xargs option' \
+    '((i + 1 < ${#cluster})) || xargs_optarg=1' \
+    '((i + 1 < ${#cluster})) || xargs_optarg=0' \
+    'xargs -n 1 git diff <list.txt'
+  mutation_row 'every later word a possible name after an xargs option this does not read' \
+    'xargs_state=0 # not an option this reads' \
+    'continue # not an option this reads' \
+    'xargs -J % git diff <list.txt'
   }
   mutation_table
 

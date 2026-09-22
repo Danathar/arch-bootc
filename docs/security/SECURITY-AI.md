@@ -286,14 +286,19 @@ must be described as such.
   `Bash(podman ps*)`, the hook read `noglob` as the command, and the
   redirection went through. Bash has no `noglob`, but it opens the target
   before it finds that out, so the file was emptied anyway; under zsh the
-  command runs as well. A wrapper written as a literal path is that wrapper,
-  as a literal path to git is git: compared on the whole word,
+  command runs as well. A wrapper written as a path is found by its last
+  component, cut at `/` and at `\`, which is where Claude Code's matcher
+  cuts it before stepping over the wrapper. Compared on the whole word,
   `git status; /usr/bin/xargs git diff` read `/usr/bin/xargs` as the name,
   so the git behind it reached no scan while Bash ran xargs all the same,
   and `/usr/bin/env GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD` and
-  `/usr/bin/env -S '...'` passed the same way. The wrapper is matched on its
-  last path component only after the literal-name test, so `$D/env` is
-  still refused as a name built at runtime.
+  `/usr/bin/env -S '...'` passed the same way. Only the bare name,
+  `/usr/bin/NAME` and `/bin/NAME` are stepped over. Any other path to a
+  wrapper — `./shim/nohup git diff HEAD`, `'./shim\nohup' git diff HEAD`,
+  `/tmp/timeout 5 shellcheck ...` — runs whatever file sits at that path
+  while the allow rule approved only the words after it, so it is refused
+  outright. The wrapper test runs after the literal-name test, so `$D/env`
+  is still refused as a name built at runtime.
 
 - **Nothing that decides what a command does has to be written in the
   command.** That is the whole of issue #333, and it is the shape five
@@ -353,9 +358,13 @@ must be described as such.
   shellcheck`, `xargs -a list.txt git diff`). `xargs` in front of a command
   no allow row covers — `git diff --name-only | xargs echo`, `git ls-files
   | xargs wc -l` — matches no allow row, prompts on its own, and is left
-  alone. Because `xargs`'s own options are not all modelled, any word after
-  it may be the command it runs, so `git ls-files | xargs grep -l git` is
-  refused too.
+  alone. The command `xargs` runs is the first word after its own options,
+  read the way GNU findutils and uutils read them, and the words after that
+  command are its arguments: `git ls-files | xargs grep -l git` runs grep
+  with `git` as its pattern and is left alone. An option the two
+  implementations read differently (`--max-lines 1`, a bare `-i`) or that
+  neither has (`-J`) leaves every later word a possible name, so
+  `xargs -J % git diff` is still refused.
 
   *A subcommand the allow rule covers without naming it.* `Bash(git diff*)`
   matches by prefix, so it matches `git difftool` as readily as `git diff`,
