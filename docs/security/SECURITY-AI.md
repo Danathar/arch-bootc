@@ -387,6 +387,18 @@ must be described as such.
   until the hook lists it, and shows both exposures in a temporary directory
   before asserting the refusals. Same fix as
   [zfs-kinoite-complex#224](https://github.com/Danathar/zfs-kinoite-complex/pull/224).
+- **Neither primitive needs an argument.** An assignment written before an
+  allow-listed command (`NAME=value cmd ...`) is an environment that command
+  runs under, and the allow rule matches the command prefix that follows it.
+  Git carries both primitives there: `GIT_EXTERNAL_DIFF=prog git diff HEAD~1`
+  makes git run `prog` once per changed path, `GIT_CONFIG_COUNT` with
+  `GIT_CONFIG_KEY_0=diff.external` reaches that same driver under another
+  name, and `PATH=dir git diff HEAD~1` runs a different `git` altogether — so
+  an unprompted string ran any program on the host, which could then read
+  `cosign.key` and write `cosign.pub` (#329). The hook refuses an assignment
+  before every allow-listed command, git included. A deny list of variable
+  names would be the wrong shape: `GIT_DIR`, `GIT_INDEX_FILE`, `LD_PRELOAD`
+  and `PATH` all matter, and the list would have to track git's own.
 
 - Workflow permissions are declared explicitly and minimally per job. A workflow
   that needs `packages: write` says so in that job only; it does not get it at
