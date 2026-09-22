@@ -281,7 +281,7 @@ must be described as such.
   command the hook never sees as words, is refused outright. The wrappers the
   hook steps over to find the name have to include every one Claude Code
   itself strips before it matches an allow row — 2.1.267 strips `time`,
-  `nohup`, `timeout`, `nice`, `stdbuf`, `env`, `command`, `builtin` and
+  `nohup`, `timeout`, `nice`, `stdbuf`, `command`, `builtin` and
   `noglob` — and `noglob` was missing: `noglob podman ps >out` matched
   `Bash(podman ps*)`, the hook read `noglob` as the command, and the
   redirection went through. Bash has no `noglob`, but it opens the target

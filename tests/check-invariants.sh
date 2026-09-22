@@ -3275,7 +3275,7 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' allowed '' \
     'the wrapper option that removes a variable adds nothing to the environment' \
     'env -u X git diff HEAD'
-  # Two wrappers the permission layer steps over, which this hook read wrongly.
+  # Two wrappers the permission layer sees past, which this hook read wrongly.
   # `noglob` was missing from the wrapper list, so it was read as the name
   # and the command behind it was never reached. `xargs` was stepped over,
   # which is not enough: it appends operands read from standard input (or

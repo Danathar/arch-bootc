@@ -614,7 +614,7 @@ end_word
 #
 # The wrapper list has to hold every wrapper the permission layer steps over
 # before it matches an allow row, and Claude Code 2.1.267 strips `time`,
-# `nohup`, `timeout`, `nice`, `stdbuf`, `env`, `command`, `builtin` and
+# `nohup`, `timeout`, `nice`, `stdbuf`, `command`, `builtin` and
 # `noglob`. `noglob`, zsh's precommand modifier, takes no options and was
 # missing here, so `noglob podman ps >.claude/settings.json` matched
 # `Bash(podman ps*)` while this scan named `noglob` and the gated-prefix
