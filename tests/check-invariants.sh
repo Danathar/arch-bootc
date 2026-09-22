@@ -3050,6 +3050,18 @@ if ((settings_readable)); then
     "a wrapper's own option must not be read as the command's name" \
     'env -i GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row environment refused 'assignment before an allow-listed command' \
+    "timeout's own -s value must not be read as the command's name either" \
+    'timeout -s TERM 60 GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  corpus_row environment refused 'assignment before an allow-listed command' \
+    "timeout's mandatory DURATION operand, which carries no dash, must not be read as the name" \
+    'timeout 60 GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  corpus_row environment refused 'assignment before an allow-listed command' \
+    "nice's own -n value must not be read as the command's name" \
+    'nice -n 5 GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  corpus_row environment refused 'assignment before an allow-listed command' \
+    "stdbuf's own -o value must not be read as the command's name" \
+    'stdbuf -o L GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  corpus_row environment refused 'assignment before an allow-listed command' \
     'env sets it although bash alone would read the quoted word as a command name' \
     "env 'GIT_EXTERNAL_DIFF'=/tmp/evil git diff HEAD"
   corpus_row environment refused 'env -S' \
@@ -3116,6 +3128,12 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row environment allowed '' \
     'the assignment reaches echo, which no allow rule covers and which opens nothing' \
     'FOO=bar echo hi'
+  corpus_row environment allowed '' \
+    "-p lists what is already exported and adds nothing a later command inherits" \
+    'git status; export -p'
+  corpus_row environment allowed '' \
+    "-n unexports rather than exports; a name after it is being removed, not added" \
+    'export -n GIT_EXTERNAL_DIFF; git diff HEAD'
 
   # --- 2. redirection ------------------------------------------------------
   #
@@ -3486,6 +3504,14 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     'refuse "${GIT_GLOBAL_MSG}"' \
     ':' \
     'git status; git -c diff.external=/tmp/evil diff HEAD'
+  mutation_row "consuming a wrapper option's own value word (timeout -s, nice -n, stdbuf -o, env -u)" \
+    'wrapper_option_takes_value "${wrapper_name}" "${word}" && wrapper_value_pending=1' \
+    'false && wrapper_value_pending=1' \
+    'timeout -s TERM 60 GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  mutation_row "consuming timeout's own mandatory DURATION operand" \
+    '[[ "${word}" == timeout ]] && wrapper_positional_pending=1' \
+    'false && wrapper_positional_pending=1' \
+    'timeout 60 GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   }
   mutation_table
 

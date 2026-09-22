@@ -591,11 +591,50 @@ end_word
 # `$(...)` spelling of the same assignment is not affected. A glob or a `$`
 # in an argument after a wrapper (`timeout 60 find . -name '*.sh'`) is
 # refused too; without the wrapper it is not.
+# The wrapper options, by wrapper and detached spelling, that take their
+# value as the *next* word rather than attached to the option itself. Only
+# the detached spelling needs an entry: `-uNAME`, `--unset=NAME` and
+# `--chdir=DIR` are one word already, and the dash-prefix test below steps
+# over them like any other option. Without this, the value word -- `X` in
+# `timeout -s X ...`, `L` in `stdbuf -o L ...`, `5` in `nice -n 5 ...`,
+# `UNUSED` in `env -u UNUSED ...` -- was read as the command name: it
+# matched no GATED_PREFIXES row and was not `git`, so a leading assignment
+# after it stood behind a command that had already been "named" and the
+# environment refusal never fired (review on arch-bootc#334).
+wrapper_option_takes_value() {
+  local wrapper="$1" option="$2"
+  case "${wrapper}:${option}" in
+  env:-u | env:--unset | env:-C | env:--chdir) return 0 ;;
+  nice:-n | nice:--adjustment) return 0 ;;
+  timeout:-s | timeout:--signal | timeout:-k | timeout:--kill-after) return 0 ;;
+  stdbuf:-i | stdbuf:--input | stdbuf:-o | stdbuf:--output | stdbuf:-e | stdbuf:--error) return 0 ;;
+  xargs:-I | xargs:--replace | xargs:-L | xargs:--max-lines | xargs:-n | xargs:--max-args | \
+    xargs:-P | xargs:--max-procs | xargs:-s | xargs:--max-chars | xargs:-a | xargs:--arg-file | \
+    xargs:-d | xargs:--delimiter | xargs:-E | xargs:--eof) return 0 ;;
+  sudo:-u | sudo:--user | sudo:-g | sudo:--group | sudo:-h | sudo:--host | \
+    sudo:-p | sudo:--prompt | sudo:-C | sudo:--close-from | sudo:-T | sudo:--command-timeout | \
+    sudo:-R | sudo:--chroot) return 0 ;;
+  doas:-u | doas:-C) return 0 ;;
+  esac
+  return 1
+}
+
 command_word_pending=1 # the next word of this command may be its name
 after_time=0           # the last name-position word was `time`, whose -p may follow
 after_wrapper=0        # a wrapper ran: every remaining word may be the name
 command_names=()       # 1 at each index that names, or may name, a command
 wrapper_name=''
+# 1 while the previous word was a wrapper option that takes a separate value
+# word; that next word is neither a name nor an assignment.
+wrapper_value_pending=0
+# 1 after `timeout` is recognised, until its own mandatory DURATION operand
+# is consumed: `timeout [OPTION] DURATION COMMAND` takes a positional
+# argument no dash marks, so the option scan below cannot skip it as an
+# option's value, and unconsumed it was read as the command name --
+# `timeout -s TERM 60 GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD` named `60`
+# and neither the later `git` nor the assignment ahead of it was checked. No
+# other wrapper here has a positional word of its own before its command.
+wrapper_positional_pending=0
 in_backtick=0
 name_stack=() # the outer command's state, while a `$(...)` is being read
 for ((idx = 0; idx < ${#words[@]}; idx++)); do
@@ -607,14 +646,16 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
     # `echo $(date) *.sh` does not read `*.sh` as a name.
     # shellcheck disable=SC2016 # the literal `$(` is the separator's name
     if [[ "${words[idx]}" == '$(' ]]; then
-      name_stack+=("${command_word_pending} ${after_wrapper} ${wrapper_name}")
+      name_stack+=("${command_word_pending} ${after_wrapper} ${wrapper_name} ${wrapper_value_pending} ${wrapper_positional_pending}")
       command_word_pending=1
       after_wrapper=0
       wrapper_name=''
+      wrapper_value_pending=0
+      wrapper_positional_pending=0
       continue
     fi
     if [[ "${words[idx]}" == '$)' ]] && ((${#name_stack[@]})); then
-      read -r command_word_pending after_wrapper wrapper_name <<<"${name_stack[-1]}"
+      read -r command_word_pending after_wrapper wrapper_name wrapper_value_pending wrapper_positional_pending <<<"${name_stack[-1]}"
       unset 'name_stack[-1]'
       continue
     fi
@@ -625,6 +666,8 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
         command_word_pending=0
         after_wrapper=0
         wrapper_name=''
+        wrapper_value_pending=0
+        wrapper_positional_pending=0
         continue
       fi
       ((command_word_pending)) && refuse "${CMD_MSG}"
@@ -634,6 +677,8 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
     after_wrapper=0
     after_time=0
     wrapper_name=''
+    wrapper_value_pending=0
+    wrapper_positional_pending=0
     continue
     ;;
   target) continue ;;
@@ -642,6 +687,28 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   ((command_word_pending)) || continue
   raw_word="${raw_words[idx]}"
   word="${words[idx]}"
+  # The word right after a wrapper option that takes a separate value
+  # (`env -u NAME`, `timeout -s TERM`, `nice -n 5`, `stdbuf -o L`, ...) is
+  # that value, not a word of the command the wrapper runs. Consuming only
+  # the option itself and not this word left it to fall through to the
+  # command-name test below: `env -u UNUSED GIT_EXTERNAL_DIFF=/tmp/evil git
+  # diff HEAD~1` read `UNUSED` as the command name, which matched no
+  # GATED_PREFIXES row and was not `git`, so neither the later `git` nor
+  # the `GIT_EXTERNAL_DIFF=` assignment ahead of it was ever checked
+  # (review on arch-bootc#334). `after_wrapper` and `wrapper_name` are left
+  # exactly as they were: the word after this one is still the wrapper's
+  # own name search, not the wrapper's again.
+  if ((wrapper_value_pending)); then
+    wrapper_value_pending=0
+    continue
+  fi
+  # `timeout`'s own DURATION, consumed once its dash-prefixed options (if
+  # any) are behind it: the first word that is not itself one of those
+  # options is it, whatever it looks like (`60`, `0.5`, `2m`).
+  if ((wrapper_positional_pending)) && [[ "${word}" != -* ]]; then
+    wrapper_positional_pending=0
+    continue
+  fi
   if ((after_time)) && [[ "${word}" == '-p' || "${word}" == '--' ]]; then
     continue # time's own option (review on arch-bootc#322); the name is still to come
   fi
@@ -668,6 +735,7 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   command | builtin | exec | env | nohup | nice | xargs | timeout | stdbuf | sudo | doas)
     after_wrapper=1
     wrapper_name="${word}"
+    [[ "${word}" == timeout ]] && wrapper_positional_pending=1
     continue
     ;;
   *) ;;
@@ -692,8 +760,12 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   # for the name, or the environment scan below stops looking for an
   # assignment one word early: `env -i GIT_EXTERNAL_DIFF=/tmp/evil git diff
   # HEAD` read `-i` as the name, so the assignment after it was a word of a
-  # command that had already been named, and the refusal never fired.
+  # command that had already been named, and the refusal never fired. Where
+  # that option is documented to take a separate value word of its own, that
+  # value word is consumed the same way, via wrapper_value_pending, so it is
+  # never read as the name either.
   if ((after_wrapper)) && [[ "${word}" == -* ]]; then
+    wrapper_option_takes_value "${wrapper_name}" "${word}" && wrapper_value_pending=1
     continue
   fi
   command_names[idx]=1
@@ -1046,6 +1118,7 @@ reset_command() {
   cmd_gated=0
   cmd_git=0
   cmd_name=''
+  cmd_export_no_add=0
 }
 
 # The words of a command from its *name* onward: a leading assignment
@@ -1078,6 +1151,7 @@ cmd_named=0   # the name has been seen; every later word belongs to it
 cmd_gated=0   # its leading words matched one of GATED_PREFIXES
 cmd_git=0     # a literal `git` word is one of its words
 cmd_name=''   # the word that names it, once seen
+cmd_export_no_add=0 # this command's export saw -n or bare -p, so it adds nothing
 cmd_stack=()  # the outer command's state, while a `$(...)` is being read
 saw_gated=0   # some command of this string is one this gate covers
 saw_export=0  # some command of this string exports into every later one
@@ -1113,13 +1187,13 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
       # `cmd_name` carries no space, and `cmd_prefix` is read last, so the two
       # come back apart with no separator of their own. Both are empty until
       # the name is seen, and `read` fills the trailing fields with nothing.
-      cmd_stack+=("${cmd_writes} ${cmd_read} ${cmd_subst} ${cmd_heredoc} ${cmd_assign} ${cmd_bash} ${cmd_named} ${cmd_gated} ${cmd_git} ${cmd_name} ${cmd_prefix}")
+      cmd_stack+=("${cmd_writes} ${cmd_read} ${cmd_subst} ${cmd_heredoc} ${cmd_assign} ${cmd_bash} ${cmd_named} ${cmd_gated} ${cmd_git} ${cmd_name} ${cmd_export_no_add} ${cmd_prefix}")
       reset_command
       continue
     fi
     if [[ "${words[idx]}" == '$)' || "${words[idx]}" == ')' ]] && ((${#cmd_stack[@]})); then
       check_gated_command
-      read -r cmd_writes cmd_read cmd_subst cmd_heredoc cmd_assign cmd_bash cmd_named cmd_gated cmd_git cmd_name cmd_prefix <<<"${cmd_stack[-1]}"
+      read -r cmd_writes cmd_read cmd_subst cmd_heredoc cmd_assign cmd_bash cmd_named cmd_gated cmd_git cmd_name cmd_export_no_add cmd_prefix <<<"${cmd_stack[-1]}"
       unset 'cmd_stack[-1]'
       # The command that resumes here contains a substitution, whether or
       # not its name has been seen yet (`$(touch cosign.pub) df -T`).
@@ -1195,21 +1269,33 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   if ((cmd_named == 0)); then
     cmd_named=1
     cmd_name="${words[idx]}"
-    # The export family, which no per-command scan can find: bash applies an
-    # export to every *later* command of the string, so the gated command
-    # carries no assignment at all. Only the latch is set here; the refusal
-    # is at the end of this file, where the whole string has been read.
-    # `declare`, `typeset`, `local` and `readonly` export only with an `-x`
-    # -- a bare `declare NAME=x` reaches no child, verified against bash
-    # 5.2 -- so they are read for the option rather than for the name, and
-    # bash rejects `readonly -x` outright, which costs nothing to list.
-    # `set -a` exports every assignment made after it and is an export of
-    # its own.
-    [[ "${cmd_name}" == export ]] && saw_export=1
   else
     case "${cmd_name}" in
     declare | typeset | local | readonly)
       [[ "${words[idx]}" == -*x* ]] && saw_export=1
+      ;;
+    # The export family, which no per-command scan can find: bash applies an
+    # export to every *later* command of the string, so the gated command
+    # carries no assignment at all. Only the latch is set here; the refusal
+    # is at the end of this file, where the whole string has been read.
+    #
+    # `-n` unexports rather than exports, and `-p` alone lists what is
+    # already exported -- neither adds anything a later command inherits, so
+    # `export -p` and the remediation `export -n GIT_EXTERNAL_DIFF` must not
+    # arm the latch (review on arch-bootc#334). `-n` is read for the whole
+    # command rather than only in isolation, since it can precede a name
+    # (`export -n FOO`) and a name after it is still being removed, not
+    # added. `-f` (functions) still arms: `export -f name` still puts
+    # `BASH_FUNC_name%%` in the environment, which is exported state the
+    # same as a variable. A bare `export` with no words at all never reaches
+    # this branch at all -- it only runs for a word *after* the name -- so
+    # it arms nothing, which matches bash: no names, nothing exported.
+    export)
+      case "${words[idx]}" in
+      -n | -*n*) cmd_export_no_add=1 ;;
+      -p) ;;
+      *) ((cmd_export_no_add)) || saw_export=1 ;;
+      esac
       ;;
     set)
       [[ "${words[idx]}" == -*a* || "${words[idx]}" == allexport ]] && saw_export=1
