@@ -322,6 +322,17 @@ must be described as such.
   stepped over so the subcommand behind them is found. A `-c` *after* the
   subcommand is git's combined-diff flag and is unaffected.
 
+  *A subcommand the allow rule covers without naming it.* `Bash(git diff*)`
+  matches by prefix, so it matches `git difftool` as readily as `git diff`,
+  and `git difftool --no-prompt --extcmd=/tmp/evil HEAD~1 HEAD` — or `-x`, the
+  same option one letter long — runs that program once per changed path with
+  no assignment and no config option anywhere in the command for the two rules
+  above to find. Verified against git 2.47.3. Without `--extcmd` the program is
+  whatever `diff.tool` names in a config file the hook cannot see, so the
+  `difftool` subcommand is refused outright, and `mergetool` with it although
+  no allow row reaches that one today. Only the subcommand is refused:
+  `git log --grep=difftool` and a path of that name are ordinary arguments.
+
 - **A glob is one word here and however many files match at git.** Nothing in
   `git diff ./cosign.*` looks like two operands, and Bash hands git two, which
   is the plain-file read with the count hidden. "A glob cannot leave the
@@ -343,9 +354,9 @@ must be described as such.
   first time somebody adds a rule that reaches one. A mutation pass then
   disables each of these rules in a copy of the hook and requires a row to
   stop being refused, and throwaway fixtures show git actually executing a
-  program named by `GIT_EXTERNAL_DIFF`, by an `export`, and by
-  `-c diff.external`, and actually printing two files a single globbed word
-  expanded to.
+  program named by `GIT_EXTERNAL_DIFF`, by an `export`, by
+  `-c diff.external` and by `git difftool --extcmd`, and actually printing two
+  files a single globbed word expanded to.
 
   `tests/check-invariants.sh` extracts the hook with `jq` and **runs** it — on
   the flag orderings a prefix rule would miss, on the flagless, requoted, and

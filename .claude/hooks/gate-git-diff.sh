@@ -14,7 +14,7 @@
 # never consults the deny list. `cat ./cosign.key` prompts; the diff form did
 # not.
 #
-# Nine things this gate has to get right, each of them a spelling an earlier
+# Ten things this gate has to get right, each of them a spelling an earlier
 # version of it missed:
 #
 #   1. The mode has no required flag. `git diff /dev/null ./cosign.key` prints
@@ -78,6 +78,12 @@
 #      (`-c diff.external=`, `-C <dir>`) sits between the name and the
 #      subcommand. See `GATED_ENV_MSG`, `GATED_EXPORT_MSG` and
 #      `GIT_GLOBAL_MSG`.
+#  10. An allow rule matching by prefix covers more subcommands than it names.
+#      `Bash(git diff*)` matches `git difftool` as readily as `git diff`, and
+#      `git difftool --extcmd=PROG` (or `-x PROG`) runs PROG once per changed
+#      path -- the same program-running primitive as `GIT_EXTERNAL_DIFF=` and
+#      `-c diff.external=`, with neither an assignment nor a config option in
+#      the command for the rules above to find. See `DIFFTOOL_MSG`.
 #
 # The write primitive: `--output=FILE` sends the diff git would have printed to
 # a path instead of stdout, so an allow-listed, unprompted call overwrites any
@@ -240,6 +246,9 @@ SHELLCHECK_EXPAND_MSG='blocked: bash rewrites this word before shellcheck sees i
 
 # shellcheck disable=SC2016 # the message quotes shell spellings as literal text
 SHELLCHECK_STDIN_MSG='blocked: shellcheck reads standard input when its operand is -, and it prints the source line above every diagnostic it reports, so `shellcheck - < .env` prints the file back exactly as `shellcheck ./.env` does. The operand scan never sees that path, because it sits behind the redirection operator, so the target of a bare < on a shellcheck invocation is checked the way an operand is: it must resolve inside the working tree, it must not be one of the secret-shaped names the Read(...) deny rules in .claude/settings.json list (cosign.key, .env, .env.*, *.pem, *.p12, id_rsa, id_ed25519), and it must be spelled out -- no brace, no leading ~, no glob, since a glob naming exactly one denied file is not the ambiguous redirect bash refuses on its own. Redirect from a script inside the checkout instead, spelled out in full. </dev/null is unaffected, and so are <<, <<< and <&, which carry a delimiter, content or a descriptor rather than a path.'
+
+# shellcheck disable=SC2016 # the backticks quote command spellings for the reader
+DIFFTOOL_MSG='blocked: `git difftool` runs a program of the caller'"'"'s choosing once per changed path -- `git difftool --no-prompt --extcmd=/tmp/evil HEAD~1 HEAD`, and `-x PROG` is the same option one letter long -- and the allow row `Bash(git diff*)` matches it on that prefix, so nothing prompts. It is a third spelling of the primitive this gate already refuses as `GIT_EXTERNAL_DIFF=` and as `-c diff.external=`, and the only one that needs neither an environment nor a config option: the program is an ordinary argument of an allow-listed command. Leaving out --extcmd is no better, since the program is then whatever diff.tool names in a config file this gate cannot see. So the difftool and mergetool subcommands are refused outright. git diff, git log and git show print to stdout; read that instead. Only the subcommand is refused, so --grep=difftool and a path of that name are unaffected.'
 
 OUT_MSG='blocked: git --output=FILE (and the space form) writes this diff or log to the path it names instead of stdout, overwriting any file this uid can reach -- cosign.pub, .claude/settings.json, this hook, ~/.ssh/authorized_keys -- with no Read(...) or Write(...) deny rule in its way. git diff, git log and git show print to stdout; read that instead. --output-indicator-* is a different flag and is unaffected.'
 
@@ -1614,6 +1623,24 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
     --git-dir | --work-tree | --namespace | --super-prefix | --attr-source)
       skip_git_option_value=1
       continue
+      ;;
+    # The same program-running primitive as `-c diff.external=` above, written
+    # as a subcommand instead of as an option, and the allow row reaches it for
+    # free: `Bash(git diff*)` matches by prefix, so `git difftool` is a `git
+    # diff` string to the permission layer. `--extcmd=PROG` (and `-x PROG`)
+    # runs PROG once per changed path, with no environment assignment and no
+    # config option anywhere in the command -- the two spellings this gate
+    # already refuses. Verified against git 2.47.3.
+    #
+    # Refused in subcommand position rather than as a word anywhere, so
+    # `git log --grep=difftool` and a path of that name are untouched.
+    # `mergetool` runs a program the same way, through `--tool`; no allow row
+    # here reaches it today, and it is refused with difftool anyway, because a
+    # gate whose coverage depends on an allow rule's exact prefix is one
+    # allow-list edit from silence -- the reason `skip_git_option_value` gives
+    # just below for covering `git -C`.
+    difftool | mergetool)
+      refuse "${DIFFTOOL_MSG}"
       ;;
     esac
     # git-level options such as --no-pager sit between `git` and the subcommand.

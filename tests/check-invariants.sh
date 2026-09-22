@@ -3278,6 +3278,15 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row options refused 'shellcheck prints the source line' \
     '--rcfile is deliberately not stepped over, so its path is checked like any other operand' \
     'shellcheck --rcfile /etc/shadow tests/run-tests.sh'
+  corpus_row options refused 'git difftool' \
+    'the subcommand spelling of the external diff program, which Bash(git diff*) matches on its prefix and which needs neither an assignment nor a config option' \
+    'git difftool --no-prompt --extcmd=/tmp/evil HEAD~1 HEAD'
+  corpus_row options refused 'git difftool' \
+    'the one-letter spelling of the same option, with the prompt suppressed by -y' \
+    'git difftool -y -x /tmp/evil HEAD'
+  corpus_row options allowed '' \
+    'only the subcommand is refused, so the word in a pattern or a path is still an ordinary argument' \
+    'git log --grep=difftool -1'
   corpus_row options allowed '' \
     "-c after the subcommand is git's combined-diff flag, not the config option" \
     'git show -c HEAD'
@@ -3424,13 +3433,21 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     "export GIT_EXTERNAL_DIFF='${corpus_repo}/external-diff'; git diff HEAD" 2>/dev/null)"
   corpus_config_out="$(cd "${corpus_repo}/repo" &&
     git -c "diff.external=${corpus_repo}/external-diff" diff HEAD 2>/dev/null)"
+  # The third spelling, and the one the allow row reaches without an
+  # assignment or a config option anywhere in the command: git difftool takes
+  # the program as an ordinary argument. --no-prompt is what makes it run
+  # unattended; stdin is closed so a host where it still asks cannot hang the
+  # suite.
+  corpus_difftool_out="$(cd "${corpus_repo}/repo" &&
+    git difftool --no-prompt --extcmd="${corpus_repo}/external-diff" HEAD 2>/dev/null </dev/null)"
   corpus_glob_out="$(cd "${corpus_repo}/repo" && bash --norc --noprofile -c \
     "git diff '${corpus_repo}'/secrets/*" 2>/dev/null)"
   rm -rf "${corpus_repo}"
 
   for corpus_demo in "an assignment in front of git:${corpus_env_out}" \
     "an export in an earlier command:${corpus_export_out}" \
-    "git -c diff.external:${corpus_config_out}"; do
+    "git -c diff.external:${corpus_config_out}" \
+    "git difftool --extcmd:${corpus_difftool_out}"; do
     if [[ "${corpus_demo#*:}" == *EXTERNAL-DIFF-RAN* ]]; then
       pass "git really runs a program named this way, so the refusal is not about nothing: ${corpus_demo%%:*}"
     else
@@ -3504,6 +3521,10 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     'refuse "${GIT_GLOBAL_MSG}"' \
     ':' \
     'git status; git -c diff.external=/tmp/evil diff HEAD'
+  mutation_row 'the difftool subcommand refusal' \
+    '  difftool | mergetool)' \
+    '  not-a-git-subcommand)' \
+    'git difftool -x /tmp/evil HEAD'
   mutation_row "consuming a wrapper option's own value word (timeout -s, nice -n, stdbuf -o, env -u)" \
     'wrapper_option_takes_value "${wrapper_name}" "${word}" && wrapper_value_pending=1' \
     'false && wrapper_value_pending=1' \
