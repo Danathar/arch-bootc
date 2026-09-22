@@ -1187,13 +1187,13 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
       # `cmd_name` carries no space, and `cmd_prefix` is read last, so the two
       # come back apart with no separator of their own. Both are empty until
       # the name is seen, and `read` fills the trailing fields with nothing.
-      cmd_stack+=("${cmd_writes} ${cmd_read} ${cmd_subst} ${cmd_heredoc} ${cmd_assign} ${cmd_bash} ${cmd_named} ${cmd_gated} ${cmd_git} ${cmd_name} ${cmd_export_no_add} ${cmd_prefix}")
+      cmd_stack+=("${cmd_writes} ${cmd_read} ${cmd_subst} ${cmd_heredoc} ${cmd_assign} ${cmd_bash} ${cmd_named} ${cmd_gated} ${cmd_git} ${cmd_export_no_add} ${cmd_name} ${cmd_prefix}")
       reset_command
       continue
     fi
     if [[ "${words[idx]}" == '$)' || "${words[idx]}" == ')' ]] && ((${#cmd_stack[@]})); then
       check_gated_command
-      read -r cmd_writes cmd_read cmd_subst cmd_heredoc cmd_assign cmd_bash cmd_named cmd_gated cmd_git cmd_name cmd_export_no_add cmd_prefix <<<"${cmd_stack[-1]}"
+      read -r cmd_writes cmd_read cmd_subst cmd_heredoc cmd_assign cmd_bash cmd_named cmd_gated cmd_git cmd_export_no_add cmd_name cmd_prefix <<<"${cmd_stack[-1]}"
       unset 'cmd_stack[-1]'
       # The command that resumes here contains a substitution, whether or
       # not its name has been seen yet (`$(touch cosign.pub) df -T`).
