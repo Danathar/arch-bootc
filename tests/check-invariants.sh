@@ -2225,6 +2225,28 @@ if ((settings_readable)); then
     fail "the settings file still carries the allow rows the gated-prefix scan covers" \
       "found ${gated_rows} Bash(...*) rows other than git's; expected at least 6"
   fi
+  # The same rows behind the two wrappers this hook once read wrongly. Claude
+  # Code 2.1.267 strips `noglob` before it matches a row, so `noglob podman
+  # ps >out` is the redirection above with one more word in front; and it
+  # matches `xargs <row>` against every row that ends in `*`, so `xargs git
+  # diff` runs unprompted with operands read from standard input that no
+  # scan here can see. Derived from the settings file for the reason the loop
+  # above is, and git's rows included, since both reach them too.
+  wrapped_rows=0
+  while IFS= read -r gated_prefix; do
+    [[ -n "${gated_prefix}" ]] || continue
+    wrapped_rows=$((wrapped_rows + 1))
+    assert_hook_refuses_naming "every allow rule with arguments is refused a writing redirection behind noglob: noglob ${gated_prefix} >out" \
+      "noglob ${gated_prefix} >out" 'output redirection'
+    assert_hook_refuses_naming "every allow rule with arguments is refused behind xargs: xargs ${gated_prefix}" \
+      "xargs ${gated_prefix}" 'xargs adds the words'
+  done < <(jq -r '.permissions.allow[]? | select(startswith("Bash(") and endswith("*)")) | .[5:-2] | sub(" $"; "")' "${CLAUDE_SETTINGS}")
+  if ((wrapped_rows > gated_rows)); then
+    pass "the noglob and xargs rows reach git's allow rows as well as the others (${wrapped_rows})"
+  else
+    fail "the noglob and xargs rows reach git's allow rows as well as the others" \
+      "found ${wrapped_rows} Bash(...*) rows in all against ${gated_rows} without git's"
+  fi
   # Every operator that opens a path, in every position bash accepts it: after
   # the command, before its name, after an assignment or `time`, carried
   # across a `$(...)` in the same command, and on the longer last word the
@@ -2473,6 +2495,11 @@ if ((settings_readable)); then
   # corpus group below holds it as a refused row, because `env -i
   # GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD` is the same shape with a
   # variable that runs a program (issue #333).
+  # `xargs -I{} git diff {} < list` stood here too, on the reading that
+  # xargs is one more wrapper to step over. It is not: xargs adds operands
+  # from standard input that the string never holds, and the allow row
+  # matches `xargs git diff*` as readily as `git diff*`, so the corpus below
+  # holds it as a refused row.
   # shellcheck disable=SC2016 # literal $x, $HOME and backticks are the point
   for name_command in \
     'git status; git diff HEAD@{1}' \
@@ -2487,7 +2514,6 @@ if ((settings_readable)); then
     'env -u X git diff HEAD' \
     'timeout 60 git diff HEAD' \
     'git status; timeout -s KILL 5 git diff HEAD' \
-    'xargs -I{} git diff {} < list' \
     'command -v shellcheck' \
     "find . -name '*.sh'"; do
     assert_hook_permits "a literal command name is unprompted: ${name_command}" \
@@ -3249,6 +3275,49 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' allowed '' \
     'the wrapper option that removes a variable adds nothing to the environment' \
     'env -u X git diff HEAD'
+  # Two wrappers the permission layer sees past, which this hook read wrongly.
+  # `noglob` was missing from the wrapper list, so it was read as the name
+  # and the command behind it was never reached. `xargs` was stepped over,
+  # which is not enough: it appends operands read from standard input (or
+  # from the file -a names) that the string never holds, and Claude Code
+  # matches `xargs <row>` against every allow row ending in `*`. The first
+  # xargs row is demonstrated below.
+  corpus_row 'command name' refused 'xargs adds the words' \
+    'xargs hands git both operands of the plain-file read from its standard input, and nothing after git diff is there to count' \
+    "printf '%s\n' /dev/null ./cosign.key | xargs git diff"
+  corpus_row 'command name' refused 'xargs adds the words' \
+    'the operands come from a file the redirection names, which is not an operand either' \
+    'xargs git diff <list.txt'
+  corpus_row 'command name' refused 'xargs adds the words' \
+    "xargs's own -a reads the operands from a file with no redirection at all" \
+    'xargs -a list.txt git diff'
+  corpus_row 'command name' refused 'xargs adds the words' \
+    'xargs is refused wherever it stands in the wrapper chain, not only as the first word' \
+    'timeout 5 xargs git diff'
+  corpus_row 'command name' refused 'xargs adds the words' \
+    'the replace string puts each line where {} stands; this row was once listed as permitted' \
+    'xargs -I{} git diff {} < list'
+  corpus_row 'command name' refused 'xargs adds the words' \
+    'the other allow-listed command that prints what it is pointed at, fed the path on stdin' \
+    "printf '%s\n' ./.env | xargs shellcheck"
+  corpus_row 'command name' refused 'output redirection' \
+    "noglob is a wrapper Claude Code steps over; read as the name, it hid the allow-listed podman ps behind it" \
+    'noglob podman ps >out'
+  corpus_row 'command name' refused 'output redirection' \
+    'the same with the redirection written before the name, which is carried to a git that noglob no longer hides' \
+    '>cosign.pub noglob git diff HEAD'
+  corpus_row 'command name' allowed '' \
+    'xargs in front of a command no allow rule covers matches no allow row and prompts on its own' \
+    'git diff --name-only | xargs echo'
+  corpus_row 'command name' allowed '' \
+    'xargs as a word of git is a pattern, not a wrapper' \
+    'git log --grep=xargs -1'
+  corpus_row 'command name' allowed '' \
+    'the same xargs, feeding a command that opens only what git listed and matches no allow row' \
+    'git ls-files | xargs wc -l'
+  corpus_row 'command name' allowed '' \
+    'noglob is stepped over like the other wrappers, and the diff behind it is an ordinary one' \
+    'noglob git diff HEAD'
 
   # --- 5. an option that loads or writes -----------------------------------
   corpus_row options refused 'git global option' \
@@ -3442,6 +3511,18 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     git difftool --no-prompt --extcmd="${corpus_repo}/external-diff" HEAD 2>/dev/null </dev/null)"
   corpus_glob_out="$(cd "${corpus_repo}/repo" && bash --norc --noprofile -c \
     "git diff '${corpus_repo}'/secrets/*" 2>/dev/null)"
+  # xargs, which hands git operands the string never holds: the corpus row's
+  # own spelling, run against a stand-in cosign.pub in the throwaway
+  # checkout, prints that file as a plain-file diff with no path after
+  # `git diff`. And noglob, which bash does not have: bash opens the
+  # redirection's target before it finds no command to run, so the file is
+  # emptied all the same.
+  printf 'STAND-IN-XARGS-OPERAND\n' >"${corpus_repo}/repo/cosign.pub"
+  corpus_xargs_out="$(cd "${corpus_repo}/repo" && bash --norc --noprofile -c \
+    "printf '%s\n' /dev/null ./cosign.pub | xargs git diff" 2>/dev/null </dev/null)"
+  printf 'ORIGINAL-CONTENT\n' >"${corpus_repo}/victim"
+  (cd "${corpus_repo}" && bash --norc --noprofile -c 'noglob podman ps >victim' >/dev/null 2>&1 </dev/null)
+  corpus_noglob_written="$(cat "${corpus_repo}/victim" 2>/dev/null)"
   rm -rf "${corpus_repo}"
 
   for corpus_demo in "an assignment in front of git:${corpus_env_out}" \
@@ -3460,6 +3541,18 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   else
     fail "bash really turns one globbed word into the two operands git prints as a plain-file diff" \
       "git printed nothing for the expanded glob; the glob rule may be more than is needed"
+  fi
+  if grep -q '^+STAND-IN-XARGS-OPERAND$' <<<"${corpus_xargs_out}"; then
+    pass "xargs really hands git the plain-file operands from standard input, so git diff prints a file the string never names"
+  else
+    fail "xargs really hands git the plain-file operands from standard input, so git diff prints a file the string never names" \
+      "git printed no line of the stand-in file; re-derive why xargs in front of git is refused"
+  fi
+  if [[ "${corpus_noglob_written}" != *ORIGINAL-CONTENT* ]]; then
+    pass "bash opens the target of a redirection behind noglob before it finds no noglob to run"
+  else
+    fail "bash opens the target of a redirection behind noglob before it finds no noglob to run" \
+      "the file kept its contents; re-derive why a redirection behind noglob is refused"
   fi
 
   # Mutation check, which the issue asks for directly: disabling each rule
@@ -3533,6 +3626,14 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     '[[ "${word}" == timeout ]] && wrapper_positional_pending=1' \
     'false && wrapper_positional_pending=1' \
     'timeout 60 GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  mutation_row 'the xargs refusal in front of git or an allow-listed command' \
+    '((cmd_xargs && (cmd_gated || cmd_git))) && refuse "${XARGS_MSG}"' \
+    '((cmd_xargs && (cmd_gated || cmd_git))) && true' \
+    "printf '%s\n' /dev/null ./cosign.key | xargs git diff"
+  mutation_row 'noglob in the wrapper list' \
+    'nohup | noglob | nice' \
+    'nohup | nice' \
+    'noglob podman ps >out'
   }
   mutation_table
 
