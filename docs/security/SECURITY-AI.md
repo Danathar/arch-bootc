@@ -275,14 +275,22 @@ must be described as such.
   the plain-file read. A command name built by an expansion, a brace bash
   would expand (`{,git}`), or a glob (`g?t`, `/usr/bin/g[i]t`) is refused
   wherever it stands in the string — every word after a wrapper such as
-  `command`, `env` or `timeout` included — while `FOO=bar git diff HEAD`
-  names git and is left alone, a literal path to git (`/usr/bin/git diff`) is
-  read as git, and `env -S`, which splits a quoted string into a command the
-  hook never sees as words, is refused outright.
+  `command`, `env`, `timeout` or `noglob` included — while `FOO=bar git diff
+  HEAD` names git and is left alone, a literal path to git (`/usr/bin/git
+  diff`) is read as git, and `env -S`, which splits a quoted string into a
+  command the hook never sees as words, is refused outright. The wrappers the
+  hook steps over to find the name have to include every one Claude Code
+  itself strips before it matches an allow row — 2.1.267 strips `time`,
+  `nohup`, `timeout`, `nice`, `stdbuf`, `env`, `command`, `builtin` and
+  `noglob` — and `noglob` was missing: `noglob podman ps >out` matched
+  `Bash(podman ps*)`, the hook read `noglob` as the command, and the
+  redirection went through. Bash has no `noglob`, but it opens the target
+  before it finds that out, so the file was emptied anyway; under zsh the
+  command runs as well.
 
 - **Nothing that decides what a command does has to be written in the
   command.** That is the whole of issue #333, and it is the shape five
-  repositories fixed one spelling at a time. Three reaches sit outside the
+  repositories fixed one spelling at a time. Four reaches sit outside the
   prefix an allow rule matches.
 
   *An environment assignment.* `GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD`
@@ -322,6 +330,26 @@ must be described as such.
   stepped over so the subcommand behind them is found. A `-c` *after* the
   subcommand is git's combined-diff flag and is unaffected.
 
+  *Operands the command string does not hold.* `xargs` appends the words it
+  reads from standard input, or from the file its `-a` option names, to the
+  command it runs. So `printf '%s\n' /dev/null ./cosign.key | xargs git diff`
+  hands git both operands of the plain-file read while nothing after
+  `git diff` is there for the operand scan to count, and `printf '%s\n'
+  ./.env | xargs shellcheck` prints the file back the way `shellcheck ./.env`
+  does. The allow rules do not stop it: Claude Code 2.1.267 matches
+  `xargs <row>` against every allow row ending in `*`, which is all of them
+  here except the exact ones, so the string runs unprompted. An earlier
+  version of the hook stepped over `xargs` like any other wrapper, which
+  found the name and checked none of the operands. The hook now refuses
+  `xargs` in front of git or one of the allow-listed commands, wherever it
+  stands among the wrappers (`timeout 5 xargs git diff`, `nice xargs
+  shellcheck`, `xargs -a list.txt git diff`). `xargs` in front of a command
+  no allow row covers — `git diff --name-only | xargs echo`, `git ls-files
+  | xargs wc -l` — matches no allow row, prompts on its own, and is left
+  alone. Because `xargs`'s own options are not all modelled, any word after
+  it may be the command it runs, so `git ls-files | xargs grep -l git` is
+  refused too.
+
   *A subcommand the allow rule covers without naming it.* `Bash(git diff*)`
   matches by prefix, so it matches `git difftool` as readily as `git diff`,
   and `git difftool --no-prompt --extcmd=/tmp/evil HEAD~1 HEAD` — or `-x`, the
@@ -355,8 +383,12 @@ must be described as such.
   disables each of these rules in a copy of the hook and requires a row to
   stop being refused, and throwaway fixtures show git actually executing a
   program named by `GIT_EXTERNAL_DIFF`, by an `export`, by
-  `-c diff.external` and by `git difftool --extcmd`, and actually printing two
-  files a single globbed word expanded to.
+  `-c diff.external` and by `git difftool --extcmd`, actually printing two
+  files a single globbed word expanded to, actually printing a file whose path
+  `xargs` read from standard input, and actually emptying the target of a
+  redirection behind `noglob`. The `noglob` and `xargs` refusals are also
+  asserted against every allow row ending in `*`, derived from
+  `.claude/settings.json`, so a row added there is covered behind both.
 
   `tests/check-invariants.sh` extracts the hook with `jq` and **runs** it — on
   the flag orderings a prefix rule would miss, on the flagless, requoted, and
