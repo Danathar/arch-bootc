@@ -3318,6 +3318,32 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' allowed '' \
     'noglob is stepped over like the other wrappers, and the diff behind it is an ordinary one' \
     'noglob git diff HEAD'
+  # A wrapper spelled as a literal path is that wrapper, as a literal path to
+  # git is git. Compared on the whole word, `/usr/bin/xargs` was read as the
+  # name, so the command behind it reached no scan (review on
+  # zfs-kinoite-complex#235). The match runs after the literal-name test, so
+  # a path built at runtime is still refused as a name.
+  corpus_row 'command name' refused 'xargs adds the words' \
+    'read as the name, /usr/bin/xargs hid the git behind it from every scan while bash ran xargs all the same' \
+    'git status; /usr/bin/xargs git diff'
+  corpus_row 'command name' refused 'output redirection' \
+    'the same for every wrapper: the gated prefix starts at the word the wrapper runs' \
+    '/usr/bin/timeout 5 shellcheck tests/run-tests.sh >out'
+  corpus_row 'command name' refused 'output redirection' \
+    'noglob by path is noglob' \
+    '/usr/bin/noglob podman ps >out'
+  corpus_row 'command name' refused 'assignment before an allow-listed command' \
+    'env by path puts the variable in git'"'"'s environment exactly as env does' \
+    '/usr/bin/env GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  corpus_row 'command name' refused 'env -S' \
+    'env by path still splits its quoted string into a command this gate never sees as words' \
+    "/usr/bin/env -S 'git diff /dev/null ./cosign.key'"
+  corpus_row 'command name' refused 'Spell every command name literally' \
+    'a wrapper is matched by path only once the word is literal; $D/env runs whatever $D holds' \
+    'git status; $D/env git diff HEAD'
+  corpus_row 'command name' allowed '' \
+    'a literal path to a wrapper is stepped over like the wrapper, and the diff behind it is an ordinary one' \
+    '/usr/bin/timeout 60 git diff HEAD'
 
   # --- 5. an option that loads or writes -----------------------------------
   corpus_row options refused 'git global option' \
@@ -3623,7 +3649,7 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     'false && wrapper_value_pending=1' \
     'timeout -s TERM 60 GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   mutation_row "consuming timeout's own mandatory DURATION operand" \
-    '[[ "${word}" == timeout ]] && wrapper_positional_pending=1' \
+    '[[ "${wrapper_name}" == timeout ]] && wrapper_positional_pending=1' \
     'false && wrapper_positional_pending=1' \
     'timeout 60 GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   mutation_row 'the xargs refusal in front of git or an allow-listed command' \
@@ -3634,6 +3660,10 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     'nohup | noglob | nice' \
     'nohup | nice' \
     'noglob podman ps >out'
+  mutation_row 'a literal path to a wrapper read as that wrapper' \
+    'case "${word##*/}" in' \
+    'case "${word}" in' \
+    'git status; /usr/bin/xargs git diff'
   }
   mutation_table
 

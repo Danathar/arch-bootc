@@ -286,7 +286,14 @@ must be described as such.
   `Bash(podman ps*)`, the hook read `noglob` as the command, and the
   redirection went through. Bash has no `noglob`, but it opens the target
   before it finds that out, so the file was emptied anyway; under zsh the
-  command runs as well.
+  command runs as well. A wrapper written as a literal path is that wrapper,
+  as a literal path to git is git: compared on the whole word,
+  `git status; /usr/bin/xargs git diff` read `/usr/bin/xargs` as the name,
+  so the git behind it reached no scan while Bash ran xargs all the same,
+  and `/usr/bin/env GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD` and
+  `/usr/bin/env -S '...'` passed the same way. The wrapper is matched on its
+  last path component only after the literal-name test, so `$D/env` is
+  still refused as a name built at runtime.
 
 - **Nothing that decides what a command does has to be written in the
   command.** That is the whole of issue #333, and it is the shape five

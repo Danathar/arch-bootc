@@ -603,14 +603,15 @@ end_word
 # themselves), or a brace bash would expand is refused, and so is an
 # unquoted backtick opening there, whose output would be the name. A
 # literal name whose last path component is `git` is rewritten to `git`, so
-# `/usr/bin/git diff` opens every scope that `git diff` does. A
-# redirection's target is never the name. One wrapper option is modelled,
-# because it is not an option but an interpreter: `env -S 'git diff
-# /dev/null ./cosign.key'` (GNU and uutils `--split-string`) splits its
-# quoted string into a command this scan never sees as words, so any `-S`,
-# clustered (`-iS`) or long, after `env` is refused outright. `sh -c ...`
-# and `eval` remain the interpreters the header says this hook does not see
-# behind.
+# `/usr/bin/git diff` opens every scope that `git diff` does, and one whose
+# last component is a wrapper is that wrapper (`/usr/bin/xargs`,
+# `/usr/bin/env`). A redirection's target is never the name. One wrapper
+# option is modelled, because it is not an option but an interpreter:
+# `env -S 'git diff /dev/null ./cosign.key'` (GNU and uutils
+# `--split-string`) splits its quoted string into a command this scan never
+# sees as words, so any `-S`, clustered (`-iS`) or long, after `env` is
+# refused outright. `sh -c ...` and `eval` remain the interpreters the
+# header says this hook does not see behind.
 #
 # The wrapper list has to hold every wrapper the permission layer steps over
 # before it matches an allow row, and Claude Code 2.1.267 strips `time`,
@@ -772,13 +773,6 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   '{' | '}' | '!' | if | then | else | elif | fi | do | done | while | until | coproc)
     continue # a keyword; the name is still to come
     ;;
-  command | builtin | exec | env | nohup | noglob | nice | xargs | timeout | stdbuf | sudo | doas)
-    after_wrapper=1
-    wrapper_name="${word}"
-    [[ "${word}" == timeout ]] && wrapper_positional_pending=1
-    [[ "${word}" == xargs ]] && xargs_wrappers[idx]=1
-    continue
-    ;;
   *) ;;
   esac
   if [[ "${wrapper_name}" == env ]] &&
@@ -791,6 +785,25 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
     { [[ "${raw_word}" == *'['* ]] && [[ "${word}" != '[' && "${word}" != '[[' ]]; }; then
     refuse "${CMD_MSG}"
   fi
+  # A wrapper, matched on its last path component once the word is known to
+  # be literal: a literal path to a wrapper is that wrapper, as a literal path
+  # to git is git below. Matched on the whole word, `git status;
+  # /usr/bin/xargs git diff` read `/usr/bin/xargs` as the name, so the git
+  # behind it reached no scan and the xargs refusal never fired, while bash
+  # ran xargs all the same; `/usr/bin/env GIT_EXTERNAL_DIFF=/tmp/evil git
+  # diff HEAD` and `/usr/bin/env -S '...'` went through the same way (review
+  # on zfs-kinoite-complex#235). Checked after the literal test, so `$D/env`
+  # is still refused as a name built at runtime rather than stepped over.
+  case "${word##*/}" in
+  command | builtin | exec | env | nohup | noglob | nice | xargs | timeout | stdbuf | sudo | doas)
+    after_wrapper=1
+    wrapper_name="${word##*/}"
+    [[ "${wrapper_name}" == timeout ]] && wrapper_positional_pending=1
+    [[ "${wrapper_name}" == xargs ]] && xargs_wrappers[idx]=1
+    continue
+    ;;
+  *) ;;
+  esac
   if [[ "${word}" == */git ]]; then
     words[idx]=git
     raw_words[idx]=git
