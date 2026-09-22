@@ -667,7 +667,10 @@ wrapper_option_takes_value() {
 
 # The wrappers this scan steps over to find the name, by the name bash would
 # run. `time` is here for its path spellings only: the bare word is bash's
-# keyword and is read above that.
+# keyword and is read above that, while `/usr/bin/time` is the external
+# program, which runs its arguments like any wrapper here, so
+# `/usr/bin/time shellcheck tests/run-tests.sh >cosign.pub` is shellcheck's
+# redirection (review on #339); its `-p` is an option like any other.
 is_wrapper() {
   case "$1" in
   command | builtin | exec | env | nohup | noglob | nice | xargs | timeout | stdbuf | sudo | doas | time) return 0 ;;

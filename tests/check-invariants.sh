@@ -3356,6 +3356,12 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' refused 'wrapper written as a path' \
     'the same in front of an allow-listed command other than git' \
     '/tmp/timeout 5 shellcheck tests/run-tests.sh'
+  corpus_row 'command name' refused 'output redirection' \
+    'an external time by path is a wrapper like the others, not a name: the redirection is shellcheck'"'"'s (review on #339)' \
+    '/usr/bin/time shellcheck tests/run-tests.sh >cosign.pub'
+  corpus_row 'command name' refused 'bash -n' \
+    'the same with time'"'"'s own -p in front of the linter it runs' \
+    '/usr/bin/time -p bash -n +n -c x'
   # The command xargs runs is the first word after xargs's own options, read
   # the way GNU findutils and uutils read them, and the words after it are
   # its arguments; an option the two read differently, or one neither has,
@@ -3723,6 +3729,10 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     'xargs_state=0 # not an option this reads' \
     'continue # not an option this reads' \
     'xargs -J % git diff <list.txt'
+  mutation_row 'time by path read as a wrapper' \
+    'stdbuf | sudo | doas | time) return 0 ;;' \
+    'stdbuf | sudo | doas) return 0 ;;' \
+    '/usr/bin/time shellcheck tests/run-tests.sh >cosign.pub'
   }
   mutation_table
 
