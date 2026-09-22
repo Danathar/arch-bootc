@@ -2467,6 +2467,12 @@ if ((settings_readable)); then
     assert_hook_refuses_naming "the hook refuses env -S: ${name_command}" \
       "${name_command}" 'env -S'
   done
+  # `env -i PATH=$PATH git diff HEAD` used to stand in this list, on the
+  # reading that an assignment in front of a literal name is not a
+  # command-name problem. It is not, and it is an environment problem: the
+  # corpus group below holds it as a refused row, because `env -i
+  # GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD` is the same shape with a
+  # variable that runs a program (issue #333).
   # shellcheck disable=SC2016 # literal $x, $HOME and backticks are the point
   for name_command in \
     'git status; git diff HEAD@{1}' \
@@ -2478,7 +2484,6 @@ if ((settings_readable)); then
     'git status; [ -f cosign.pub ]' \
     'for f in $(ls); do echo $f; done' \
     'ls > out; git status' \
-    'env -i PATH=$PATH git diff HEAD' \
     'env -u X git diff HEAD' \
     'timeout 60 git diff HEAD' \
     'git status; timeout -s KILL 5 git diff HEAD' \
@@ -2563,8 +2568,12 @@ if ((settings_readable)); then
     'git -c core.pager=cat diff /dev/null ./cosign.key'
   assert_hook_refuses "the hook refuses the plain-file form behind --namespace" \
     'git --namespace ns diff /dev/null ./cosign.key'
+  # `-C` and `-c` are no longer stepped over: each reaches a primitive of its
+  # own from in front of the subcommand, so the refusal that fires first is
+  # the global-option one rather than `--output`'s. The corpus group below
+  # holds why (issue #333).
   assert_hook_refuses_naming "the hook refuses --output reached through git -C" \
-    'git -C /tmp diff --output=/tmp/written' '--output=FILE'
+    'git -C /tmp diff --output=/tmp/written' 'git global option'
 
   # Shell operators need no whitespace around them, and this scan splits on
   # whitespace. `git log -1 && (git log -p --output=cosign.pub -1)` tokenizes
@@ -2644,11 +2653,14 @@ if ((settings_readable)); then
   assert_hook_permits "an ordinary git read inside a subshell is still unprompted" \
     '(git log -p -1)'
   # Two-token git global options, now that the scan follows them: an ordinary
-  # diff behind one is still an ordinary diff.
-  assert_hook_permits "a two-revision diff behind git -C is still unprompted" \
-    'git -C . diff HEAD HEAD'
-  assert_hook_permits "git -c ... diff --stat is still unprompted" \
-    'git -c core.pager=cat diff --stat'
+  # diff behind one that only renames or relocates what git reports is still
+  # an ordinary diff. `-C` and `-c` are not in that set any more -- each loads
+  # a program or moves git out of the checkout, so both are refused, which the
+  # corpus group below records as a decision rather than as an accident.
+  assert_hook_permits "a two-revision diff behind --namespace is still unprompted" \
+    'git --namespace ns diff HEAD HEAD'
+  assert_hook_permits "git --work-tree ... diff --stat is still unprompted" \
+    'git --work-tree . diff --stat'
 
   # --- The other allow-listed command that opens a file it is pointed at ----
   #
@@ -2966,6 +2978,549 @@ if ((settings_readable)); then
     fail ".claude/hooks/gate-git-diff.sh exists and is executable" \
       "the settings entry names a hook that cannot run, so Bash calls go uninspected"
   fi
+
+  # -------------------------------------------------------------------------
+  group "The corpus of ways a command reaches a tool past an allow rule (#333)"
+
+  # Everything above grew one spelling at a time: an issue named a shape, a
+  # branch closed that shape, and the next issue found the next spelling. Six
+  # of the thirteen follow-up commits this lane pushed across six repositories
+  # between 2026-09-20 and 2026-09-22 were that shape. Issue #333 names the
+  # whole corpus once instead, and this group holds it as *data*: one row per
+  # shape, one loop driving them, so a spelling found in a sibling repository
+  # is a line here rather than a new test.
+  #
+  # Five families, which are the issue's own:
+  #
+  #   1. an environment assignment reaching the tool, in every spelling that
+  #      puts a variable there -- `NAME=`, `NAME+=`, through `env`, and the
+  #      `export` family, which bash applies to every *later* command so the
+  #      gated command carries no assignment at all;
+  #   2. a redirection, whose target is the shell's word and not the
+  #      command's;
+  #   3. a word bash rewrites before the tool sees it -- a brace, a leading
+  #      `~`, a glob, a substitution;
+  #   4. the word that names the command, which an expansion, a brace, a glob
+  #      or a wrapper can spell differently while reaching the same tool;
+  #   5. an option that loads a program or writes a path, per tool.
+  #
+  # The allowed rows are held as tightly as the refused ones on purpose. A
+  # gate that refuses ordinary work gets switched off, and "not decided" and
+  # "decided to allow" look identical from the outside unless the allowed row
+  # is written down with the reason it reaches nothing.
+  corpus_shape=()
+  corpus_decision=()
+  corpus_message=()
+  corpus_why=()
+  corpus_command=()
+  # shape, decision, a substring of the refusal (empty when allowed), why, command
+  corpus_row() {
+    corpus_shape+=("$1")
+    corpus_decision+=("$2")
+    corpus_message+=("$3")
+    corpus_why+=("$4")
+    corpus_command+=("$5")
+  }
+
+  # The rows quote shell spellings as literal text -- a `$`, a backtick or a
+  # `${VAR}` in a command is exactly what must reach the hook unexpanded -- so
+  # the table is a function with one directive rather than eighteen.
+  # shellcheck disable=SC2016
+  corpus_table() {
+  # --- 1. an environment assignment reaching the tool ----------------------
+  #
+  # None of these appear inside the string an allow rule matches, and each
+  # puts a variable in the command's environment. The refusal is every
+  # variable rather than a named list: the list would have to track git's
+  # whole environment surface and then ShellCheck's and then the loader's, and
+  # the name it forgets is the hole.
+  corpus_row environment refused 'assignment before an allow-listed command' \
+    'GIT_EXTERNAL_DIFF names a program git runs once per changed path; demonstrated below' \
+    'GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  corpus_row environment refused 'assignment before an allow-listed command' \
+    'appending to an unset variable creates it, so += is not a narrower case of =' \
+    'GIT_EXTERNAL_DIFF+=/tmp/evil git diff HEAD'
+  corpus_row environment refused 'assignment before an allow-listed command' \
+    'points git at another repository and index; two assignments, one command' \
+    'GIT_DIR=/tmp/x GIT_INDEX_FILE=/tmp/i git diff HEAD'
+  corpus_row environment refused 'assignment before an allow-listed command' \
+    'env puts it there without bash reading an assignment at all' \
+    'env GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  corpus_row environment refused 'assignment before an allow-listed command' \
+    "a wrapper's own option must not be read as the command's name" \
+    'env -i GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  corpus_row environment refused 'assignment before an allow-listed command' \
+    'env sets it although bash alone would read the quoted word as a command name' \
+    "env 'GIT_EXTERNAL_DIFF'=/tmp/evil git diff HEAD"
+  corpus_row environment refused 'env -S' \
+    'env -S splits a quoted string into a command this gate never sees as words' \
+    "env -S 'GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'"
+  corpus_row environment refused 'env -S' \
+    'the long spelling of the same interpreter' \
+    "env --split-string='GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'"
+  corpus_row environment refused 'an export in a string that also runs an allow-listed command' \
+    'bash applies an export to every later command, so the gated command carries no assignment' \
+    'export GIT_EXTERNAL_DIFF=/tmp/evil; git diff HEAD'
+  corpus_row environment refused 'an export in a string that also runs an allow-listed command' \
+    'the append operator, in the export spelling' \
+    'export GIT_EXTERNAL_DIFF+=/tmp/evil; git diff HEAD'
+  corpus_row environment refused 'an export in a string that also runs an allow-listed command' \
+    'declare -x exports; what decides is the -x, not the name of the builtin' \
+    'declare -x GIT_EXTERNAL_DIFF=/tmp/evil; git diff HEAD'
+  corpus_row environment refused 'an export in a string that also runs an allow-listed command' \
+    'typeset is declare under another name' \
+    'typeset -x GIT_EXTERNAL_DIFF=/tmp/evil; git diff HEAD'
+  corpus_row environment refused 'an export in a string that also runs an allow-listed command' \
+    'bash rejects readonly -x outright, and other shells do not; listing it costs nothing' \
+    'readonly -x GIT_EXTERNAL_DIFF=/tmp/evil; git diff HEAD'
+  corpus_row environment refused 'an export in a string that also runs an allow-listed command' \
+    'allexport turns an assignment that is its own command into an export' \
+    'set -a; GIT_EXTERNAL_DIFF=/tmp/evil; git diff HEAD'
+  corpus_row environment refused 'an export in a string that also runs an allow-listed command' \
+    'the long spelling of set -a' \
+    'set -o allexport; GIT_EXTERNAL_DIFF=/tmp/evil; git diff HEAD'
+  corpus_row environment refused 'an export in a string that also runs an allow-listed command' \
+    "nothing gated follows the export, and the next Bash call's git diff still runs it: the tool's shell outlives one call, which is why the rule is not ordered" \
+    'git status --short; export GIT_EXTERNAL_DIFF=/tmp/evil'
+  corpus_row environment refused 'assignment before an allow-listed command' \
+    'a newline is a command separator, so the second command is reached like any other' \
+    'git log -1
+GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  corpus_row environment refused 'assignment before an allow-listed command' \
+    'the loader reaches every one of these commands, not only the ones with variables of their own' \
+    'LD_PRELOAD=/tmp/evil.so shellcheck tests/run-tests.sh'
+  corpus_row environment refused 'assignment before an allow-listed command' \
+    'names a file for the inner bash to read before it parses anything' \
+    'BASH_ENV=/tmp/x bash -n tests/run-tests.sh'
+  corpus_row environment refused 'assignment before an allow-listed command' \
+    're-points podman at another configuration' \
+    'CONTAINERS_CONF=/tmp/x podman images'
+  corpus_row environment refused 'SHELLCHECK_OPTS=' \
+    'ShellCheck reads file operands out of its options too, and that message names the operand' \
+    'env SHELLCHECK_OPTS=/etc/shadow shellcheck tests/run-tests.sh'
+  corpus_row environment allowed '' \
+    'an assignment that is its own command sets a shell variable, not an environment one, so it reaches no child; set -a is the spelling that changes that, and it is a row above' \
+    'X=$(date); git diff HEAD'
+  corpus_row environment allowed '' \
+    'a bare declare exports nothing (verified against bash 5.2), so it reaches no child' \
+    'declare GIT_EXTERNAL_DIFF=/tmp/evil; git diff HEAD'
+  corpus_row environment allowed '' \
+    'readonly without -x exports nothing either; refusing it would refuse a reach that is not there' \
+    'readonly GIT_EXTERNAL_DIFF=/tmp/evil; git diff HEAD'
+  corpus_row environment allowed '' \
+    'the option that matters is -a; the rest of set changes nothing a child can see' \
+    'set -e; git diff HEAD'
+  corpus_row environment allowed '' \
+    'a string that runs nothing this gate covers matches no allow rule and prompts on its own' \
+    'export FOO=bar'
+  corpus_row environment allowed '' \
+    'the assignment reaches echo, which no allow rule covers and which opens nothing' \
+    'FOO=bar echo hi'
+
+  # --- 2. redirection ------------------------------------------------------
+  #
+  # Output opens a path for writing before the command runs. Input hands the
+  # tool a file, which matters for the one allow-listed command that prints
+  # back what it reads.
+  corpus_row redirection refused 'output redirection' \
+    'truncates the trust anchor before git starts' \
+    'git diff HEAD >cosign.pub'
+  corpus_row redirection refused 'output redirection' \
+    'bash lets the redirection precede the name; it is the same command' \
+    '>cosign.pub git diff HEAD'
+  corpus_row redirection refused 'output redirection' \
+    'read-write opens the path and creates it' \
+    'git diff HEAD <>cosign.pub'
+  corpus_row redirection refused 'output redirection' \
+    'the noclobber form writes wherever plain > would' \
+    'git show HEAD >| .claude/settings.json'
+  corpus_row redirection refused 'output redirection' \
+    'an allow row ending in * matches a command prefix while the redirection is the rest of the string' \
+    'shellcheck tests/run-tests.sh >cosign.pub'
+  corpus_row redirection refused 'output redirection' \
+    "a wrapper's own option must not be read as the name, or the gated prefix starts a word early and matches no allow row" \
+    'git status; env -i podman images >cosign.pub'
+  corpus_row redirection refused 'shellcheck reads standard input' \
+    'ShellCheck echoes the source line of what it is given on stdin, and the operand scan sees only the -' \
+    'shellcheck - < .env'
+  corpus_row redirection refused 'shellcheck reads standard input' \
+    'the same, written before the name, which bash attaches to the same simple command' \
+    '< .env shellcheck -'
+  corpus_row redirection refused '--no-index mode' \
+    "the stdin operand is how a file reaches git's plain-file mode; it counts as an operand" \
+    'git diff /etc/shadow -'
+  corpus_row redirection allowed '' \
+    'a descriptor form names no path, and a pipe opens none' \
+    'git diff HEAD 2>&1 | tail -5'
+  corpus_row redirection allowed '' \
+    'an input redirection opens nothing for writing, and git diff prints no stdin back' \
+    'git diff HEAD </dev/null'
+  corpus_row redirection allowed '' \
+    'nothing is printed back from /dev/null, and </dev/null is how a session says "no stdin"' \
+    'shellcheck tests/run-tests.sh </dev/null'
+  corpus_row redirection allowed '' \
+    "a redirection on another command of the string is that command's own" \
+    'echo x >out; git diff HEAD'
+
+  # --- 3. a word bash rewrites before the tool sees it ---------------------
+  corpus_row rewriting refused 'expands braces' \
+    'one word here, two operands at git' \
+    'git diff {/dev/null,./cosign.key}'
+  corpus_row rewriting refused 'unquoted leading ~' \
+    'an unquoted leading ~ is $HOME to bash and a directory inside the checkout to a scan' \
+    'git diff -- ~/.aws/credentials ~/.bashrc'
+  corpus_row rewriting refused 'expands a glob' \
+    'a glob is one word here and however many files match at git; two of them is the plain-file read, demonstrated below' \
+    'git diff ./cosign.*'
+  corpus_row rewriting refused 'expands a glob' \
+    'the deny rows name paths inside the checkout, so "a glob cannot leave the working directory" is no reason to expand it and check the result' \
+    'git diff /home/nonexistent-user/.ssh/*'
+  corpus_row rewriting refused 'expands a glob' \
+    '? and [ expand as readily as *' \
+    'git log --oneline -1 -- ./cosign.?ub'
+  corpus_row rewriting refused 'expands ANSI-C quotes and substitutions' \
+    'a substitution supplies operands the scan never counted' \
+    'git diff $(echo /dev/null) ./cosign.key'
+  corpus_row rewriting refused 'expands braces' \
+    'process substitution hands git a /dev/fd path as an operand' \
+    'git diff <(true) ./cosign.key'
+  corpus_row rewriting refused 'bash rewrites this word before shellcheck sees it' \
+    'one word here and the file to bash' \
+    'shellcheck .env*'
+  corpus_row rewriting allowed '' \
+    "a quoted glob is a literal to bash and git's own pathspec, matched against repository content rather than against the filesystem" \
+    "git diff -- '*.md'"
+  corpus_row rewriting allowed '' \
+    "a brace with no comma or .. inside it is a literal to bash, and this is git's revision syntax" \
+    'git diff HEAD@{1}'
+  corpus_row rewriting allowed '' \
+    "the rewriting rules are scoped to the words of a git invocation; this program is awk's" \
+    'git diff HEAD | awk '"'"'{print $1}'"'"''
+  corpus_row rewriting allowed '' \
+    'a glob in another command of the string is not a word git receives' \
+    'ls *.md; git status'
+
+  # --- 4. the word that names the command ----------------------------------
+  corpus_row 'command name' refused 'Spell every command name literally' \
+    'no scope opens at $G, and bash runs the plain-file read' \
+    'git status; G=git; $G diff /dev/null ./cosign.key'
+  corpus_row 'command name' refused 'Spell every command name literally' \
+    'bash drops the empty word of {,git} and runs git' \
+    'git status; {,git} diff /dev/null ./cosign.key'
+  corpus_row 'command name' refused 'Spell every command name literally' \
+    'pathname expansion resolves the name too' \
+    'git status; g?t diff /dev/null ./cosign.key'
+  corpus_row 'command name' refused '--no-index mode' \
+    'a literal path to git needs no expansion at all and is read as git' \
+    'git status; /usr/bin/git diff /dev/null ./cosign.key'
+  corpus_row 'command name' refused '--no-index mode' \
+    'a wrapper runs its arguments; the name is looked for at every word after it' \
+    'git status; command git diff /dev/null ./cosign.key'
+  corpus_row 'command name' refused '--no-index mode' \
+    'the same, with an option of the wrapper in between' \
+    'git status; nice -n 5 git diff /dev/null ./cosign.key'
+  corpus_row 'command name' refused 'shellcheck prints the source line' \
+    'a wrapper reaches the other allow-listed command that opens what it is pointed at' \
+    'git status; env -i shellcheck ./.env'
+  corpus_row 'command name' allowed '' \
+    'reading a path as git is what makes the refusals reach it; the ordinary command still runs' \
+    '/usr/bin/git diff HEAD'
+  corpus_row 'command name' allowed '' \
+    'a wrapper is not itself a reach: the name behind it is held to the literal test and this one is literal' \
+    'timeout 60 git diff HEAD'
+  corpus_row 'command name' allowed '' \
+    'the wrapper option that removes a variable adds nothing to the environment' \
+    'env -u X git diff HEAD'
+
+  # --- 5. an option that loads or writes -----------------------------------
+  corpus_row options refused 'git global option' \
+    'the config spelling of GIT_EXTERNAL_DIFF: it runs that program once per changed path, demonstrated below' \
+    'git status; git -c diff.external=/tmp/evil diff HEAD'
+  corpus_row options refused 'git global option' \
+    'git takes the value attached to the option as readily as after it' \
+    'git status; git -ccore.sshCommand=/tmp/evil diff HEAD'
+  corpus_row options refused 'git global option' \
+    'names an environment variable to take the config value from' \
+    'git status; git --config-env=core.pager=EV diff HEAD'
+  corpus_row options refused 'git global option' \
+    'moves git to another directory, so the containment test answers about a directory git has already left' \
+    'git status; git -C /home/nonexistent-user diff -- .netrc .profile'
+  corpus_row options refused 'git global option' \
+    'the value form of GIT_EXEC_PATH, which the environment rule refuses in every other spelling' \
+    'git status; git --exec-path=/tmp diff HEAD'
+  corpus_row options refused '--output=FILE' \
+    'writes the diff to a path instead of stdout, in every subcommand that generates one' \
+    'git log -p --output=cosign.pub -1'
+  corpus_row options refused 'bash -n' \
+    '+n turns noexec back off, so the linter runs what it was asked to parse' \
+    'bash -n +n -c "cat ./cosign.key"'
+  corpus_row options refused 'shellcheck prints the source line' \
+    'a value-taking option must be stepped over so the operand after it is still reached' \
+    'shellcheck -f gcc ./.env'
+  corpus_row options refused 'shellcheck prints the source line' \
+    '--rcfile is deliberately not stepped over, so its path is checked like any other operand' \
+    'shellcheck --rcfile /etc/shadow tests/run-tests.sh'
+  corpus_row options allowed '' \
+    "-c after the subcommand is git's combined-diff flag, not the config option" \
+    'git show -c HEAD'
+  corpus_row options allowed '' \
+    '--namespace, --super-prefix, --attr-source, --git-dir and --work-tree rename or relocate what git reports rather than loading a program, so they are stepped over and the subcommand behind them is still found' \
+    'git --namespace x diff -- cosign.pub LICENSE'
+  corpus_row options allowed '' \
+    'changes the marker character rather than the destination' \
+    'git log --output-indicator-new=% -1'
+  corpus_row options allowed '' \
+    'linting this repository own scripts is what the allow row exists for' \
+    'shellcheck tests/run-tests.sh tests/check-invariants.sh'
+  }
+  corpus_table
+
+  # Every row decides the way it says it does. This is the one loop the issue
+  # asks for: a new shape is a `corpus_row` line, not a new assertion.
+  for ((corpus_i = 0; corpus_i < ${#corpus_command[@]}; corpus_i++)); do
+    if [[ "${corpus_decision[corpus_i]}" == refused ]]; then
+      assert_hook_refuses_naming \
+        "corpus (${corpus_shape[corpus_i]}): ${corpus_command[corpus_i]}" \
+        "${corpus_command[corpus_i]}" "${corpus_message[corpus_i]}"
+    else
+      assert_hook_permits \
+        "corpus (${corpus_shape[corpus_i]}), allowed because ${corpus_why[corpus_i]}: ${corpus_command[corpus_i]}" \
+        "${corpus_command[corpus_i]}"
+    fi
+  done
+
+  # The table itself, so that it cannot quietly become a list of refusals or
+  # lose a family: an absent row and a passing row are the same colour on a
+  # dashboard.
+  corpus_table_ok=1
+  corpus_table_why=''
+  for corpus_family in environment redirection rewriting 'command name' options; do
+    corpus_rows=0
+    corpus_refusals=0
+    corpus_permits=0
+    for ((corpus_i = 0; corpus_i < ${#corpus_command[@]}; corpus_i++)); do
+      [[ "${corpus_shape[corpus_i]}" == "${corpus_family}" ]] || continue
+      ((corpus_rows++))
+      if [[ "${corpus_decision[corpus_i]}" == refused ]]; then
+        ((corpus_refusals++))
+      else
+        ((corpus_permits++))
+      fi
+    done
+    if ((corpus_rows < 4 || corpus_refusals == 0 || corpus_permits == 0)); then
+      corpus_table_ok=0
+      corpus_table_why+="${corpus_family} has ${corpus_rows} row(s), ${corpus_refusals} refused, ${corpus_permits} allowed; "
+    fi
+  done
+  for ((corpus_i = 0; corpus_i < ${#corpus_command[@]}; corpus_i++)); do
+    [[ -n "${corpus_why[corpus_i]}" ]] ||
+      { corpus_table_ok=0; corpus_table_why+="a row without a reason records no decision: ${corpus_command[corpus_i]}; "; }
+    if [[ "${corpus_decision[corpus_i]}" == refused ]]; then
+      [[ -n "${corpus_message[corpus_i]}" ]] ||
+        { corpus_table_ok=0; corpus_table_why+="a refused row that names no message cannot tell the refusals apart: ${corpus_command[corpus_i]}; "; }
+    else
+      [[ -z "${corpus_message[corpus_i]}" ]] ||
+        { corpus_table_ok=0; corpus_table_why+="an allowed row carries a refusal message: ${corpus_command[corpus_i]}; "; }
+    fi
+  done
+  if ((corpus_table_ok)); then
+    pass "the corpus covers all five families with both decisions in each (${#corpus_command[@]} rows)"
+  else
+    fail "the corpus covers all five families with both decisions in each (${#corpus_command[@]} rows)" \
+      "${corpus_table_why}"
+  fi
+
+  # Shapes of the corpus that no allow rule in this repository reaches.
+  # "Not reachable" is a decision like any other, and left as a comment it
+  # rots the first time somebody adds an allow row -- so each one is checked
+  # against the settings file rather than asserted in prose. Each entry is a
+  # command prefix that would have to become allow-listed for the shape to
+  # matter here.
+  unreachable_probe=()
+  unreachable_why=()
+  unreachable_row() {
+    unreachable_probe+=("$1")
+    unreachable_why+=("$2")
+  }
+  unreachable_row 'python3' \
+    "python's -c and -m, PYTHONPATH, PYTHONSTARTUP: no python interpreter is on the allow list, so any python invocation prompts"
+  unreachable_row 'pytest' \
+    "pytest's -p, -W, --pdbcls and --doctest-modules, and PYTEST_ADDOPTS: this repository's tests are plain bash and no pytest row exists"
+  unreachable_row 'cosign' \
+    "cosign --output-file truncates the path it names before verifying anything; cosign is not allow-listed here, so it prompts"
+  unreachable_row 'git fetch' \
+    "git's --upload-pack and --receive-pack are options of fetch, clone and push, none of which is allow-listed. Listed so an allow row for one is not a hole nobody noticed"
+  unreachable_row 'podman build' \
+    "podman's --volume, --privileged and the rest: podman build and podman run are in ask, never allow, so a human reads the whole command"
+  unreachable_row 'gh' \
+    'GH_HOST and GH_TOKEN send the token elsewhere; no gh row is on the allow list here'
+
+  mapfile -t allow_bash_prefixes < <(
+    jq -r '.permissions.allow[]? | select(startswith("Bash(")) | ltrimstr("Bash(") | rtrimstr(")") | rtrimstr("*")' \
+      "${CLAUDE_SETTINGS}"
+  )
+  if ((${#allow_bash_prefixes[@]} > 0)); then
+    pass "${CLAUDE_SETTINGS} still has Bash allow rules to check the unreachable shapes against"
+  else
+    fail "${CLAUDE_SETTINGS} still has Bash allow rules to check the unreachable shapes against" \
+      "no Bash(...) allow row parsed, so the unreachable rows below are asserted against nothing"
+  fi
+  for ((corpus_i = 0; corpus_i < ${#unreachable_probe[@]}; corpus_i++)); do
+    unreachable_hit=''
+    for allow_prefix in "${allow_bash_prefixes[@]+"${allow_bash_prefixes[@]}"}"; do
+      [[ -z "${allow_prefix}" ]] && continue
+      if [[ "${unreachable_probe[corpus_i]}" == "${allow_prefix}"* ||
+        "${allow_prefix}" == "${unreachable_probe[corpus_i]}"* ]]; then
+        unreachable_hit+="${allow_prefix} "
+      fi
+    done
+    if [[ -z "${unreachable_hit}" ]]; then
+      pass "the shape recorded as not reachable here is still not reachable: ${unreachable_probe[corpus_i]}"
+    else
+      fail "the shape recorded as not reachable here is still not reachable: ${unreachable_probe[corpus_i]}" \
+        "an allow rule now covers it (${unreachable_hit}), so the recorded decision is stale: ${unreachable_why[corpus_i]}"
+    fi
+  done
+
+  # The reaches the new rules exist for, run rather than reasoned about. A
+  # refusal asserted against a described exposure is a refusal that outlives
+  # the exposure; these build a throwaway repository and show git executing a
+  # program named by an environment variable, by a config option, and printing
+  # two files a single globbed word expanded to.
+  corpus_repo="$(mktemp -d)"
+  git -c init.defaultBranch=main init --quiet "${corpus_repo}/repo" >/dev/null 2>&1
+  printf 'one\n' >"${corpus_repo}/repo/tracked"
+  git -C "${corpus_repo}/repo" add tracked >/dev/null 2>&1
+  git -C "${corpus_repo}/repo" -c user.name=invariants \
+    -c user.email=invariants@example.invalid commit -q -m first >/dev/null 2>&1
+  printf 'two\n' >"${corpus_repo}/repo/tracked"
+  printf '#!/bin/sh\necho EXTERNAL-DIFF-RAN\n' >"${corpus_repo}/external-diff"
+  chmod +x "${corpus_repo}/external-diff"
+  mkdir -p "${corpus_repo}/secrets"
+  printf 'STAND-IN-NOT-A-SECRET\n' >"${corpus_repo}/secrets/id_rsa"
+  printf 'public\n' >"${corpus_repo}/secrets/id_rsa.pub"
+
+  corpus_env_out="$(cd "${corpus_repo}/repo" &&
+    GIT_EXTERNAL_DIFF="${corpus_repo}/external-diff" git diff HEAD 2>/dev/null)"
+  corpus_export_out="$(cd "${corpus_repo}/repo" && bash --norc --noprofile -c \
+    "export GIT_EXTERNAL_DIFF='${corpus_repo}/external-diff'; git diff HEAD" 2>/dev/null)"
+  corpus_config_out="$(cd "${corpus_repo}/repo" &&
+    git -c "diff.external=${corpus_repo}/external-diff" diff HEAD 2>/dev/null)"
+  corpus_glob_out="$(cd "${corpus_repo}/repo" && bash --norc --noprofile -c \
+    "git diff '${corpus_repo}'/secrets/*" 2>/dev/null)"
+  rm -rf "${corpus_repo}"
+
+  for corpus_demo in "an assignment in front of git:${corpus_env_out}" \
+    "an export in an earlier command:${corpus_export_out}" \
+    "git -c diff.external:${corpus_config_out}"; do
+    if [[ "${corpus_demo#*:}" == *EXTERNAL-DIFF-RAN* ]]; then
+      pass "git really runs a program named this way, so the refusal is not about nothing: ${corpus_demo%%:*}"
+    else
+      fail "git really runs a program named this way, so the refusal is not about nothing: ${corpus_demo%%:*}" \
+        "git printed no sign of the external driver; the rule may be more than is needed"
+    fi
+  done
+  if [[ "${corpus_glob_out}" == *STAND-IN-NOT-A-SECRET* ]]; then
+    pass "bash really turns one globbed word into the two operands git prints as a plain-file diff"
+  else
+    fail "bash really turns one globbed word into the two operands git prints as a plain-file diff" \
+      "git printed nothing for the expanded glob; the glob rule may be more than is needed"
+  fi
+
+  # Mutation check, which the issue asks for directly: disabling each rule
+  # this pass added must stop at least one row of the corpus being refused. A
+  # rule whose absence nothing notices is a rule this suite does not hold.
+  # Each entry is the line that carries the rule, what to replace it with, and
+  # the row that must go quiet.
+  mutation_label=()
+  mutation_before=()
+  mutation_after=()
+  mutation_witness=()
+  mutation_row() {
+    mutation_label+=("$1")
+    mutation_before+=("$2")
+    mutation_after+=("$3")
+    mutation_witness+=("$4")
+  }
+  # Each `before` is a line of the hook, quoted as it is written there, so the
+  # same directive applies here.
+  # shellcheck disable=SC2016
+  mutation_table() {
+  mutation_row 'the leading-assignment refusal on a git invocation' \
+    '((cmd_git && cmd_assign)) && refuse "${GATED_ENV_MSG}"' \
+    '((cmd_git && cmd_assign)) && true' \
+    'GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  mutation_row 'reading a literal git word anywhere in the command, not only as the name' \
+    '[[ "${words[idx]}" == git ]] && cmd_git=1' \
+    '[[ "${words[idx]}" == not-a-command-name ]] && cmd_git=1' \
+    'GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  mutation_row 'the += operator of an assignment' \
+    '=~ ^([A-Za-z_][A-Za-z0-9_]*)(\[[^]]*\])?\+?=' \
+    '=~ ^([A-Za-z_][A-Za-z0-9_]*)(\[[^]]*\])?=' \
+    'GIT_EXTERNAL_DIFF+=/tmp/evil git diff HEAD'
+  mutation_row 'reading an assignment with its quotes removed' \
+    'if ((cmd_named == 0)) && [[ "${words[idx]}" =~ ^([A-Za-z_]' \
+    'if ((cmd_named == 0)) && [[ "${raw_words[idx]}" =~ ^([A-Za-z_]' \
+    "env 'GIT_EXTERNAL_DIFF'=/tmp/evil git diff HEAD"
+  mutation_row "the search for a name past a wrapper's own options" \
+    'if ((after_wrapper)) && [[ "${word}" == -* ]]; then' \
+    'if ((after_wrapper)) && [[ "${word}" == -*-not-this-one ]]; then' \
+    'env -i GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+  mutation_row 'the export latch over the whole string' \
+    '((saw_gated && saw_export)) && refuse "${GATED_EXPORT_MSG}"' \
+    '((saw_gated && saw_export)) && true' \
+    'export GIT_EXTERNAL_DIFF=/tmp/evil; git diff HEAD'
+  mutation_row 'the -x option of declare, typeset, local and readonly' \
+    '    declare | typeset | local | readonly)' \
+    '    not-a-command-name)' \
+    'declare -x GIT_EXTERNAL_DIFF=/tmp/evil; git diff HEAD'
+  mutation_row 'set -a, which exports every assignment made after it' \
+    '[[ "${words[idx]}" == -*a* || "${words[idx]}" == allexport ]] && saw_export=1' \
+    'true' \
+    'set -a; GIT_EXTERNAL_DIFF=/tmp/evil; git diff HEAD'
+  mutation_row 'the glob refusal inside a git invocation' \
+    'refuse "${GLOB_MSG}"' \
+    ':' \
+    'git diff ./cosign.*'
+  mutation_row 'the git global options that load a program or relocate git' \
+    'refuse "${GIT_GLOBAL_MSG}"' \
+    ':' \
+    'git status; git -c diff.external=/tmp/evil diff HEAD'
+  }
+  mutation_table
+
+  mutation_source="$(cat .claude/hooks/gate-git-diff.sh)"
+  mutation_dir="$(mktemp -d)"
+  for ((corpus_i = 0; corpus_i < ${#mutation_label[@]}; corpus_i++)); do
+    # The line must still be there, spelled the way it is here: a mutation
+    # that names nothing silently stops testing anything.
+    mutation_count=0
+    mutation_rest="${mutation_source}"
+    while [[ "${mutation_rest}" == *"${mutation_before[corpus_i]}"* ]]; do
+      ((mutation_count++))
+      mutation_rest="${mutation_rest#*"${mutation_before[corpus_i]}"}"
+    done
+    if ((mutation_count != 1)); then
+      fail "the mutation for ${mutation_label[corpus_i]} names exactly one line of the hook" \
+        "it matched ${mutation_count} times, so disabling that rule no longer proves anything"
+      continue
+    fi
+    pass "the mutation for ${mutation_label[corpus_i]} names exactly one line of the hook"
+    printf '%s\n' "${mutation_source//"${mutation_before[corpus_i]}"/"${mutation_after[corpus_i]}"}" \
+      >"${mutation_dir}/gate.sh"
+    mutation_payload="$(jq -nc --arg c "${mutation_witness[corpus_i]}" \
+      '{tool_name: "Bash", tool_input: {command: $c}}')"
+    mutation_stderr="$(printf '%s' "${mutation_payload}" |
+      CLAUDE_PROJECT_DIR="${PWD}" bash "${mutation_dir}/gate.sh" 2>&1 >/dev/null)"
+    mutation_status=$?
+    if ((mutation_status == 0)); then
+      pass "disabling ${mutation_label[corpus_i]} stops a corpus row being refused"
+    else
+      fail "disabling ${mutation_label[corpus_i]} stops a corpus row being refused" \
+        "the hook still refused '${mutation_witness[corpus_i]}' with that rule gone (exit ${mutation_status}: ${mutation_stderr:0:120}); the row does not hold the rule"
+    fi
+  done
+  rm -rf "${mutation_dir}"
 
 fi
 

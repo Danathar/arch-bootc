@@ -280,6 +280,73 @@ must be described as such.
   read as git, and `env -S`, which splits a quoted string into a command the
   hook never sees as words, is refused outright.
 
+- **Nothing that decides what a command does has to be written in the
+  command.** That is the whole of issue #333, and it is the shape five
+  repositories fixed one spelling at a time. Three reaches sit outside the
+  prefix an allow rule matches.
+
+  *An environment assignment.* `GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD`
+  runs that program once per changed path with the blob contents as
+  arguments; `GIT_DIR` and `GIT_INDEX_FILE` point git at another repository,
+  `SHELLCHECK_OPTS` hands ShellCheck file operands the scan never sees, and
+  `LD_PRELOAD` reaches all of them. The hook refuses every spelling that puts
+  a variable there — `NAME=value`, `NAME+=value` (appending to an unset
+  variable creates it, so it is not a narrower case of the first), and the
+  same through `env`, `env -i` or a quoted name (`env 'NAME'=value cmd`,
+  which `env` sets although Bash alone would read that word as a command
+  name). It is every variable rather than a named list, because a list has to
+  track git's environment surface and then ShellCheck's and then the loader's,
+  and the name it forgets is the hole.
+
+  *An `export` in another command of the same string.* Bash applies it to
+  every later command, so the gated command carries no assignment for a
+  leading-assignment scan to find. The test is therefore the whole string, and
+  deliberately not an ordered one: `git status --short; export
+  GIT_EXTERNAL_DIFF=/tmp/evil` runs nothing gated after the export, matches
+  the allow row on its `git status` prefix, and is the same reach on the
+  *next* Bash call, because the tool's shell outlives one call. `export`,
+  `declare -x`, `typeset -x`, `local -x`, `readonly -x` and `set -a` are the
+  spellings refused. A bare `declare NAME=x` or `readonly NAME=x` exports
+  nothing — verified against bash 5.2 — and is not refused, and neither is an
+  export in a string that runs nothing this gate covers, which matches no
+  allow rule and prompts on its own.
+
+  *A git global option before the subcommand.* `-c diff.external=/tmp/evil`
+  is the config spelling of `GIT_EXTERNAL_DIFF` and runs that program once per
+  changed path; `--config-env` names an environment variable to take the value
+  from; `-C <dir>` moves git to another directory, so the containment test
+  answers about a directory git has already left; `--exec-path` is the value
+  form of `GIT_EXEC_PATH`. Those four are refused rather than stepped over.
+  `--git-dir`, `--work-tree`, `--namespace`, `--super-prefix` and
+  `--attr-source` only rename or relocate what git reports and are still
+  stepped over so the subcommand behind them is found. A `-c` *after* the
+  subcommand is git's combined-diff flag and is unaffected.
+
+- **A glob is one word here and however many files match at git.** Nothing in
+  `git diff ./cosign.*` looks like two operands, and Bash hands git two, which
+  is the plain-file read with the count hidden. "A glob cannot leave the
+  working directory" is no defence, because the deny rules name `./cosign.key`,
+  `./.env` and `**/*.pem`, all of them inside the checkout. An unquoted `*`,
+  `?` or `[` in a word of a git invocation is refused rather than expanded,
+  for the reason the brace rule gives. A quoted pathspec still works and is
+  the right spelling — `git diff -- '*.md'` is git's own glob, matched against
+  repository content rather than against the filesystem.
+
+  `tests/check-invariants.sh` holds all of this as a table rather than as
+  prose: each shape of the corpus is one row of `corpus_row` calls carrying a
+  command and the decision the hook must make about it — refused with the
+  message that must name it, or allowed with the reason it reaches nothing —
+  and one loop drives them, so a spelling found in a sibling repository is a
+  line rather than a new test. Shapes no allow rule here reaches (python,
+  pytest, cosign, `git fetch`, `podman build`, `gh`) are recorded as rows
+  checked against the allow list itself, so the decision fails loudly the
+  first time somebody adds a rule that reaches one. A mutation pass then
+  disables each of these rules in a copy of the hook and requires a row to
+  stop being refused, and throwaway fixtures show git actually executing a
+  program named by `GIT_EXTERNAL_DIFF`, by an `export`, and by
+  `-c diff.external`, and actually printing two files a single globbed word
+  expanded to.
+
   `tests/check-invariants.sh` extracts the hook with `jq` and **runs** it — on
   the flag orderings a prefix rule would miss, on the flagless, requoted, and
   behind-`--` forms, on `--output` across `git diff`, `git log` and `git show`,
