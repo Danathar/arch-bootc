@@ -15,7 +15,12 @@ validation.
 - Run `bash -n` and `shellcheck` for changed shell scripts.
 - Run `actionlint` and the pinned `zizmor` command for changed workflows when
   those tools are already available.
-- Run `./tests/run-tests.sh` for changes to shipped shell or the test harness.
+- Run `just test` for changes to shipped shell, to the test harness, or to
+  anything `AGENTS.md`, `docs/`, `.github/` or the `Containerfile` states as a
+  fact. It runs `./tests/check-coverage.sh` and `./tests/check-invariants.sh`,
+  which is what CI runs; `./tests/run-tests.sh` on its own enforces neither the
+  per-script coverage floors nor the repository invariants, so it can be green
+  against a tree CI fails.
 - Recheck `git status --short --branch` and make sure only intended paths changed.
 
 ## Separate consent gates
