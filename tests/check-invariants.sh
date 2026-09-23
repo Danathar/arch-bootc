@@ -3362,6 +3362,19 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' refused 'bash -n' \
     'the same with time'"'"'s own -p in front of the linter it runs' \
     '/usr/bin/time -p bash -n +n -c x'
+  # The step-over is decided on the word as typed (review on sensi#259). An
+  # unquoted backslash is removed by bash and kept by the matcher, which cuts
+  # the text at it: `/usr/bin\timeout` is `/usr/bintimeout` to bash, not
+  # found, and the redirection target is already truncated by then.
+  corpus_row 'command name' refused 'wrapper written as a path' \
+    'bash runs /usr/bintimeout, which is not found after the target is truncated, while the matcher steps over timeout' \
+    '/usr/bin\timeout 5 podman ps >out'
+  corpus_row 'command name' refused 'wrapper written as a path' \
+    'the same with no directory at all' \
+    'x\nohup podman ps >out'
+  corpus_row 'command name' refused 'wrapper written as a path' \
+    "a quoted backslash stays in the name bash looks up on PATH, and the matcher still cuts at it" \
+    "'\\nohup' git diff HEAD"
   # The command xargs runs is the first word after xargs's own options, read
   # the way GNU findutils and uutils read them, and the words after it are
   # its arguments; an option the two read differently, or one neither has,
@@ -3733,6 +3746,10 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     'stdbuf | sudo | doas | time) return 0 ;;' \
     'stdbuf | sudo | doas) return 0 ;;' \
     '/usr/bin/time shellcheck tests/run-tests.sh >cosign.pub'
+  mutation_row 'stepping over a wrapper only as typed, not as bash reads it' \
+    '    case "${raw_word}" in' \
+    '    case "${word}" in' \
+    "'\\nohup' git diff HEAD"
   }
   mutation_table
 

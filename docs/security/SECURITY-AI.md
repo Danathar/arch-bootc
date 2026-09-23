@@ -292,12 +292,17 @@ must be described as such.
   `git status; /usr/bin/xargs git diff` read `/usr/bin/xargs` as the name,
   so the git behind it reached no scan while Bash ran xargs all the same,
   and `/usr/bin/env GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD` and
-  `/usr/bin/env -S '...'` passed the same way. Only the bare name,
-  `/usr/bin/NAME` and `/bin/NAME` are stepped over. Any other path to a
-  wrapper — `./shim/nohup git diff HEAD`, `'./shim\nohup' git diff HEAD`,
-  `/tmp/timeout 5 shellcheck ...` — runs whatever file sits at that path
-  while the allow rule approved only the words after it, so it is refused
-  outright. The wrapper test runs after the literal-name test, so `$D/env`
+  `/usr/bin/env -S '...'` passed the same way. Only a word typed exactly as
+  the bare name, `/usr/bin/NAME` or `/bin/NAME` is stepped over. Any other
+  path to a wrapper — `./shim/nohup git diff HEAD`, `'./shim\nohup' git diff
+  HEAD`, `/tmp/timeout 5 shellcheck ...` — runs whatever file sits at that
+  path while the allow rule approved only the words after it, so it is
+  refused outright. The comparison is on the word as typed, because a
+  backslash is read one way by Bash and another by the matcher: an unquoted
+  `/usr/bin\timeout 5 podman ps >out` is `/usr/bintimeout` to Bash, which
+  is not found only after `out` has been truncated, and `timeout` to the
+  matcher. A quoted or escaped bare name (`'nohup'`, `\nohup`) is refused
+  with it. The wrapper test runs after the literal-name test, so `$D/env`
   is still refused as a name built at runtime.
 
 - **Nothing that decides what a command does has to be written in the

@@ -267,7 +267,7 @@ DIFFTOOL_MSG='blocked: `git difftool` runs a program of the caller'"'"'s choosin
 XARGS_MSG='blocked: xargs adds the words it reads from standard input (or from the file -a/--arg-file names) to the command it runs, so the operands git or the linter receive are not in this string and none of the operand tests here can check them: `printf "%s\n" /dev/null ./cosign.key | xargs git diff` hands git both operands of the plain-file read and prints the key with nothing after `git diff` for this gate to count, and `xargs shellcheck <list.txt` lints, and prints back, whatever list.txt names. The allow rules do not stop it either: Claude Code matches `xargs <prefix>` against an allow row ending in * as readily as `<prefix>` itself, so nothing prompts. xargs is therefore refused in front of git or an allow-listed command (shellcheck, bash -n, podman images, podman ps, findmnt, df -T), wherever it stands among the wrappers (`timeout 5 xargs git diff`, `nice xargs shellcheck`). Name the operands in the command itself instead. xargs in front of a command no allow rule covers (`git diff --name-only | xargs echo`) is unaffected: that string matches no allow row and prompts on its own.'
 
 # shellcheck disable=SC2016 # the backticks quote command spellings for the reader
-WRAPPER_PATH_MSG='blocked: a wrapper written as a path other than /usr/bin/NAME or /bin/NAME -- `./shim/nohup git diff HEAD`, `/tmp/timeout 5 shellcheck tests/run-tests.sh`, `'"'"'./shim\nohup'"'"' git diff HEAD` -- runs the file at that path, which can be anything, an agent-made file included. Claude Code reads the word as the wrapper its last path component names (it cuts a path at / and at \), steps over it, and matches the allow rule against the words after it, so nothing prompts for the file that actually runs. Write the wrapper by its bare name (nohup, timeout, xargs, env, ...), or as /usr/bin/NAME or /bin/NAME.'
+WRAPPER_PATH_MSG='blocked: a wrapper written as a path, or with a quote or a backslash in it, other than its bare name, /usr/bin/NAME or /bin/NAME -- `./shim/nohup git diff HEAD`, `/tmp/timeout 5 shellcheck tests/run-tests.sh`, `'"'"'./shim\nohup'"'"' git diff HEAD`, `/usr/bin\timeout 5 podman ps >out` -- runs something other than that wrapper: the file at that path, which can be anything, an agent-made file included, or, for `/usr/bin\timeout`, nothing at all once bash has already opened the redirection target. Claude Code reads the word as the wrapper its last path component names (it cuts the text at / and at \), steps over it, and matches the allow rule against the words after it, so nothing prompts. Write the wrapper by its bare name (nohup, timeout, xargs, env, ...), or as /usr/bin/NAME or /bin/NAME, with no quotes or backslashes.'
 
 OUT_MSG='blocked: git --output=FILE (and the space form) writes this diff or log to the path it names instead of stdout, overwriting any file this uid can reach -- cosign.pub, .claude/settings.json, this hook, ~/.ssh/authorized_keys -- with no Read(...) or Write(...) deny rule in its way. git diff, git log and git show print to stdout; read that instead. --output-indicator-* is a different flag and is unaffected.'
 
@@ -893,22 +893,29 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   # the words after it. Compared on the whole word, `git status;
   # /usr/bin/xargs git diff` read `/usr/bin/xargs` as the name, so the git
   # behind it reached no scan (review on zfs-kinoite-complex#235). The
-  # component is read from the word bash hands on and from the word with its
-  # quotes removed but its backslashes kept, since `'./shim\nohup'` is a
-  # file named `shim\nohup` to bash and `nohup` to the matcher.
+  # component is read from the word bash hands on, from the word with its
+  # quotes removed but its backslashes kept, and from the word as typed,
+  # since `'./shim\nohup'` is a file named `shim\nohup` to bash and `nohup`
+  # to the matcher, and an unquoted `/usr/bin\timeout` is `/usr/bintimeout`
+  # to bash -- not found, though bash has already opened any redirection
+  # target -- and `timeout` to the matcher (review on sensi#259).
   #
-  # Only the bare name, `/usr/bin/NAME` and `/bin/NAME` are stepped over.
-  # Any other path to a wrapper -- `./shim/nohup`, `/tmp/timeout`, an
-  # agent-made file -- runs the file at that path, which can be anything,
-  # while the allow rule approved only the words after it, so it is refused
-  # outright (review on atomic-image-builder#438). Checked after the literal
-  # test, so `$D/env` is still refused as a name built at runtime.
+  # Only a word typed exactly as the bare name, `/usr/bin/NAME` or
+  # `/bin/NAME` is stepped over, compared as typed so no quote or backslash
+  # can make bash and the matcher read it apart. Any other path to a wrapper
+  # -- `./shim/nohup`, `/tmp/timeout`, an agent-made file -- runs the file
+  # at that path, which can be anything, while the allow rule approved only
+  # the words after it, so it is refused outright (review on
+  # atomic-image-builder#438); a quoted or escaped bare name (`'nohup'`,
+  # `\nohup`) is refused with it, which costs nothing a session needs.
+  # Checked after the literal test, so `$D/env` is still refused as a name
+  # built at runtime.
   wrapper_base=''
-  for wrapper_spelling in "${word}" "${raw_word//[\'\"]/}"; do
+  for wrapper_spelling in "${word}" "${raw_word//[\'\"]/}" "${raw_word}"; do
     is_wrapper "${wrapper_spelling##*[/\\]}" && wrapper_base="${wrapper_spelling##*[/\\]}"
   done
   if [[ -n "${wrapper_base}" ]]; then
-    case "${word}" in
+    case "${raw_word}" in
     "${wrapper_base}" | "/usr/bin/${wrapper_base}" | "/bin/${wrapper_base}") ;;
     *) refuse "${WRAPPER_PATH_MSG}" ;;
     esac
