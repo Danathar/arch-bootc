@@ -8820,6 +8820,336 @@ fi
 fi
 
 # ---------------------------------------------------------------------------
+group "Always-on agent instructions (.cursor/rules/arch-bootc-safety.mdc and .claude/skills/validate-change/SKILL.md are pointers into this tree)"
+
+# Two files in this repository are read by a coding agent before it edits
+# anything here, and every claim in both is a pointer rather than prose: at an
+# AGENTS.md section, at a Justfile recipe, at a control in the Containerfile,
+# at a permission array in .claude/settings.json. A pointer can dangle with
+# nothing turning red, and one already had -- the skill told an agent to
+# validate with `./tests/run-tests.sh`, which enforces neither the per-script
+# coverage floors nor any assertion in this file, so following it exactly
+# produced a green local run and a red CI one.
+#
+# The join below is the same one tests/test-pr-review-state.sh makes for
+# .github/'s hand-written agent files. These two serve two other tools and were
+# never added to that set.
+AGENT_CURSOR_RULE=".cursor/rules/arch-bootc-safety.mdc"
+AGENT_SKILL=".claude/skills/validate-change/SKILL.md"
+AGENT_POLICY_DOC="AGENTS.md"
+AGENT_CONTRIB_DOC="CONTRIBUTING.md"
+AGENT_SETTINGS=".claude/settings.json"
+
+# Markdown wraps. A phrase that reads as one clause in the rendered file can be
+# split across two source lines -- `daily pacman cache bust` is, today -- so
+# every phrase match below runs against the whitespace-squashed file.
+agent_squash() {
+  tr '\n' ' ' <"$1" | tr -s '[:space:]' ' '
+}
+
+agent_files_present=1
+for agent_file in "${AGENT_CURSOR_RULE}" "${AGENT_SKILL}"; do
+  if git ls-files --error-unmatch -- "${agent_file}" >/dev/null 2>&1; then
+    pass "${agent_file} is committed"
+  else
+    fail "${agent_file} is committed" \
+      "the file an agent is loaded with is missing from the tree, so nothing below can be joined to it"
+    agent_files_present=0
+  fi
+done
+
+if ((agent_files_present)); then
+
+agent_skill_flat="$(agent_squash "${AGENT_SKILL}")"
+agent_rule_flat="$(agent_squash "${AGENT_CURSOR_RULE}")"
+
+# The rule is only load-bearing because Cursor reads it unprompted. If that
+# stops being true the rest of this section is about a file nobody opens.
+if grep -Eq '^alwaysApply:[[:space:]]*true[[:space:]]*$' "${AGENT_CURSOR_RULE}"; then
+  pass "${AGENT_CURSOR_RULE} still applies to every change (alwaysApply: true)"
+else
+  fail "${AGENT_CURSOR_RULE} still applies to every change (alwaysApply: true)" \
+    "the rule is no longer always-on, so an agent editing this repository may never see it"
+fi
+
+# --- The suite the skill names ---------------------------------------------
+#
+# The skill's "Always safe when relevant" list names one repository suite. That
+# name is expanded through the Justfile and compared to the ./tests/*.sh
+# commands .github/workflows/build.yml actually runs -- both directions, so
+# naming a command CI does not run fails as loudly as omitting one it does.
+# shellcheck disable=SC2016 # the backticks are Markdown, not a command substitution
+agent_skill_suite="$(grep -oE '^- Run `just [a-z-]+`' "${AGENT_SKILL}" | head -n 1 | grep -oE 'just [a-z-]+')"
+if [[ -z "${agent_skill_suite}" ]]; then
+  fail "${AGENT_SKILL} names a Justfile recipe as the repository suite to run" \
+    "no 'Run \`just <recipe>\`' bullet found; a raw script name skips whatever the recipe adds around it"
+else
+  pass "${AGENT_SKILL} names a Justfile recipe as the repository suite to run: ${agent_skill_suite}"
+
+  agent_recipe="${agent_skill_suite#just }"
+  agent_recipe_body="$(awk -v recipe="^${agent_recipe}:" '
+    $0 ~ recipe { inrecipe = 1; next }
+    inrecipe && /^[^[:space:]]/ { inrecipe = 0 }
+    inrecipe { print }
+  ' "${JUSTFILE}" | grep -Ev '^[[:space:]]*#')"
+
+  agent_recipe_cmds="$(grep -oE '\./tests/[a-z-]+\.sh' <<<"${agent_recipe_body}" | sort -u | tr '\n' ' ')"
+  # Every ./tests/*.sh command build.yml runs, taken from its `run:` lines.
+  agent_ci_cmds="$(grep -oE '^[[:space:]]*run:[[:space:]]*\./tests/[a-z-]+\.sh' "${BUILD_WORKFLOW}" \
+    | grep -oE '\./tests/[a-z-]+\.sh' | sort -u | tr '\n' ' ')"
+
+  if [[ -z "${agent_ci_cmds}" ]]; then
+    fail "${BUILD_WORKFLOW} still runs at least one ./tests/*.sh command directly" \
+      "nothing to compare the skill's suite against"
+  else
+    assert_equal "\`${agent_skill_suite}\` expands to exactly the ./tests/*.sh commands ${BUILD_WORKFLOW} runs" \
+      "${agent_recipe_cmds}" "${agent_ci_cmds}"
+  fi
+
+  # And that the skill says which commands those are, so a reader is told what
+  # the recipe costs rather than having to open the Justfile to find out.
+  for agent_ci_cmd in ${agent_ci_cmds}; do
+    if grep -Fq -- "\`${agent_ci_cmd}\`" <<<"${agent_skill_flat}"; then
+      pass "${AGENT_SKILL} names the command the suite runs: ${agent_ci_cmd}"
+    else
+      fail "${AGENT_SKILL} names the command the suite runs: ${agent_ci_cmd}" \
+        "the skill calls the suite always-safe without saying what it executes"
+    fi
+  done
+
+  # "Always safe" and "asks for a prompt" cannot both be true.
+  if jq -e --arg cmd "Bash(${agent_skill_suite})" \
+    '.permissions.allow | index($cmd) != null' "${AGENT_SETTINGS}" >/dev/null 2>&1; then
+    pass "${AGENT_SETTINGS} allows \`${agent_skill_suite}\` unprompted, matching the skill calling it always safe"
+  else
+    fail "${AGENT_SETTINGS} allows \`${agent_skill_suite}\` unprompted, matching the skill calling it always safe" \
+      "the skill lists a command under 'Always safe when relevant' that the permission file does not pre-approve"
+  fi
+fi
+
+# --- The gate the skill puts a prompt in front of ---------------------------
+#
+# `just lint` is the one repository recipe the skill holds behind consent, and
+# it gives a reason: sudo, and a disposable container. Both halves are checked
+# against the recipe body, so a recipe that stops doing either leaves the skill
+# explaining a cost that is no longer there -- and the permission file has to
+# agree that it prompts at all.
+if jq -e '.permissions.ask | index("Bash(just lint)") != null' "${AGENT_SETTINGS}" >/dev/null 2>&1; then
+  pass "${AGENT_SETTINGS} asks before \`just lint\`, matching the skill's separate consent gate"
+else
+  fail "${AGENT_SETTINGS} asks before \`just lint\`, matching the skill's separate consent gate" \
+    "the skill says to ask before a command the permission file no longer prompts for"
+fi
+
+agent_lint_body="$(awk '
+  /^lint:/ { inrecipe = 1; next }
+  inrecipe && /^[^[:space:]]/ { inrecipe = 0 }
+  inrecipe { print }
+' "${JUSTFILE}" | grep -Ev '^[[:space:]]*#')"
+
+# shellcheck disable=SC2016 # the backticks are the skill's Markdown around sudo
+if grep -Fq 'invokes `sudo`' <<<"${agent_skill_flat}"; then
+  if grep -Eq 'sudo ' <<<"${agent_lint_body}"; then
+    pass "the \`lint\` recipe still invokes sudo, which is the reason the skill gives for gating it"
+  else
+    fail "the \`lint\` recipe still invokes sudo, which is the reason the skill gives for gating it" \
+      "the skill asks for consent on a ground the recipe no longer has"
+  fi
+else
+  fail "${AGENT_SKILL} still states sudo as a reason to gate \`just lint\`" \
+    "the reason for the gate is gone from the skill, so the gate reads as arbitrary"
+fi
+
+if grep -Fq 'builds a disposable container' <<<"${agent_skill_flat}"; then
+  if grep -Eq 'build -q -t' <<<"${agent_lint_body}"; then
+    pass "the \`lint\` recipe still builds a disposable container, the skill's second reason for gating it"
+  else
+    fail "the \`lint\` recipe still builds a disposable container, the skill's second reason for gating it" \
+      "the skill asks for consent on a ground the recipe no longer has"
+  fi
+else
+  fail "${AGENT_SKILL} still states the disposable container as a reason to gate \`just lint\`" \
+    "the reason for the gate is gone from the skill, so the gate reads as arbitrary"
+fi
+
+# --- Every backticked token in the skill is a claim about something ----------
+#
+# Classified exhaustively rather than pattern-matched: a repository path must be
+# committed, a `just <recipe>` must exist in the Justfile, a privileged command
+# must be in .claude/settings.json's `ask` array, and a check must be one
+# AGENTS.md or CONTRIBUTING.md asks for. A token that is none of those is a new
+# kind of claim nothing has decided how to check, and it fails here rather than
+# being silently skipped -- which is how the run-tests.sh bullet survived.
+agent_classify_token() {
+  local token="$1"
+  local path="${token#./}"
+
+  if git ls-files --error-unmatch -- "${path}" >/dev/null 2>&1; then
+    printf 'committed path'
+    return
+  fi
+  if [[ "${path}" == */ ]] && [[ -n "$(git ls-files -- "${path}")" ]]; then
+    printf 'committed directory'
+    return
+  fi
+  if [[ "${token}" =~ ^just\ ([a-z-]+)$ ]] \
+    && grep -Eq "^${BASH_REMATCH[1]}[ :]" "${JUSTFILE}"; then
+    printf 'Justfile recipe'
+    return
+  fi
+  if jq -e --arg token "${token}" '
+    .permissions.ask
+    | map(select(. == "Bash(" + $token + ")"
+              or . == "Bash(" + $token + "*)"
+              or . == "Bash(" + $token + " *)"))
+    | length > 0' "${AGENT_SETTINGS}" >/dev/null 2>&1; then
+    printf 'gated privileged command'
+    return
+  fi
+  if grep -Fq -- "\`${token}\`" "${AGENT_POLICY_DOC}" \
+    || grep -Fq -- "\`${token}\`" "${AGENT_CONTRIB_DOC}"; then
+    printf 'check %s or %s asks for' "${AGENT_POLICY_DOC}" "${AGENT_CONTRIB_DOC}"
+    return
+  fi
+  printf 'unclassified'
+}
+
+# shellcheck disable=SC2016 # the backticks are the delimiter being searched for
+agent_skill_tokens="$(grep -oE '`[^`]+`' "${AGENT_SKILL}" | tr -d '`' | sort -u)"
+if [[ -z "${agent_skill_tokens}" ]]; then
+  fail "${AGENT_SKILL} still states its checks as backticked commands and paths" \
+    "no backticked token found, so the classification below would vacuously pass"
+else
+  while IFS= read -r agent_token; do
+    [[ -n "${agent_token}" ]] || continue
+    agent_token_class="$(agent_classify_token "${agent_token}")"
+    if [[ "${agent_token_class}" == "unclassified" ]]; then
+      fail "every backticked token in ${AGENT_SKILL} is a claim this file knows how to check: \`${agent_token}\`" \
+        "not a committed path, not a Justfile recipe, not in ${AGENT_SETTINGS}'s ask array, and not a check ${AGENT_POLICY_DOC} or ${AGENT_CONTRIB_DOC} names"
+    else
+      pass "\`${agent_token}\` in ${AGENT_SKILL} is a ${agent_token_class}"
+    fi
+  done <<<"${agent_skill_tokens}"
+fi
+
+# --- The rule's never-weaken list is joined to what implements it ------------
+#
+# assert_present strips full-line comments first, and that is the point here:
+# every one of these controls is described in a rationale comment using the
+# same words as the instruction that implements it, so a plain grep is
+# satisfied by the *explanation* of a control that has been deleted.
+agent_safeguards=(
+  # Each pattern names the instruction that *applies* the control, not the
+  # control's own spelling. The spelling appears more than once in the file --
+  # `pam_wheel.so use_uid` is in the sed that enables it and again in the grep
+  # that verifies the edit -- so a pattern matching the bare name is satisfied
+  # by the other occurrence and passes on a tree where the control was removed.
+  # Both of those were observed passing a weaker form of this list.
+  "root-login protections|${CONTAINERFILE}|printf 'PermitRootLogin prohibit-password\\\\n' > /etc/ssh/sshd_config\\.d/"
+  "root-login protections|${CONTAINERFILE}|s/\\^#auth.*use_uid/auth[[:space:]]+required[[:space:]]+pam_wheel\\.so use_uid/"
+  "root-login protections|${CONTAINERFILE}|is not active in \\\$\\{pamfile\\} after the edit"
+  "root-login protections|${CONTAINERFILE}|passwd --expire root"
+  "signature policy|${POLICY}|\"type\": \"sigstoreSigned\""
+  "signature policy|${CONTAINERFILE}|COPY cosign\\.pub"
+  "daily pacman cache bust|${CONTAINERFILE}|cache-bust \\\$\\{PACMAN_CACHE_BUST\\}"
+  "bootc provenance|${CONTAINERFILE}|\\\$\\{bootc_head\\}. != .\\\$\\{BOOTC_COMMIT\\}"
+  "systemd enablement rules|${CONTAINERFILE}|ln -sf /usr/lib/systemd/system/.*\\.wants/"
+)
+
+for agent_safeguard in "${agent_safeguards[@]}"; do
+  agent_phrase="${agent_safeguard%%|*}"
+  agent_rest="${agent_safeguard#*|}"
+  agent_sg_file="${agent_rest%%|*}"
+  agent_sg_pattern="${agent_rest#*|}"
+
+  if ! grep -Fq -- "${agent_phrase}" <<<"${agent_rule_flat}"; then
+    fail "${AGENT_CURSOR_RULE} still refuses to weaken: ${agent_phrase}" \
+      "the always-on rule no longer names it, so the safeguard is unguarded on the instruction side"
+    continue
+  fi
+  assert_present "the control behind the rule's \"${agent_phrase}\" is still present in ${agent_sg_file}: ${agent_sg_pattern}" \
+    "${agent_sg_file}" "${agent_sg_pattern}" \
+    "no active line in ${agent_sg_file} matches ${agent_sg_pattern}, so the rule protects something that is gone"
+done
+
+# --- Both directions on AGENTS.md's guardrail list ---------------------------
+#
+# The rule is a summary of AGENTS.md's "Repository-specific correctness
+# guardrails". The subsections are read out of the document rather than listed
+# here, so a seventh guardrail fails until the always-on rule learns about it,
+# and deleting one from AGENTS.md fails while the rule still claims it.
+agent_guardrail_phrase() {
+  # shellcheck disable=SC2016 # the backticks below are the rule's Markdown around Containerfile
+  case "$1" in
+  "The comments are part of the product") printf 'rationale comments in `Containerfile`' ;;
+  "Do not weaken the image's security model") printf 'root-login protections' ;;
+  "Package freshness and the build cache") printf 'pacman cache bust' ;;
+  "bootc provenance") printf 'bootc provenance' ;;
+  "Service enablement policy") printf 'systemd enablement rules' ;;
+  "Flavors are separate paths") printf 'Validate each affected flavor independently' ;;
+  *) printf '' ;;
+  esac
+}
+
+agent_guardrails="$(awk '
+  /^## Repository-specific correctness guardrails/ { inguardrails = 1; next }
+  inguardrails && /^## / { inguardrails = 0 }
+  inguardrails && /^### / { sub(/^### /, ""); print }
+' "${AGENT_POLICY_DOC}")"
+
+if [[ -z "${agent_guardrails}" ]]; then
+  fail "${AGENT_POLICY_DOC} still has a 'Repository-specific correctness guardrails' section with subsections" \
+    "nothing to compare the always-on rule against"
+else
+  agent_seen_guardrails=""
+  while IFS= read -r agent_guardrail; do
+    [[ -n "${agent_guardrail}" ]] || continue
+    agent_seen_guardrails+="${agent_guardrail}"$'\n'
+    agent_expected_phrase="$(agent_guardrail_phrase "${agent_guardrail}")"
+    if [[ -z "${agent_expected_phrase}" ]]; then
+      fail "${AGENT_CURSOR_RULE} covers every guardrail ${AGENT_POLICY_DOC} states: ${agent_guardrail}" \
+        "this guardrail is new here; add the phrase the always-on rule carries it under, or the rule summarises a policy it does not cover"
+    elif grep -Fq -- "${agent_expected_phrase}" <<<"${agent_rule_flat}"; then
+      pass "${AGENT_CURSOR_RULE} covers ${AGENT_POLICY_DOC}'s guardrail: ${agent_guardrail}"
+    else
+      fail "${AGENT_CURSOR_RULE} covers ${AGENT_POLICY_DOC}'s guardrail: ${agent_guardrail}" \
+        "the rule no longer contains: ${agent_expected_phrase}"
+    fi
+  done <<<"${agent_guardrails}"
+
+  # The other direction: a heading this file knows a phrase for must still be a
+  # heading, so a guardrail deleted from the policy cannot leave the rule (and
+  # the mapping above) quietly claiming it.
+  while IFS= read -r agent_known_guardrail; do
+    [[ -n "${agent_known_guardrail}" ]] || continue
+    if grep -Fxq -- "${agent_known_guardrail}" <<<"${agent_seen_guardrails}"; then
+      pass "${AGENT_POLICY_DOC} still states the guardrail the rule is mapped to: ${agent_known_guardrail}"
+    else
+      fail "${AGENT_POLICY_DOC} still states the guardrail the rule is mapped to: ${agent_known_guardrail}" \
+        "no '### ${agent_known_guardrail}' subsection remains, so the mapping above is dead and checks nothing"
+    fi
+  done <<<"The comments are part of the product
+Do not weaken the image's security model
+Package freshness and the build cache
+bootc provenance
+Service enablement policy
+Flavors are separate paths"
+fi
+
+# The rule defers to AGENTS.md as the authoritative policy, and the skill opens
+# with the same instruction. Both are pointers at a file that has to exist.
+for agent_pointer_file in "${AGENT_CURSOR_RULE}" "${AGENT_SKILL}"; do
+  if grep -Fq "\`${AGENT_POLICY_DOC}\`" "${agent_pointer_file}"; then
+    pass "${agent_pointer_file} still hands the agent to ${AGENT_POLICY_DOC} first"
+  else
+    fail "${agent_pointer_file} still hands the agent to ${AGENT_POLICY_DOC} first" \
+      "the file no longer names the authoritative policy, so its own summary becomes the whole instruction"
+  fi
+done
+
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then
   printf 'invariants: %d of %d check(s) failed\n' "${failures}" "${checks_run}" >&2
