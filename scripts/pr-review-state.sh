@@ -278,7 +278,7 @@ else
       end ) ,
     "" ,
     "Checks at \(.headRefOid[0:12]): \(.rollupState)" ,
-    ( if (.checks | length) == 0 then "  (no checks ran -- for a docs-only change that is a skip, not a pass)"
+    ( if (.checks | length) == 0 then "  (no checks ran -- that is a skip, not a pass)"
       else (.checks[] | "  \(.state | .[0:14] | . + (" " * (14 - length)))  \(.name)")
       end ) ,
     "" ,

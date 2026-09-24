@@ -634,6 +634,10 @@ zizmor scans the workflows on every change under `.github/workflows/**` and is
 pinned so a new release cannot turn `main` red on its own. It catches the
 well-known shapes; it does not review intent.
 
+`main` itself is protected by a ruleset with no bypass actors: every change
+reaches it through a pull request that passed `Shell tests and coverage`, and
+nothing can push to it directly. See [branch-protection.md](../branch-protection.md).
+
 ## Reporting something you think is wrong
 
 **Reproduce it before reporting it, and before changing code on account of it.**
@@ -686,6 +690,8 @@ un-pulled.
 - [AGENTS.md](../../AGENTS.md) — the authoritative operational policy
 - [CLAUDE.md](../../CLAUDE.md) — VM test procedure and its hard-won gotchas
 - [risk-tiers.md](../risk-tiers.md) — how to classify a change before making it
+- [branch-protection.md](../branch-protection.md) — the ruleset that keeps
+  `main` behind a pull request, and how to check it is live
 - [review-rubric.md](../review-rubric.md) — the security invariants as review
   questions
 - [quality.md](../quality.md) — what each automated signal proves, and where the

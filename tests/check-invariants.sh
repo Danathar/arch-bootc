@@ -4359,10 +4359,11 @@ if ((renovate_readable)); then
     "$(jq -r '.forkProcessing // "unset"' "${RENOVATE}")" "enabled"
 
   # docs/renovate.md, "Why merging is Renovate's job": GitHub's native
-  # auto-merge gates only on *required* checks, `main` here is unprotected, so
-  # there are none -- flipping this to true would let a Renovate PR merge the
-  # moment it opens, about twenty minutes before its build finishes. Renovate's
-  # own documentation warns about exactly this configuration.
+  # auto-merge gates only on *required* checks, and the ruleset on `main`
+  # requires only `Shell tests and coverage`, which finishes long before the
+  # build -- flipping this to true would let a Renovate PR merge about twenty
+  # minutes before its build finishes. Renovate's own documentation warns
+  # about exactly this configuration.
   #
   # Read with has() rather than `.platformAutomerge // "unset"`: jq's `//`
   # treats `false` as empty, so the alternative form reports the correct
@@ -10495,6 +10496,354 @@ assert_equal "the tags the page says every publish pushes are the ones metadata-
   "$(grep -oE 'Every publish pushes `[^`]+`, `[^`]+` and `[^`]+`' <<<"${cicd_flat}" | grep -oE '`[^`]+`' | tr -d '`' | tr '\n' ' ' | sed 's/ $//')" \
   "${cicd_tags}"
 
+fi
+
+# ---------------------------------------------------------------------------
+group "Branch protection (docs/branch-protection.md: the ruleset on main, and the one check every pull request gets)"
+
+# Every gate above sits behind a pull request, and until 2026-09-24 nothing made
+# anyone open one: `main` had no branch protection and no ruleset, so anything
+# that could push a branch here could push to `main`, and build.yml would sign
+# and publish the result. .github/rulesets/main.json is what GitHub now
+# enforces, and docs/branch-protection.md explains it rule by rule.
+#
+# A pull request cannot read the live ruleset, only the committed file an admin
+# applies with PUT. So three things are checked here:
+#
+#   - the file still says what the page says it does, both ways, so a loosened
+#     rule cannot hide behind an unchanged explanation;
+#   - every check the file requires is a job that every pull request to `main`
+#     gets. A required check that some pull requests never get leaves them
+#     unmergeable, and the first fix anyone reaches for then is deleting the
+#     ruleset. build.yml skips documentation-only pull requests, so the job is
+#     required by name from build.yml and docs-tests.yml together, whose
+#     filters are each other's complement;
+#   - every other job a pull request can start is named on the page as not
+#     required, so a new one is classified rather than missed.
+
+PROTECTION_RULESET=".github/rulesets/main.json"
+PROTECTION_DOC="docs/branch-protection.md"
+PROTECTION_ACTIONS_APP_ID=15368
+
+if [[ ! -f "${PROTECTION_DOC}" ]]; then
+  fail "the branch protection page exists" "${PROTECTION_DOC} is missing"
+elif ! jq -e '.rules | type == "array"' "${PROTECTION_RULESET}" >/dev/null 2>&1; then
+  fail "the ruleset is committed and readable" \
+    "${PROTECTION_RULESET} is missing, is not JSON, or has no .rules array"
+else
+  pass "the ruleset is committed and readable"
+
+  bp_rs() {
+    jq -r "$1" "${PROTECTION_RULESET}"
+  }
+
+  # --- The ruleset itself -----------------------------------------------------
+
+  assert_equal "the ruleset is enforced, not evaluated or disabled" "$(bp_rs '.enforcement')" "active"
+  assert_equal "the ruleset applies to branches" "$(bp_rs '.target')" "branch"
+  assert_equal "the ruleset targets the default branch" \
+    "$(bp_rs '.conditions.ref_name.include // [] | join(",")')" "~DEFAULT_BRANCH"
+  assert_equal "the ruleset excludes nothing from it" \
+    "$(bp_rs '.conditions.ref_name.exclude // [] | length')" "0"
+  # A bypass for an App or for Actions is the obvious fix to reach for when a
+  # push is refused, and it hands back exactly the direct push this is for.
+  assert_equal "nothing may bypass the ruleset" "$(bp_rs '.bypass_actors // [] | length')" "0"
+  assert_equal "the ruleset carries the four rules the page explains" \
+    "$(bp_rs '[.rules[].type] | sort | join(",")')" \
+    "deletion,non_fast_forward,pull_request,required_status_checks"
+  # GitHub does not let anyone approve their own pull request, so on a
+  # single-maintainer repository one approval would stop everything merging.
+  assert_equal "a pull request needs no approval a sole maintainer cannot give" \
+    "$(bp_rs '.rules[] | select(.type == "pull_request") | .parameters.required_approving_review_count')" "0"
+  # Renovate rebases a branch only when it conflicts (rebaseWhen), so a strict
+  # policy would hold every Renovate pull request behind a moved `main`.
+  assert_equal "the required check does not also demand an up-to-date branch" \
+    "$(bp_rs '.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy')" "false"
+
+  bp_contexts="$(bp_rs '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context' | LC_ALL=C sort)"
+  if [[ -n "${bp_contexts}" ]]; then
+    pass "the ruleset requires at least one check"
+  else
+    fail "the ruleset requires at least one check" \
+      "no required_status_checks context was read, so the checks below would assert nothing"
+  fi
+  # Without integration_id, a commit status any token posts under the same name
+  # satisfies the rule.
+  assert_equal "every required check must be reported by GitHub Actions (app ${PROTECTION_ACTIONS_APP_ID})" \
+    "$(bp_rs "[.rules[] | select(.type == \"required_status_checks\") | .parameters.required_status_checks[]? | select(.integration_id != ${PROTECTION_ACTIONS_APP_ID})] | length")" "0"
+
+  # --- Every required check runs on every pull request -------------------------
+
+  # The keys set under one trigger of a workflow's block-style `on:`.
+  bp_trigger_keys() { # workflow trigger
+    awk -v trigger="$2" '
+      /^on:/ { in_on = 1; next }
+      in_on && /^[^[:space:]#]/ { exit }
+      in_on && /^  [A-Za-z_]/ { in_trigger = ($0 == "  " trigger ":"); next }
+      in_trigger && /^    [A-Za-z_-]+:/ { key = $0; sub(/^    /, "", key); sub(/:.*/, "", key); print key }
+    ' "$1"
+  }
+
+  # The items of the list KEY under one trigger, one per line, quotes removed.
+  bp_trigger_list() { # workflow trigger key
+    awk -v trigger="$2" -v key="$3" '
+      /^on:/ { in_on = 1; next }
+      in_on && /^[^[:space:]#]/ { exit }
+      in_on && /^  [A-Za-z_]/ { in_trigger = ($0 == "  " trigger ":"); in_key = 0; next }
+      in_trigger && /^    [A-Za-z_-]+:/ { in_key = ($0 == "    " key ":"); next }
+      in_key && /^      - / { item = substr($0, 9); gsub(/^["'"'"']|["'"'"']$/, "", item); print item; next }
+      in_key && !/^[[:space:]]*#/ { in_key = 0 }
+    ' "$1" | LC_ALL=C sort
+  }
+
+  # Every job of a workflow as `id<TAB>check name`: its `name:` if it has one,
+  # otherwise its id, which is what GitHub reports it under.
+  bp_jobs() { # workflow
+    awk '
+      function flush() { if (id != "") print id "\t" (name == "" ? id : name); id = "" }
+      /^jobs:/ { in_jobs = 1; next }
+      in_jobs && /^[^[:space:]#]/ { flush(); in_jobs = 0 }
+      !in_jobs { next }
+      /^  [A-Za-z0-9_-]+:/ { flush(); id = $0; sub(/^  /, "", id); sub(/:.*/, "", id); name = ""; next }
+      /^    name:/ && name == "" { name = $0; sub(/^    name:[[:space:]]*/, "", name); gsub(/^["'"'"']|["'"'"']$/, "", name) }
+      END { flush() }
+    ' "$1"
+  }
+
+  # A job's lines with comments and blank lines removed: what GitHub runs.
+  bp_active_job() { # workflow job
+    cicd_job "$1" "$2" | grep -Ev '^[[:space:]]*(#|$)'
+  }
+
+  bp_pr_workflows=()
+  for bp_workflow in "${workflows[@]}"; do
+    grep -qxF 'pull_request' <<<"$(cicd_triggers "${bp_workflow}" | tr ' ' '\n')" &&
+      bp_pr_workflows+=("${bp_workflow}")
+  done
+
+  # Every job a pull request to main can start, by the name it reports under.
+  bp_pr_jobs=""
+  for bp_workflow in "${bp_pr_workflows[@]+"${bp_pr_workflows[@]}"}"; do
+    bp_pr_jobs+="$(bp_jobs "${bp_workflow}" | cut -f2)"$'\n'
+  done
+  bp_pr_jobs="$(grep -v '^$' <<<"${bp_pr_jobs}" | LC_ALL=C sort -u)"
+
+  bp_context_workflows=""
+  while IFS= read -r bp_context; do
+    [[ -n "${bp_context}" ]] || continue
+    bp_providers=()
+    for bp_workflow in "${bp_pr_workflows[@]+"${bp_pr_workflows[@]}"}"; do
+      while IFS=$'\t' read -r bp_job bp_name; do
+        [[ "${bp_name}" == "${bp_context}" ]] && bp_providers+=("${bp_workflow}|${bp_job}")
+      done < <(bp_jobs "${bp_workflow}")
+    done
+    if ((${#bp_providers[@]} == 0)); then
+      fail "required check '${bp_context}' is a job that pull requests start" \
+        "no job in a workflow with a pull_request trigger reports under that name; every pull request would wait for it"
+      continue
+    fi
+    pass "required check '${bp_context}' is a job that pull requests start (${#bp_providers[@]} workflow(s))"
+
+    bp_unfiltered=0
+    bp_ignores=()
+    bp_paths=()
+    bp_first_job=""
+    for bp_provider in "${bp_providers[@]}"; do
+      bp_workflow="${bp_provider%|*}"
+      bp_job="${bp_provider#*|}"
+      bp_context_workflows+="${bp_workflow##*/}"$'\n'
+      bp_block="$(bp_active_job "${bp_workflow}" "${bp_job}")"
+      # A skipped job reports success, so a condition, or a dependency that
+      # fails, turns the required check into one that passes without running.
+      # A matrix reports it as `<name> (<value>)`, which is not the name.
+      for bp_key in if needs strategy; do
+        if grep -Eq "^    ${bp_key}:" <<<"${bp_block}"; then
+          fail "'${bp_context}' in ${bp_workflow##*/} has no ${bp_key}:" \
+            "a job with ${bp_key}: can be skipped or renamed, and the required check then passes or waits without the job running"
+        else
+          pass "'${bp_context}' in ${bp_workflow##*/} has no ${bp_key}:"
+        fi
+      done
+      assert_equal "'${bp_context}' in ${bp_workflow##*/}: the pull_request trigger filters only by branch and path" \
+        "$(bp_trigger_keys "${bp_workflow}" pull_request | grep -vxE 'branches|paths|paths-ignore' | tr '\n' ' ')" ""
+      assert_equal "'${bp_context}' in ${bp_workflow##*/}: the pull_request trigger covers pull requests to main" \
+        "$(bp_trigger_list "${bp_workflow}" pull_request branches | tr '\n' ' ')" "main "
+      bp_ignore="$(bp_trigger_list "${bp_workflow}" pull_request paths-ignore | tr '\n' ' ')"
+      bp_path="$(bp_trigger_list "${bp_workflow}" pull_request paths | tr '\n' ' ')"
+      [[ -z "${bp_ignore}" && -z "${bp_path}" ]] && bp_unfiltered=1
+      [[ -n "${bp_ignore}" && -z "${bp_path}" ]] && bp_ignores+=("${bp_ignore}")
+      [[ -n "${bp_path}" && -z "${bp_ignore}" ]] && bp_paths+=("${bp_path}")
+      # The same name has to mean the same check, whichever workflow reports it.
+      if [[ -z "${bp_first_job}" ]]; then
+        bp_first_job="${bp_block}"
+        bp_first_provider="${bp_workflow##*/}"
+      else
+        assert_equal "'${bp_context}' in ${bp_workflow##*/} runs exactly what it runs in ${bp_first_provider}" \
+          "${bp_block}" "${bp_first_job}"
+      fi
+    done
+
+    # GitHub skips a paths-ignore workflow only when every changed file matches
+    # a pattern, and starts a paths workflow when any changed file does. Two
+    # workflows whose lists are the same globs therefore cover every pull
+    # request between them.
+    bp_covered=""
+    if ((bp_unfiltered)); then
+      bp_covered="one workflow has no path filter"
+    else
+      for bp_ignore in "${bp_ignores[@]+"${bp_ignores[@]}"}"; do
+        for bp_path in "${bp_paths[@]+"${bp_paths[@]}"}"; do
+          [[ "${bp_ignore}" == "${bp_path}" ]] && bp_covered="paths-ignore and paths are both: ${bp_path}"
+        done
+      done
+    fi
+    if [[ -n "${bp_covered}" ]]; then
+      pass "every pull request to main gets '${bp_context}' (${bp_covered% })"
+    else
+      fail "every pull request to main gets '${bp_context}'" \
+        "no provider is unfiltered and no paths-ignore list is matched by another provider's paths list; paths-ignore: ${bp_ignores[*]:-none}; paths: ${bp_paths[*]:-none}"
+    fi
+  done <<<"${bp_contexts}"
+  bp_context_workflows="$(grep -v '^$' <<<"${bp_context_workflows}" | LC_ALL=C sort -u)"
+
+  # --- The page, joined to the ruleset both ways ------------------------------
+
+  # The top-level `- ` bullets of one `## ` section, fenced blocks skipped, each
+  # flattened to one line.
+  bp_bullets() { # heading
+    awk -v want="## $1" '
+      /^```/ { fenced = !fenced; next }
+      fenced { next }
+      $0 == want { inside = 1; next }
+      inside && /^## / { exit }
+      !inside { next }
+      /^- / { if (item != "") print item; item = substr($0, 3); next }
+      item != "" && /^  / { sub(/^ +/, " "); item = item $0; next }
+      item != "" { print item; item = "" }
+      END { if (item != "") print item }
+    ' "${PROTECTION_DOC}"
+  }
+
+  # The bold lead of a bullet: what it says it explains.
+  bp_lead() { # pattern
+    grep -oE '^\*\*[^*]+\*\*' <<<"${bp_rule_bullets}" | sed -E 's/^\*\*//; s/\*\*$//' | grep -E -- "$1" | head -n 1
+  }
+
+  bp_rule_bullets="$(bp_bullets "The ruleset")"
+  if (($(grep -c '^\*\*' <<<"${bp_rule_bullets}") >= 5)); then
+    pass "the page's rule bullets were read ($(grep -c '^\*\*' <<<"${bp_rule_bullets}"))"
+  else
+    fail "the page's rule bullets were read" \
+      "fewer than five bullets with a bold lead under '## The ruleset'; the joins below would assert nothing"
+  fi
+
+  # Rule types the page explains: the ones a bold lead spells in backticks, plus
+  # required_status_checks for the lead about required checks, which names the
+  # rule by what it does rather than by its JSON spelling.
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  bp_named_rules="$(
+    grep -oE '^\*\*[^*]+\*\*' <<<"${bp_rule_bullets}" | grep -oE '`[a-z_]+`' | tr -d '`'
+    grep -qiE 'required checks?' <<<"$(grep -oE '^\*\*[^*]+\*\*' <<<"${bp_rule_bullets}")" && echo required_status_checks
+  )"
+  assert_equal "the rules the page explains are the rules in the ruleset, both ways" \
+    "$(LC_ALL=C sort -u <<<"${bp_named_rules}" | tr '\n' ' ')" \
+    "$(bp_rs '.rules[].type' | LC_ALL=C sort -u | tr '\n' ' ')"
+
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  assert_equal "the branch the page says it targets is the ruleset's" \
+    "$(bp_lead '^Targets ' | grep -oE '`[^`]+`' | tr -d '`' | tr '\n' ',' | sed 's/,$//')" \
+    "$(bp_rs '.conditions.ref_name.include // [] | join(",")')"
+
+  bp_page_bypass="$(bp_lead 'bypass')"
+  if [[ -z "${bp_page_bypass}" ]]; then
+    fail "the page states the bypass list" "no bold lead mentions bypass"
+  else
+    assert_equal "'${bp_page_bypass}' is what the ruleset's bypass list says" \
+      "$([[ "${bp_page_bypass}" == "No bypass actors."* ]] && echo none || echo some)" \
+      "$(bp_rs 'if (.bypass_actors // []) == [] then "none" else "some" end')"
+  fi
+
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  assert_equal "the approval count the page states is the ruleset's" \
+    "$(bp_lead '^`pull_request` with ' | sed -nE 's/^`pull_request` with ([0-9]+) approvals?.*/\1/p')" \
+    "$(bp_rs '.rules[] | select(.type == "pull_request") | .parameters.required_approving_review_count')"
+
+  bp_check_lead="$(bp_lead 'required checks?')"
+  bp_check_bullet="$(grep -E '^\*\*[^*]*required checks?' <<<"${bp_rule_bullets}" | head -n 1)"
+  if [[ -z "${bp_check_lead}" ]]; then
+    fail "the page has a bullet about the required checks" "no bold lead mentions a required check"
+  else
+    bp_context_count="$(grep -c . <<<"${bp_contexts}")"
+    assert_equal "the number of required checks the page states is the ruleset's" \
+      "$(sed -nE 's/^([A-Za-z]+) required checks?.*/\1/p' <<<"${bp_check_lead}" | tr '[:upper:]' '[:lower:]')" \
+      "$(number_word "${bp_context_count}")"
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    assert_equal "the required checks the page names are the ruleset's, both ways" \
+      "$(grep -oE '`[^`]+`' <<<"${bp_check_lead}" | tr -d '`' | LC_ALL=C sort | tr '\n' '|')" \
+      "$(tr '\n' '|' <<<"${bp_contexts}")"
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    assert_equal "the integration_id the page explains is the one the ruleset pins" \
+      "$(grep -oE '`integration_id` [0-9]+' <<<"${bp_check_bullet}" | grep -oE '[0-9]+$' | LC_ALL=C sort -u | tr '\n' ' ')" \
+      "$(bp_rs '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.integration_id' | LC_ALL=C sort -u | tr '\n' ' ')"
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    assert_equal "the workflows the page says run the required check are the ones that do" \
+      "$(grep -oE '`[A-Za-z0-9_-]+\.ya?ml`' <<<"${bp_check_bullet}" | tr -d '`' | LC_ALL=C sort -u | tr '\n' ' ')" \
+      "$(tr '\n' ' ' <<<"${bp_context_workflows}")"
+  fi
+
+  # Every job a pull request can start is required or named as not required,
+  # and a name listed as not required is a real job that is not required.
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  bp_not_required="$(bp_bullets "Checks that are not required" | sed -nE 's/^`([^`]+)`.*/\1/p' | LC_ALL=C sort)"
+  if [[ -z "${bp_not_required}" ]]; then
+    fail "the page lists the checks that are not required" "no bullet under '## Checks that are not required' opens with a job name"
+  else
+    assert_equal "every job a pull request can start is required or named on the page as not required, both ways" \
+      "$(tr '\n' '|' <<<"${bp_not_required}")" \
+      "$(grep -vxF -f <(printf '%s\n' "${bp_contexts}") <<<"${bp_pr_jobs}" | tr '\n' '|')"
+  fi
+
+  # --- The Status section and the commands --------------------------------------
+
+  bp_flat="$(tr '\n' ' ' <"${PROTECTION_DOC}" | tr -s '[:space:]' ' ')"
+  bp_status="$(awk '/^## Status$/ { inside = 1; next } inside && /^## / { exit } inside' "${PROTECTION_DOC}" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  assert_equal "the Status section names the ruleset a reader should see listed" \
+    "$(grep -oE 'lists `[^`]+`' <<<"${bp_status}" | sed -E 's/^lists `//; s/`$//' | head -n 1)" \
+    "$(bp_rs '.name')"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  bp_status_id="$(grep -oE 'as ruleset `[0-9]+`' <<<"${bp_status}" | grep -oE '[0-9]+' | LC_ALL=C sort -u)"
+  if [[ "$(grep -c . <<<"${bp_status_id}")" == 1 ]]; then
+    pass "the Status section records the live ruleset's id (${bp_status_id})"
+  else
+    fail "the Status section records the live ruleset's id" \
+      "expected one 'as ruleset \`<number>\`' in ## Status, found: ${bp_status_id:-none}"
+  fi
+  assert_equal "the update command names the ruleset the Status section records" \
+    "$(grep -oE 'gh api --method PUT repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/rulesets/[^ ]+' <<<"${bp_flat}" | sed 's|.*/||' | tr '\n' ' ')" \
+    "${bp_status_id} "
+  for bp_verb in POST PUT; do
+    assert_equal "the ${bp_verb} command applies the committed ruleset file" \
+      "$(grep -oE "gh api --method ${bp_verb} [^ ]+ \\\\ --input [^ ]+" <<<"${bp_flat}" | sed 's/.* //' | tr '\n' ' ')" \
+      "${PROTECTION_RULESET} "
+  done
+  assert_equal "every gh api command on the page names this repository" \
+    "$(grep -oE 'gh api (--method [A-Z]+ )?repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/' <<<"${bp_flat}" | sed -E 's|.*repos/||; s|/$||' | LC_ALL=C sort -u | tr '\n' ' ')" \
+    "$(grep -oE 'github\.com/[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+\.git' README.md | head -n 1 | sed -E 's|github\.com/||; s|\.git$||') "
+
+  # --- The ruleset is routed like the other load-bearing files ------------------
+
+  bp_t3="$(awk '/^## T3 — /{ inside = 1; next } inside && /^## /{ exit } inside' docs/risk-tiers.md)"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  if grep -Fq '`.github/rulesets/**`' <<<"${bp_t3}"; then
+    pass "docs/risk-tiers.md tiers the ruleset as T3"
+  else
+    fail "docs/risk-tiers.md tiers the ruleset as T3" "no \`.github/rulesets/**\` in its T3 section"
+  fi
+  assert_present "docs/security/SECURITY-AI.md sends a reader to the page" \
+    "docs/security/SECURITY-AI.md" '\]\(\.\./branch-protection\.md\)'
+  assert_present "README.md's documentation table links to the page" \
+    "README.md" '\]\(docs/branch-protection\.md\)'
 fi
 
 # ---------------------------------------------------------------------------

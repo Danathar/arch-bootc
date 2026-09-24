@@ -33,7 +33,7 @@ last column.** There is only one path split in the automation, and it is not the
 tier boundary:
 
 - If *every* changed file matches `**/*.md` or `docs/**`, the build workflow is
-  skipped entirely and nothing runs.
+  skipped entirely, and `docs-tests.yml` runs the shell tests instead.
 - Otherwise the build workflow runs in full — shell tests, coverage floors,
   ShellCheck, and the three-flavor image build — whether the diff touched
   `renovate.json`, `tests/`, `packages-kde.txt`, or the signing step.
@@ -49,9 +49,15 @@ extra evidence column is what actually scales with risk.
 `*.md` anywhere, `docs/`, `.github/pull_request_template.md`,
 `.github/prompts/`.
 
-**What runs: nothing.** The build workflow sets
+**What runs: the shell tests, and nothing else.** The build workflow sets
 `paths-ignore: ["**/*.md", "docs/**"]`, and the zizmor workflow only triggers on
-`.github/workflows/**`. A T0 pull request therefore shows *no checks at all*.
+`.github/workflows/**`, so a T0 pull request gets no build, no ShellCheck and no
+zizmor. It does get `Shell tests and coverage`: `docs-tests.yml` runs that job
+on every pull request that touches either glob, which includes every pull
+request the build workflow skips, because the ruleset on `main` requires it on
+every pull request ([branch-protection.md](branch-protection.md)).
+That job includes `tests/check-invariants.sh`, which joins most documents here
+to the files they describe.
 
 **The issue forms are not T0 by this definition, even though they read like it.**
 `.github/ISSUE_TEMPLATE/bug-report.yml`, `feature-request.yml`, and `config.yml`
@@ -60,11 +66,12 @@ full build workflow — shell tests, ShellCheck, and a three-flavor image build 
 for a change that cannot possibly affect the image. Treat them as T1: the checks
 run, so quote them, and do not describe the change as "docs only".
 
-That is correct — there is nothing for those jobs to check — but it means the
-usual shorthand breaks down. **An absent check is not a passed check.** "Green"
-for a T0 change means a human read it, not that CI agreed with it. Say that
-plainly in the pull request rather than letting an empty checks list imply
-validation happened.
+That is correct — there is nothing for the build to check — but it means the
+usual shorthand breaks down. **A green T0 check is not a reviewed page.** It
+means the page still agrees with the tree wherever an invariant joins them. It
+does not mean the prose is right, and no image was built. "Green" for a T0
+change means a human read it as well. Say that plainly in the pull request
+rather than letting a green check imply more validation than happened.
 
 The one failure mode worth watching: a change filed as T0 that also edits a
 non-Markdown file. `paths-ignore` is evaluated over the whole push, so the
@@ -155,6 +162,11 @@ the diff is:
 - **Published artifacts** — the push, sign, and package-retention jobs. Deleting
   package versions can orphan cosign signatures and break `bootc upgrade` on
   installed systems.
+- **Branch protection** — `.github/rulesets/**`, the ruleset that keeps `main`
+  behind a pull request that passed `Shell tests and coverage`. A bypass actor,
+  a dropped rule or a renamed required check reopens a direct push to what the
+  daily build signs and publishes, or leaves pull requests waiting for a check
+  that never reports. See [branch-protection.md](branch-protection.md).
 - **Workflow token permissions** —
   `.github/policies/workflow-permissions.json`, the table of what each
   workflow job's `GITHUB_TOKEN` may do. A change to a job's `permissions:`
@@ -206,14 +218,18 @@ by construction.
 | Automation | Behavior |
 | --- | --- |
 | Build workflow | Skipped entirely for T0; runs for T1–T3 |
+| `docs-tests.yml` | Runs the build workflow's shell tests on any change touching `**/*.md` or `docs/**`; for T0 it is the only check |
 | zizmor | Runs only when `.github/workflows/**` changes |
+| Ruleset on `main` | Every tier merges through a pull request that passed `Shell tests and coverage` |
 | Renovate automerge | On for digest/pin/pinDigest/patch/minor/major updates once the build is green |
 | Renovate carve-out | **Major `bootc-dev/bootc` bumps never automerge** — they are T3, and a green build does not boot-test the image |
 
-The Renovate carve-out is this table's one real enforcement point, and it exists
-precisely because the tiering is otherwise advisory. Do not broaden the
-automerge scope or remove a carve-out as part of an unrelated change; see
-[renovate.md](renovate.md).
+The ruleset and the Renovate carve-out are this table's two real enforcement
+points. The ruleset is tier-blind by design: it only makes sure a change arrives
+as a pull request that passed the shell suite. The carve-out is the one place
+the tiering itself is enforced, and it exists precisely because the tiering is
+otherwise advisory. Do not broaden the automerge scope or remove a carve-out as
+part of an unrelated change; see [renovate.md](renovate.md).
 
 Nothing else here is enforced mechanically, and that is deliberate: no rule over
 file paths can tell a `Containerfile` comment fix from a change to how `bootc`

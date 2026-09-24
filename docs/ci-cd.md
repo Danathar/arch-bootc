@@ -298,6 +298,14 @@ the namespace some other way, the job says so in one line instead of going back
 to skipping in silence. With `ARCH_BOOTC_NO_SKIPS` above, that is two
 independent places a silent return to skipping turns red.
 
+`build.yml` skips pull requests that touch only Markdown or `docs/`, so
+`docs-tests.yml` runs the same `test` job on every pull request that touches
+those paths. The ruleset on `main` requires `Shell tests and coverage` on every
+pull request, and without the second workflow a documentation pull request
+would wait for it forever. `tests/check-invariants.sh` fails if the active lines
+of the two copies differ, or if the second workflow's `paths` stop being the
+first one's `paths-ignore`. See [branch-protection.md](branch-protection.md).
+
 Adding a new `tests/test-*.sh` or `tests/e2e/test-*.sh` file takes three
 edits. `run-tests.sh` globs both locations, but it refuses to start until the
 new file is also listed in `tests/test-manifest` — the glob is checked against
@@ -383,8 +391,9 @@ if that cap is ever reached instead of quietly reporting a short list.
 
 Two things it deliberately does not claim. A **resolved thread is not evidence
 the underlying issue was fixed** — only that someone marked it resolved. And an
-empty check list is a *skip*, not a pass; the report says so in place, because
-that is the state a documentation-only pull request is always in.
+empty check list is a *skip*, not a pass; the report says so in place. Such a
+pull request cannot merge either, because the ruleset on `main` requires
+`Shell tests and coverage`.
 
 ### `.github/workflows/ai-fix.yml`
 
@@ -457,9 +466,10 @@ Four details are deliberate rather than incidental.
 
 **`documentation` uses `any-glob-to-all-files`.** It lands only when *every*
 changed file is Markdown or under `docs/` — which is exactly when `build.yml`'s
-`paths-ignore` skips the build entirely. The label therefore means "no build, no
-tests and no ShellCheck ran on this pull request," which is the one thing worth
-seeing at a glance on a green-looking, check-less PR. See
+`paths-ignore` skips the build entirely. The label therefore means "no build and
+no ShellCheck ran on this pull request; only the shell tests did, in
+`docs-tests.yml`," which is worth seeing at a glance on a pull request whose one
+green check is not a build. See
 [quality.md](quality.md).
 
 **Nothing here reuses an approval label.** The `quality`, `testing`, `ci` and

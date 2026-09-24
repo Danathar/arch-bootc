@@ -11,8 +11,8 @@ produced:
 
 | Signal | Where to see it | Runs on |
 | --- | --- | --- |
-| Shell tests + coverage floors | `test` job, build workflow | PRs and pushes to `main` that touch code, plus a daily schedule |
-| ShellCheck | `lint` job, build workflow | Same |
+| Shell tests + coverage floors | `test` job, build workflow; `test` job, `Shell tests for documentation changes` workflow | PRs and pushes to `main` that touch code, plus a daily schedule; PRs that touch Markdown or `docs/` |
+| ShellCheck | `lint` job, build workflow | PRs and pushes to `main` that touch code, plus a daily schedule |
 | Three-flavor image build | `build_push` job, build workflow | Same |
 | `bootc container lint`, `systemd-analyze verify`, dangling-symlink check | Inside the build, per flavor | Same |
 | Workflow static analysis (zizmor) | `Lint workflows` workflow | Any change under `.github/workflows/**` |
@@ -31,11 +31,14 @@ gh run view <run-id>
 
 **"that touch code" is load-bearing.** The build workflow sets
 `paths-ignore: ["**/*.md", "docs/**"]`, so a change touching only Markdown or
-`docs/` runs *none* of the first four signals — no tests, no ShellCheck, no
-build. That is intentional (there is nothing for them to check), but it means an
-absent workflow is not a passed one. A PR showing no checks has not been
-validated; it has been skipped. Only the daily schedule and the next code change
-will exercise those paths again.
+`docs/` gets no ShellCheck and no build. It still gets the shell tests and the
+repository invariants: `docs-tests.yml` runs the build workflow's `test` job on
+every pull request that touches those paths, which includes every one the build
+skips, because the ruleset on `main` requires `Shell tests and coverage` on
+every pull request ([branch-protection.md](branch-protection.md)). A
+documentation PR therefore shows one check. A PR showing none has not been
+validated, and cannot merge. Only the daily schedule and the next code change
+will build those paths again.
 
 The README badge tracks the build workflow on `main`.
 

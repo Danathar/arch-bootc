@@ -26,6 +26,12 @@
         "cleanup_packages": {"contents": "read", "packages": "write"}
       }
     },
+    "docs-tests.yml": {
+      "workflow": null,
+      "jobs": {
+        "test": {"contents": "read"}
+      }
+    },
     "labeler.yml": {
       "workflow": null,
       "jobs": {
