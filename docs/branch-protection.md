@@ -7,8 +7,8 @@ and how to check that GitHub is really enforcing it.
 ## Status
 
 The ruleset below has been active on `main` since 2026-09-24, as ruleset
-`23960293`. It was applied from this file with Danathar's authorization.
-Check it yourself; neither call needs admin rights:
+`23960293`. It was applied from this file after #360 merged, with Danathar's
+authorization. Check it yourself; neither call needs admin rights:
 
 ```bash
 gh api repos/Danathar/arch-bootc/branches/main --jq .protected
