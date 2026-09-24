@@ -173,8 +173,10 @@ substituted key fails the check instead of keeping the file's shape — the
 hard failure on a mismatch, `PACMAN_CACHE_BUST` still preceding the first
 `pacman -Syu`, the absence of third-party package sources, the systemd
 enablement layout, SHA-pinned actions with `persist-credentials: false` and
-`timeout-minutes`, and — the one that had already gone wrong — that every shell
-file appears in **both** hand-maintained ShellCheck lists. It also *runs* the
+`timeout-minutes`, each job's token permissions matching
+`.github/policies/workflow-permissions.json`, and — the one that had already
+gone wrong — that every shell file appears in **both** hand-maintained
+ShellCheck lists. It also *runs* the
 `PreToolUse` hook in `.claude/settings.json` that keeps an allow-listed
 `git diff` from reading, as a plain file, what the `Read(...)` deny rules name —
 and from *writing*, via `--output=FILE`, over any path this uid can reach,

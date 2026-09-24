@@ -155,6 +155,11 @@ the diff is:
 - **Published artifacts** — the push, sign, and package-retention jobs. Deleting
   package versions can orphan cosign signatures and break `bootc upgrade` on
   installed systems.
+- **Workflow token permissions** —
+  `.github/policies/workflow-permissions.json`, the table of what each
+  workflow job's `GITHUB_TOKEN` may do. A change to a job's `permissions:`
+  block has to change this file too, so widening a token is never a T1 edit
+  that happens to sit in a workflow.
 
 Evidence: everything T2 requires, plus evidence that exercises **the path this
 change touches**. That is not one thing, because T3 covers two kinds of change

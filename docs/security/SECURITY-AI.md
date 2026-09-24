@@ -573,7 +573,11 @@ must be described as such.
 
 - Workflow permissions are declared explicitly and minimally per job. A workflow
   that needs `packages: write` says so in that job only; it does not get it at
-  the workflow level for convenience.
+  the workflow level for convenience. Each job's block is also written down in
+  [`.github/policies/workflow-permissions.json`](../../.github/policies/workflow-permissions.json),
+  and the "Workflow token permissions" group in `tests/check-invariants.sh`
+  fails when the two disagree. So a job cannot gain a scope unless the same pull
+  request also changes the policy file, which is T3.
 - Secrets are never passed to a step that runs untrusted input, and never to an
   action that is not pinned by commit SHA.
 
