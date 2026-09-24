@@ -1309,7 +1309,7 @@ assert_equal "every contact link is https" "${contact_links}" \
 # The page's own argument is why the drift matters more than it would for
 # ordinary prose: "CI cannot tell these tiers apart, which is the whole reason
 # the table has a last column." The table is the control. Edit build.yml's
-# paths-ignore and the T0 section goes on promising that nothing runs; move a
+# paths-ignore and the T0 section goes on promising that no build runs; move a
 # T3 artifact and the T3 list goes on naming the old path. Neither turns
 # anything red.
 
@@ -1496,9 +1496,9 @@ matches_any_ignore_glob() { # path
   return 1
 }
 
-# "What runs: nothing." Every file the T0 section claims as documentation has
-# to match an ignore glob, or a T0 pull request touching it gets the full
-# three-flavor build the page promises it will not.
+# "What runs: the shell tests, and nothing else." Every file the T0 section
+# claims as documentation has to match an ignore glob, or a T0 pull request
+# touching it gets the full three-flavor build the page promises it will not.
 t0_unmatched=""
 t0_checked=0
 while IFS= read -r tracked_path; do

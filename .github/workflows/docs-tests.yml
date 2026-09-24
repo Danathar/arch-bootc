@@ -1,0 +1,76 @@
+---
+name: Shell tests for documentation changes
+
+# Runs build.yml's `test` job on the pull requests build.yml skips.
+#
+# build.yml's pull_request trigger has `paths-ignore: ["**/*.md", "docs/**"]`,
+# so a pull request that only touches Markdown or docs/ starts no run there and
+# never reports `Shell tests and coverage`. The ruleset in
+# .github/rulesets/main.json requires that check on every pull request to main
+# (docs/branch-protection.md), so without this file a documentation pull
+# request would wait for it forever.
+#
+# The trigger below uses the same two globs as `paths`, the complement of
+# build.yml's `paths-ignore`: for any pull request to main, one of the two
+# workflows runs the job. A pull request touching both documentation and
+# anything else runs it twice, which costs a few minutes and is not worth a
+# filter to avoid.
+#
+# The job is a copy of build.yml's `test` job without its comments; read the
+# rationale for each step there. tests/check-invariants.sh fails if the active
+# lines of the two copies differ, so the required check means the same thing
+# whichever workflow reports it.
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "**/*.md"
+      - "docs/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Shell tests and coverage
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Allow unprivileged user namespaces
+        run: |
+          set -euo pipefail
+          key="kernel.apparmor_restrict_unprivileged_userns"
+          if [[ -e "/proc/sys/${key//.//}" ]]; then
+            sudo sysctl -w "${key}=0"
+          else
+            echo "${key} does not exist on this kernel; nothing to relax"
+          fi
+          if ! refusal="$(unshare --map-root-user --mount true 2>&1)"; then
+            echo "error: unprivileged user + mount namespaces are still refused:" >&2
+            echo "  ${refusal:-no message}" >&2
+            echo "Tests that run a shipped script as a program would skip, and the" >&2
+            echo "suite below would pass without having covered them." >&2
+            exit 1
+          fi
+          echo "unprivileged user + mount namespaces are available"
+      - name: Install fish
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fish
+          fish --version
+      - name: Run shell tests and enforce coverage floors
+        env:
+          ARCH_BOOTC_NO_SKIPS: "1"
+        run: ./tests/check-coverage.sh
+      - name: Assert repository invariants
+        run: ./tests/check-invariants.sh

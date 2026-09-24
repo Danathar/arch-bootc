@@ -180,9 +180,10 @@ above).
 Renovate can either merge a PR itself, or hand off to GitHub's native auto-merge
 (`platformAutomerge`, which defaults to `true`). This repo sets it to **`false`** on purpose.
 
-GitHub's native auto-merge gates only on **required** status checks. `main` here is
-unprotected, so there are none — a PR would qualify the moment it opened, roughly 20 minutes
-before its build finishes. Renovate's own documentation warns about this:
+GitHub's native auto-merge gates only on **required** status checks. The ruleset on `main`
+([branch-protection.md](branch-protection.md)) requires one, `Shell tests and coverage`, which
+finishes in a few minutes, so a PR would qualify roughly 20 minutes before its build finishes.
+Renovate's own documentation warns about the extreme case of this:
 
 > If you don't select any status check, and you use platform automerge, then GitHub might
 > automerge PRs with failing tests!
@@ -196,11 +197,12 @@ Both guards must stay in place, or be replaced together — see below.
 
 ### If you ever want instant merges
 
-Protect `main` with the three `Build and push image (base|kde|xfce)` checks marked as
-**required**, then set `platformAutomerge: true` and enable `allow_auto_merge` on the repo.
-That makes native auto-merge safe *and* immediate, because GitHub now has real checks to gate
-on. Note that branch protection would also apply to your own direct pushes to `main` unless
-`enforce_admins` is left off.
+Add the three `Build and push image (base|kde|xfce)` checks to the ruleset's required checks,
+then set `platformAutomerge: true` and enable `allow_auto_merge` on the repo. That makes native
+auto-merge safe *and* immediate, because GitHub now has real checks to gate on. Give
+documentation-only pull requests those checks first: `build.yml` skips them, so as the
+workflows stand a docs-only pull request would wait for the build checks forever. That is why
+the ruleset requires only `Shell tests and coverage` today.
 
 ## Known blocked updates
 

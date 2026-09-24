@@ -126,10 +126,11 @@ jobs:
           # Every label in .github/labeler.yml states a fact about the changed
           # paths, so all of them have to be removed again when they stop being
           # true. `documentation` is the one that makes this non-negotiable: it
-          # means "no build, no tests and no ShellCheck ran on this pull
-          # request". A pull request that starts as documentation and then
-          # gains code on a later push does run the build -- and without
-          # sync-labels the label would survive and assert the opposite.
+          # means "no build and no ShellCheck ran on this pull request", only
+          # the shell tests in docs-tests.yml. A pull request that starts as
+          # documentation and then gains code on a later push does run the
+          # build -- and without sync-labels the label would survive and
+          # assert the opposite.
           #
           # The cost is that a label a human applied by hand is removed again
           # if the paths do not support it. That is the right trade here

@@ -23,8 +23,9 @@
 
 # Applied only when *every* changed file is Markdown or under docs/ -- which is
 # exactly the condition under which build.yml's `paths-ignore` skips the whole
-# build. So this label means "no build, no tests, no ShellCheck ran on this pull
-# request", which is worth seeing at a glance.
+# build. So this label means "no build and no ShellCheck ran on this pull
+# request, only the shell tests in docs-tests.yml", which is worth seeing at a
+# glance.
 documentation:
   - changed-files:
       - any-glob-to-all-files:

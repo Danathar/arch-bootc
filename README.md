@@ -65,6 +65,7 @@ tools, and manual alternatives.
 |                 [Quality signals](docs/quality.md) |                                               Every automated check this repo runs, what each one proves, and where the gaps are |
 |          [PR review rubric](docs/review-rubric.md) |                                                                What a reviewer checks on a pull request, in the order it matters |
 |            [Change risk tiers](docs/risk-tiers.md) |                                                How a change is classified before it is written, and the evidence each tier needs |
+|     [Branch protection](docs/branch-protection.md) |                          The ruleset that keeps `main` behind a pull request, the check it requires, and how to check it is live |
 | [AI security policy](docs/security/SECURITY-AI.md) |                          What agent-assisted changes defend, which inputs are untrusted, and the invariants that hold regardless |
 |                         [Metrics](docs/metrics.md) |                                                PR acceptance, time to merge, and CI health — with the `gh` commands to recompute |
 |                   [Reflections](docs/reflections/) |                                  Durable write-ups of what went wrong here, how it was caught, and what would catch it next time |
