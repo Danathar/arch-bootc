@@ -47,8 +47,9 @@ deliberate security change.
 - [ ] Service enablement stays in `/usr/lib/systemd/system/<target>.wants/`, not
       `/etc`, except the documented mask that must live there. No
       `systemctl preset-all`.
-- [ ] No `--mount=type=bind` targets a path under `/mnt`, `/root`, `/srv`, or
-      `/opt` after the directory-restructuring step. Those are dangling symlinks
+- [ ] No `--mount=type=bind` targets a path under `/mnt`, `/root`, `/srv`,
+      `/opt`, `/home`, `/usr/local`, or `/ostree` after the
+      directory-restructuring step. Those are dangling symlinks
       for the rest of the build, and a failed bind-mount there has been observed
       deleting real files from the **host** source directory.
 - [ ] What happens to systems that receive this as a `bootc upgrade`, not just

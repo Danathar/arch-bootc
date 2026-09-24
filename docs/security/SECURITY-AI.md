@@ -674,8 +674,8 @@ finish the task first.
 This is not hypothetical here either. A failed `podman build` in this repository
 has been observed **deleting real files from the host** — buildah's mount-target
 cleanup path, triggered by a `--mount=type=bind` aimed at a container path under
-one of the dangling symlinks (`/mnt`, `/root`, `/srv`, `/opt`) the image creates
-early in the base stage. The required response is in `AGENTS.md`: run
+one of the dangling symlinks (`/mnt`, `/root`, `/srv`, `/opt`, `/home`,
+`/usr/local`, `/ostree`) the image creates early in the base stage. The required response is in `AGENTS.md`: run
 `git status` immediately after any failed build involving a bind mount, treat
 unexpected deletions as real data loss, restore them, and **report both the loss
 and the restoration**.
