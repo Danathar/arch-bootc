@@ -9150,6 +9150,261 @@ done
 fi
 
 # ---------------------------------------------------------------------------
+group "VM test procedure (CLAUDE.md: 'Non-negotiable safety rules' for any VM an agent creates)"
+
+# AGENTS.md calls CLAUDE.md "binding", docs/risk-tiers.md requires T3 evidence
+# to follow it "exactly", and the validate-change skill hands an agent to it.
+# Nothing read it as a subject: the Reflections group above checks only that
+# its title still names a VM. Two of its copy-pasteable commands had drifted
+# with nothing turning red. The preflight fence inventoried qemu:///session
+# alone while the sentence above it asked for "zero collision against both
+# connections", and the auto-pool cleanup chained `... pool-destroy <name> &&
+# pool-undefine <name>`, whose second half is not a command at all -- run as
+# written it leaves the pool defined with autostart on, which is the leftover
+# that gotcha exists to prevent.
+#
+# Everything below reads CLAUDE.md's code -- every fence line and every inline
+# span -- as commands and joins them to what they depend on: the permission
+# file that gates them, docs/vm-workflow.md's VM, the Justfile's installer, the
+# Containerfile's sshd drop-in, the package list, and build.yml's labels.
+VM_DOC="CLAUDE.md"
+VM_SETTINGS=".claude/settings.json"
+VM_WORKFLOW_DOC="docs/vm-workflow.md"
+
+# One code snippet per line: each fence body line, then each inline span of
+# the prose with the fences removed. Prose is squashed first because Markdown
+# wraps, and a span split across two source lines is still one command.
+vm_doc_snippets() {
+  awk '
+    /^[[:space:]]*```/ { infence = !infence; next }
+    infence { sub(/^[[:space:]]+/, ""); if ($0 != "") print }
+  ' "${VM_DOC}"
+  # shellcheck disable=SC2016 # the backticks are Markdown, not expansions
+  awk '/^[[:space:]]*```/ { infence = !infence; next } !infence' "${VM_DOC}" |
+    tr '\n' ' ' | tr -s '[:space:]' ' ' | grep -oE '`[^`]+`' | tr -d '`'
+}
+
+# Each snippet split into the commands it chains, one per line, trimmed.
+vm_doc_segments() {
+  vm_doc_snippets | sed -E 's/ *(&&|\|\||;|\|) */\n/g' | sed -E 's/^ +//; s/ +$//' |
+    grep -v '^$'
+}
+
+if [[ ! -f "${VM_DOC}" ]] || ! command -v jq >/dev/null 2>&1; then
+  fail "${VM_DOC} and jq are available" \
+    "without both, none of the VM procedure's commands can be joined to anything"
+else
+
+vm_segments="$(vm_doc_segments)"
+vm_allow="$(jq -r '.permissions.allow[]? // empty' "${VM_SETTINGS}")"
+vm_deny="$(jq -r '.permissions.deny[]? // empty' "${VM_SETTINGS}")"
+vm_rules="$(jq -r '.permissions | (.allow, .ask, .deny)[]? // empty' "${VM_SETTINGS}")"
+
+if grep -q '^virsh ' <<<"${vm_segments}"; then
+  pass "${VM_DOC}'s code still carries virsh commands to check"
+else
+  fail "${VM_DOC}'s code still carries virsh commands to check" \
+    "the snippet reader found none, so every check below would pass on nothing"
+fi
+
+# The virsh verbs, derived rather than listed: every verb the permission file
+# names on either connection. A verb standing at the head of a command is the
+# `&& pool-undefine <name>` shape -- a virsh subcommand with no virsh in front.
+vm_verbs="$(sed -nE 's/^Bash\(virsh (-c|--connect) qemu:\/\/\/[a-z]+ ([a-z-]+).*/\2/p' <<<"${vm_rules}" |
+  LC_ALL=C sort -u)"
+if [[ "$(grep -c . <<<"${vm_verbs}")" -ge 4 ]]; then
+  pass "${VM_SETTINGS} still names the virsh verbs a bare-verb command is recognised by"
+else
+  fail "${VM_SETTINGS} still names the virsh verbs a bare-verb command is recognised by" \
+    "found only: ${vm_verbs//$'\n'/ }"
+fi
+vm_bare=""
+while IFS= read -r vm_segment; do
+  [[ -z "${vm_segment}" ]] && continue
+  vm_head="${vm_segment%% *}"
+  if grep -qxF -- "${vm_head}" <<<"${vm_verbs}"; then
+    vm_bare+="[${vm_segment}] "
+  fi
+done <<<"${vm_segments}"
+assert_equal "no command in ${VM_DOC} starts with a bare virsh verb" "${vm_bare}" ""
+
+# "Create and manage VMs on qemu:///session only." A virsh command that names
+# no connection runs against whatever libvirt defaults to, which for a root
+# shell is qemu:///system.
+vm_unnamed=""
+vm_system=""
+vm_denied=""
+while IFS= read -r vm_segment; do
+  [[ "${vm_segment}" == virsh\ * ]] || continue
+  if [[ ! "${vm_segment}" =~ ^virsh\ (-c|--connect)\ qemu:///(session|system)\  ]]; then
+    vm_unnamed+="[${vm_segment}] "
+    continue
+  fi
+  # "Never mutate qemu:///system": the only system commands the procedure may
+  # carry are the read-only inventories the permission file allows verbatim.
+  if [[ "${BASH_REMATCH[2]}" == "system" ]] &&
+    ! grep -qxF -- "Bash(${vm_segment})" <<<"${vm_allow}"; then
+    vm_system+="[${vm_segment}] "
+  fi
+  while IFS= read -r vm_rule; do
+    [[ "${vm_rule}" == Bash\(*\) ]] || continue
+    vm_glob="${vm_rule#Bash(}"
+    vm_glob="${vm_glob%)}"
+    # shellcheck disable=SC2053 # the rule is a glob on purpose
+    if [[ "${vm_segment}" == ${vm_glob} ]]; then
+      vm_denied+="[${vm_segment} ~ ${vm_rule}] "
+    fi
+  done <<<"${vm_deny}"
+done <<<"${vm_segments}"
+assert_equal "every virsh command in ${VM_DOC} names its connection" "${vm_unnamed}" ""
+assert_equal "every qemu:///system command in ${VM_DOC} is a read-only inventory ${VM_SETTINGS} allows" \
+  "${vm_system}" ""
+assert_equal "no command in ${VM_DOC} is one ${VM_SETTINGS} denies" "${vm_denied}" ""
+
+# The gotchas quote virt-install fragments too (`virt-install --disk
+# path=<absolute path>`), so the rule is on the ones that name a connection:
+# there has to be one, and none may name another.
+vm_virt_install="$(grep -E '^virt-install .*--connect' <<<"${vm_segments}")"
+if [[ -n "${vm_virt_install}" ]] &&
+  ! grep -qv -- '--connect qemu:///session ' <<<"${vm_virt_install}"; then
+  pass "every virt-install in ${VM_DOC} that names a connection targets qemu:///session"
+else
+  fail "every virt-install in ${VM_DOC} that names a connection targets qemu:///session" \
+    "found: ${vm_virt_install:-none}"
+fi
+
+# "zero collision against both connections": the preflight fence is the
+# inventory an agent actually runs, so it has to be exactly the read-only
+# inventories the permission file allows -- which are what docs/quality.md
+# says exist "precisely so a new VM cannot collide with something real".
+vm_preflight="$(awk '
+  /Enumerate existing VMs/ { armed = 1 }
+  armed && /^[[:space:]]*```/ { if (infence) exit; infence = 1; next }
+  infence { sub(/^[[:space:]]+/, ""); if ($0 != "") print }
+' "${VM_DOC}" | LC_ALL=C sort -u)"
+vm_inventory_rules="$(sed -nE 's/^Bash\((virsh -c qemu:\/\/\/[a-z]+ (list|pool-list) --all --name)\)$/\1/p' <<<"${vm_allow}" |
+  LC_ALL=C sort -u)"
+if [[ -n "${vm_preflight}" ]]; then
+  pass "${VM_DOC} still has a preflight inventory fence"
+else
+  fail "${VM_DOC} still has a preflight inventory fence" \
+    "no fence follows 'Enumerate existing VMs'"
+fi
+assert_equal "${VM_DOC}'s preflight fence is exactly the read-only inventories ${VM_SETTINGS} allows" \
+  "${vm_preflight//$'\n'/ | }" "${vm_inventory_rules//$'\n'/ | }"
+for vm_connection in session system; do
+  if grep -q "qemu:///${vm_connection} " <<<"${vm_preflight}"; then
+    pass "${VM_DOC}'s preflight inventories qemu:///${vm_connection}"
+  else
+    fail "${VM_DOC}'s preflight inventories qemu:///${vm_connection}" \
+      "the text asks for zero collision against both connections"
+  fi
+done
+
+# "never touch `arch-bootc-local`. That is the user's own VM, created by
+# following docs/vm-workflow.md ... even though docs/vm-workflow.md contains a
+# delete-and-recreate snippet". Both halves are claims about the other page.
+vm_flat="$(tr '\n' ' ' <"${VM_DOC}" | tr -s '[:space:]' ' ')"
+# shellcheck disable=SC2016 # the backticks are Markdown, not expansions
+vm_protected="$(grep -oE 'never touch `[^`]+`' <<<"${vm_flat}" | sed -E 's/.*`([^`]+)`/\1/' | head -n1)"
+vm_workflow_name="$(sed -nE 's/^[[:space:]]*--name ([^ ]+).*/\1/p' "${VM_WORKFLOW_DOC}" | head -n1)"
+if [[ -n "${vm_protected}" ]]; then
+  assert_equal "the VM ${VM_DOC} protects is the one ${VM_WORKFLOW_DOC} creates" \
+    "${vm_protected}" "${vm_workflow_name}"
+  for vm_verb in destroy undefine; do
+    if grep -Eq "^virsh -c qemu:///session ${vm_verb} ${vm_protected}( |$)" "${VM_WORKFLOW_DOC}"; then
+      pass "${VM_WORKFLOW_DOC} still holds the delete-and-recreate snippet ${VM_DOC} warns about: ${vm_verb}"
+    else
+      fail "${VM_WORKFLOW_DOC} still holds the delete-and-recreate snippet ${VM_DOC} warns about: ${vm_verb}" \
+        "the warning is about a snippet that is no longer there"
+    fi
+  done
+else
+  fail "${VM_DOC} still names the user's VM it must never touch" \
+    "no 'never touch \`<name>\`' in the file"
+fi
+
+# Step 3's installer: every flag it names must be one the Justfile's own
+# installer line passes, and --via-loopback -- "Disk images only ever go
+# through --via-loopback" -- must be in both.
+vm_install="$(grep -E '^bootc install to-disk ' <<<"${vm_segments}" | head -n1)"
+vm_just_install="$(grep -Ev '^[[:space:]]*#' "${JUSTFILE}" | grep -E 'bootc install to-disk ' | head -n1 |
+  sed -E 's/^[[:space:]]+//')"
+vm_flags_missing=""
+while IFS= read -r vm_flag; do
+  [[ -z "${vm_flag}" ]] && continue
+  grep -qE -- "(^| )${vm_flag}( |=|$)" <<<"${vm_just_install}" || vm_flags_missing+="${vm_flag} "
+done < <(grep -oE -- '--[a-z-]+' <<<"${vm_install}")
+if [[ -n "${vm_install}" && -n "${vm_just_install}" ]]; then
+  assert_equal "every installer flag ${VM_DOC} names is one the Justfile passes" "${vm_flags_missing}" ""
+else
+  fail "${VM_DOC} and the Justfile both still carry a bootc install to-disk line" \
+    "doc: '${vm_install}', Justfile: '${vm_just_install}'"
+fi
+for vm_install_line in "${vm_install}" "${vm_just_install}"; do
+  if grep -q -- '--via-loopback' <<<"${vm_install_line}"; then
+    pass "the installer goes through --via-loopback: ${vm_install_line%% /*}"
+  else
+    fail "the installer goes through --via-loopback: ${vm_install_line%% /*}" \
+      "'${vm_install_line}' could point bootc at a real block device"
+  fi
+done
+
+# The password gotcha proves a specific sshd setting. It has to be the one the
+# image sets, or the test it describes proves something the image never had.
+vm_sshd="$(grep -oE 'PermitRootLogin [a-z-]+' <<<"${vm_flat}" | LC_ALL=C sort -u)"
+vm_image_sshd="$(grep -Ev '^[[:space:]]*#' "${CONTAINERFILE}" |
+  sed -nE "s/.*printf '(PermitRootLogin [a-z-]+)\\\\n'.*/\1/p")"
+if [[ -n "${vm_sshd}" ]]; then
+  assert_equal "the sshd setting ${VM_DOC}'s gotcha tests is the one the Containerfile writes" \
+    "${vm_sshd}" "${vm_image_sshd}"
+else
+  fail "${VM_DOC} still names the sshd setting its password gotcha tests" "no PermitRootLogin in the file"
+fi
+
+# Step 6 waits on the guest agent, and the gotchas push scripts through it.
+# Neither works on an image that does not ship the agent.
+if grep -Fq 'guest-ping' <<<"${vm_flat}"; then
+  if grep -qx 'qemu-guest-agent' packages-base.txt; then
+    pass "the guest agent ${VM_DOC} waits on is in packages-base.txt"
+  else
+    fail "the guest agent ${VM_DOC} waits on is in packages-base.txt" \
+      "step 6 waits on guest-ping from an agent the base image no longer installs"
+  fi
+else
+  fail "${VM_DOC} still waits on the guest agent in step 6" "no guest-ping in the file"
+fi
+
+# "check org.opencontainers.image.revision in the image labels against the
+# commit SHA you expect". Nothing in this tree writes that label: it is
+# docker/metadata-action's default, set to github.sha. It survives only while
+# the labels block does not override it and every build step applies the
+# action's output -- a hand-written value there would make the check compare a
+# SHA against itself, and a dropped `labels:` input leaves the base image's
+# own revision label in place, which is Arch's commit, not this repository's.
+if grep -Fq 'org.opencontainers.image.revision' <<<"${vm_flat}"; then
+  pass "${VM_DOC} still confirms the artifact by its revision label"
+else
+  fail "${VM_DOC} still confirms the artifact by its revision label" \
+    "step 'Confirm you're testing the actual artifact' no longer names the label"
+fi
+assert_present "build.yml still generates image labels with docker/metadata-action" \
+  "${BUILD_WORKFLOW}" '^[[:space:]]+uses: docker/metadata-action@'
+assert_absent_in "nothing in the tree overrides the revision label metadata-action sets from github.sha" \
+  'org\.opencontainers\.image\.revision' "${BUILD_WORKFLOW}" "${CONTAINERFILE}"
+vm_build_steps="$(grep -cE '^[[:space:]]+uses: redhat-actions/buildah-build@' "${BUILD_WORKFLOW}")"
+# shellcheck disable=SC2016 # a literal GitHub expression
+vm_labelled_steps="$(grep -cF 'labels: ${{ steps.metadata.outputs.labels }}' "${BUILD_WORKFLOW}")"
+if ((vm_build_steps > 0)); then
+  assert_equal "every buildah build step applies metadata-action's labels" \
+    "${vm_labelled_steps}" "${vm_build_steps}"
+else
+  fail "build.yml still builds with redhat-actions/buildah-build" "no such step"
+fi
+
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then
   printf 'invariants: %d of %d check(s) failed\n' "${failures}" "${checks_run}" >&2
