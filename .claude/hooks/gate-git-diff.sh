@@ -296,7 +296,7 @@ BASH_NOEXEC_MSG='blocked: `bash -n` is allow-listed because -n reads a script wi
 BASH_EXPAND_MSG='blocked: a brace bash could expand, an unquoted glob character (*, ? or a bracket), an unquoted leading ~, a $ or a backtick in a word of a bash -n invocation is refused rather than expanded (a process substitution is refused by GATED_SUBST_MSG), for the reason BRACE_MSG and EXPAND_MSG give for git: bash rewrites the words before the inner bash sees them, so `{+,+}n` matches no spelling here and reaches bash as +n, which turns noexec off, `?n` does the same when a file named +n exists in the working directory, and $(...), ${VAR} and a backtick supply a word this gate never saw. Write the command out in full.'
 
 # shellcheck disable=SC2016 # the backticks quote command spellings for the reader
-BASH_ECHO_MSG='blocked: this bash -n invocation carries an option that makes bash print or copy what it reads, and -n stops bash running a script, not printing it: -v (and -o verbose) prints every line as bash reads it, so `bash -n -v ./cosign.key` prints the whole key past the Read(...) deny rules in .claude/settings.json; -D prints every $"..." string in the script; -o history and -i copy every line into ~/.bash_history when bash exits; -i and -l read ~/.bashrc and the login profiles and print the line a syntax error in them stands on. -x (and -o xtrace) prints what bash runs, which under -n is nothing; it is refused with the rest because a syntax check has no use for it. bash reads a cluster of letters as separate options (-nv is -n -v) and takes the value of -o from the next word (-no verbose is -n -o verbose), and so does this gate. Check syntax with bash -n FILE and nothing else.'
+BASH_ECHO_MSG='blocked: this bash -n invocation carries an option that makes bash print or copy what it reads, and -n stops bash running a script, not printing it: -v (and -o verbose) prints every line as bash reads it, so `bash -n -v ./cosign.key` prints the whole key past the Read(...) deny rules in .claude/settings.json; -D prints every $"..." string in the script; -o history and -i copy every line into ~/.bash_history when bash exits; -i and -l read ~/.bashrc and the login profiles and print the line a syntax error in them stands on, and so does a login shell started without -l: exec -l, or exec -a / env -a (--argv0) naming a zeroth argument that begins with -. -x (and -o xtrace) prints what bash runs, which under -n is nothing; it is refused with the rest because a syntax check has no use for it. bash reads a cluster of letters as separate options (-nv is -n -v) and takes the value of -o from the next word (-no verbose is -n -o verbose), and so does this gate. Check syntax with bash -n FILE and nothing else.'
 
 # shellcheck disable=SC2016 # the backticks quote command spellings for the reader
 BASH_READ_MSG='blocked: bash -n prints the line a syntax error stands on, so pointing it at a file prints that line back -- `bash -n .env` prints a NAME=value line whose value holds a ( -- past the Read(...) deny rules in .claude/settings.json, which gate the Read tool and say nothing about what an allow-listed Bash command opens. bash reads the script from standard input when no file is named, so `bash -n - < .env` is the same read. Every operand of a bash -n invocation, and the target of a bare < on it, must be inside the working tree and must not be one of the secret-shaped names those rules list (cosign.key, .env, .env.*, *.pem, *.p12, id_rsa, id_ed25519); </dev/null stays allowed. Check the syntax of this repository'"'"'s own scripts.'
@@ -730,6 +730,7 @@ after_time=0           # the last name-position word was `time`, whose -p may fo
 after_wrapper=0        # a wrapper ran: every remaining word may be the name
 command_names=()       # 1 at each index that names, or may name, a command
 xargs_wrappers=()      # 1 at each index where `xargs` runs the rest of its command
+argv0_words=()         # 1 at each exec/env option that sets the zeroth argument
 xargs_state=0          # 1: xargs's own options are being read; 2: after its `--`
 xargs_optarg=0         # the next word is the value of an xargs option
 xargs_command_idx=-1   # the word xargs runs, once its options are read
@@ -896,6 +897,23 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   if [[ "${wrapper_name}" == env ]] &&
     [[ "${raw_word}" =~ ^-[^-]*S || "${raw_word}" == --split-string* ]]; then
     refuse "${CMD_MSG}"
+  fi
+  # bash starts as a login shell when its zeroth argument begins with `-`,
+  # which is what exec's -l puts there, and what exec -a and env -a
+  # (--argv0) can set: `exec -l bash -n tests/run-tests.sh` and `exec -a
+  # -bash bash -n ...` read ~/.bash_profile and print the line a syntax
+  # error in it stands on, the read `bash -n -l` is refused for, with no
+  # `-l` among bash's own words (review on aurora-zfs-simple#237). Marked
+  # here, where the wrapper is known, and refused in front of a gated bash
+  # below. Any exec option carrying an `l` or an `a` counts, whatever the
+  # value: `exec -a bash` sets no dash, and refusing it costs a spelling
+  # nobody needs.
+  # Claude Code does not step over exec or env before it matches an allow
+  # row, so these spellings prompt today; they are refused so that this
+  # gate does not rest on that.
+  if [[ "${wrapper_name}" == exec && "${raw_word}" =~ ^-[^-]*[al] ]] ||
+    [[ "${wrapper_name}" == env && ("${raw_word}" =~ ^-[^-]*a || "${raw_word}" == --argv0*) ]]; then
+    argv0_words[idx]=1
   fi
   name_is_literal "${raw_word}" "${word}" || refuse "${CMD_MSG}"
   # A wrapper, found by its last path component once the word is known to be
@@ -1347,6 +1365,7 @@ reset_command() {
   cmd_xargs=0
   bash_options=0
   bash_optvals=''
+  cmd_argv0=0
 }
 
 # The words of a command from its *name* onward: a leading assignment
@@ -1382,6 +1401,7 @@ cmd_git_name=0 # a literal `git` word stands where this command's name may be
 cmd_xargs=0   # `xargs` stands among its wrappers, so its operands are not all here
 bash_options=0 # a gated bash is still reading option words, as bash itself does
 bash_optvals='' # one letter per -o/-O still waiting for its value, in order
+cmd_argv0=0   # an exec/env option before the name set bash's zeroth argument
 cmd_name=''   # the word that names it, once seen
 cmd_export_no_add=0 # this command's export saw -n or bare -p, so it adds nothing
 cmd_stack=()  # the outer command's state, while a `$(...)` is being read
@@ -1501,6 +1521,9 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
     cmd_assign_name="${BASH_REMATCH[1]}"
     continue
   fi
+  # An exec or env option that sets the zeroth argument, before the name: a
+  # dash there makes bash a login shell (see `argv0_words` above).
+  ((${argv0_words[idx]:-0})) && ((cmd_gated == 0)) && cmd_argv0=1
   ((cmd_named)) || ((${command_names[idx]:-0})) || continue
   if ((cmd_named == 0)); then
     cmd_named=1
@@ -1549,14 +1572,16 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
     [[ -z "${cmd_prefix}" && "${words[idx]}" == "bash" ]] && cmd_bash=1
     cmd_prefix="${cmd_prefix:+${cmd_prefix} }${words[idx]}"
     command_is_gated "${cmd_prefix}" && cmd_gated=1
-    # `bash -nv ./cosign.key` begins with the characters `bash -n`, and bash
-    # reads `-nv` as `-n -v`. Whether or not the allow row's pattern stops
-    # at a word boundary, a first option word that begins `-n` completes the
-    # prefix here, and the option scan at the end of this loop reads the rest
-    # of it; where the row does not match, the refusal blocks a spelling a
+    # `bash -nv ./cosign.key` is `bash -n -v` to bash. Claude Code's
+    # documented matcher keeps the space after `-n` in the allow row, so that
+    # spelling prompts today; it is gated here anyway, so this gate does not
+    # rest on where the matcher draws a word boundary. A first option word
+    # that begins `-n` completes the prefix, and the option scan at the end
+    # of this loop reads the rest of it; the refusal blocks a spelling a
     # syntax check never needs.
     ((cmd_bash)) && [[ "${cmd_prefix}" == 'bash -n'?* ]] && cmd_gated=1
     ((cmd_bash && cmd_gated)) && bash_options=1
+    ((cmd_bash && cmd_gated && cmd_argv0)) && refuse "${BASH_ECHO_MSG}"
   fi
   # Some command of this string is one this gate covers, which is what makes
   # an export anywhere in it worth refusing. A string that runs nothing gated

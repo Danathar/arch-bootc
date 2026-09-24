@@ -2379,7 +2379,10 @@ if ((settings_readable)); then
   # invocation, read the way bash reads its own (`-nv` is `-n -v`; `-no
   # verbose` hands `verbose` to the `-o`), and the script it opens -- an
   # operand, or stdin when none is named -- is held to the shellcheck operand
-  # test, since bash prints the line a syntax error stands on.
+  # test, since bash prints the line a syntax error stands on. A login shell
+  # reached from outside bash's own words -- `exec -l`, or a zeroth argument
+  # that begins with `-` (review on aurora-zfs-simple#237) -- reads the same
+  # startup files `-l` does, and is refused with it.
   #
   # Each row is run twice: by real bash, in a throwaway checkout holding a
   # synthetic key, `.env` and script under a throwaway HOME, and through the
@@ -2431,6 +2434,8 @@ if ((settings_readable)); then
   bash_n_row prints refuse 'bash -n -l tests/run-tests.sh'
   bash_n_row prints refuse 'command -p bash -n -v tests/run-tests.sh'
   bash_n_row prints refuse 'echo x; bash -nv tests/run-tests.sh'
+  bash_n_row prints refuse 'exec -l bash -n tests/run-tests.sh'
+  bash_n_row prints refuse 'exec -a -bash bash -n tests/run-tests.sh'
   # The file bash opens: an operand, or stdin when no operand is named.
   bash_n_row prints refuse 'bash -n .env'
   bash_n_row prints refuse 'bash -n ./.env'
@@ -2464,6 +2469,7 @@ if ((settings_readable)); then
   bash_n_row quiet allow 'bash -n -- -v'
   bash_n_row quiet allow 'bash -n tests/run-tests.sh -v'
   bash_n_row quiet allow "bash -n -c 'x=1'"
+  bash_n_row quiet allow 'exec bash -n tests/run-tests.sh'
   bash_n_prints_rows=0
   bash_n_allow_rows=0
   for bash_n_entry in "${bash_n_rows[@]}"; do
@@ -3586,6 +3592,12 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row options allowed '' \
     '-O takes a value, and no shopt name prints what bash reads' \
     'bash -n -O extglob tests/run-tests.sh'
+  corpus_row options refused 'print or copy what it reads' \
+    'exec -l puts a dash in front of the zeroth argument, which makes bash a login shell that reads ~/.bash_profile' \
+    'exec -l bash -n tests/run-tests.sh'
+  corpus_row options refused 'print or copy what it reads' \
+    'env --argv0 can set the same dash' \
+    'env --argv0=-bash bash -n tests/run-tests.sh'
   corpus_row options refused 'shellcheck prints the source line' \
     'a value-taking option must be stepped over so the operand after it is still reached' \
     'shellcheck -f gcc ./.env'
@@ -3927,6 +3939,10 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     '((cmd_gated && cmd_read && cmd_bash))' \
     '((0))' \
     'bash -n - < .env'
+  mutation_row 'refusing a login shell set up by exec -l or a dashed zeroth argument' \
+    '((${argv0_words[idx]:-0})) && ((cmd_gated == 0)) && cmd_argv0=1' \
+    ':' \
+    'exec -l bash -n tests/run-tests.sh'
   }
   mutation_table
 

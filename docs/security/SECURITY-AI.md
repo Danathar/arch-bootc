@@ -506,8 +506,11 @@ must be described as such.
   that print or copy what Bash reads: `-v` and `-o verbose`, `-D` (prints
   every `$"..."` string), `-o history` and `-i` (copy every line into
   `~/.bash_history`), `-i` and `-l` (read `~/.bashrc` and the login
-  profiles), and `-x` and `-o xtrace`, which print nothing under `-n` but
-  have no use in a syntax check. Every other option letter, `-o` name and
+  profiles, and print the line a syntax error in them stands on), and `-x`
+  and `-o xtrace`, which print nothing under `-n` but have no use in a
+  syntax check. A login shell started without `-l` is refused with them:
+  `exec -l bash -n`, and `exec -a` or `env -a` (`--argv0`) setting a zeroth
+  argument that begins with `-`. Every other option letter, `-o` name and
   `-O` name was run under `-n` against a marker file and printed none of
   it. Every operand, and the target of a bare `<` on the invocation, is held
   to the ShellCheck operand test. `bash -n tests/run-tests.sh` is unchanged.
