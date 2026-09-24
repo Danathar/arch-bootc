@@ -99,10 +99,11 @@ actionlint / zizmor       # changed workflows
 
 Two T1-specific traps, both of which have already happened here:
 
-- A new `tests/test-*.sh` is picked up automatically by `run-tests.sh`, which
-  globs, but **not** by either ShellCheck invocation — the `Justfile` `lint`
-  recipe and the CI `ShellCheck` step both list files by hand. Miss one and the
-  file silently escapes linting.
+- A new `tests/test-*.sh` is **not** picked up automatically. `run-tests.sh`
+  globs, but refuses to start until the file is listed in `tests/test-manifest`
+  too, and neither ShellCheck invocation globs at all — the `Justfile` `lint`
+  recipe and the CI `ShellCheck` step both list files by hand. Miss a
+  shellcheck list and the file silently escapes linting.
 - Coverage floors are traced-line counts and are **Bash-version sensitive**.
   Raise a floor when you add coverage; never lower one to make a regression
   pass, and calibrate to the lowest count across supported Bash versions. See

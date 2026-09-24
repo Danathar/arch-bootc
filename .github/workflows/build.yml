@@ -99,9 +99,10 @@ jobs:
       # so `unshare --map-root-user --mount` -- root inside a namespace whose
       # one mapped uid is still the unprivileged runner -- is the only way to
       # reach its deployment discovery without handing the suite real root.
-      # ubuntu-24.04 refuses unprivileged user namespaces by default through
-      # AppArmor, so cases written that way skip instead of running and the job
-      # goes green over them. Observed, and explained at length, in issue #182.
+      # Ubuntu restricts unprivileged user namespaces through AppArmor (the
+      # ubuntu-24.04 runner this was found on refused them by default), so
+      # cases written that way skip instead of running and the job goes green
+      # over them. Observed, and explained at length, in issue #182.
       #
       # Clearing the sysctl grants this job nothing it did not already have --
       # the runner user has passwordless sudo -- and leaves the property

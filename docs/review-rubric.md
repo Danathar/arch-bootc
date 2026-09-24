@@ -68,9 +68,9 @@ deliberate security change.
       the change. A check that passes both ways proves nothing.
 - [ ] Coverage floors in `.coverage-thresholds.json` were raised, not lowered.
       A lowered floor needs an explicit reason.
-- [ ] A new `tests/test-*.sh` was added to *both* shellcheck invocations — the
-      `Justfile` `lint` recipe and the CI ShellCheck step — or it silently
-      escapes linting.
+- [ ] A new `tests/test-*.sh` was added to `tests/test-manifest` and to *both*
+      shellcheck invocations — the `Justfile` `lint` recipe and the CI
+      ShellCheck step — or it silently escapes linting.
 - [ ] No check was weakened, skipped, or deleted to obtain a pass.
 
 ## 6. Evidence

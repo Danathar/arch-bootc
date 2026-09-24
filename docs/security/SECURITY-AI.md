@@ -498,17 +498,38 @@ must be described as such.
   command's name (`grep git <notes.txt`) is not a git invocation. Same fix as
   [atomic-image-builder#449](https://github.com/Danathar/atomic-image-builder/pull/449).
 
-  `bash -n`, the other allowed linter, is not the same case for reads: it
-  echoes at most the one line of a syntax error, and the key and `.env` shapes
-  parse cleanly and print nothing. It has a flag problem of its own instead:
-  `-n` reads a script without running it, and a later `+n` or `+o noexec` on
-  the same command line turns that back off, so `bash -n +n -c 'cat
+  `bash -n`, the other allowed linter, has a flag problem of its own: `-n`
+  reads a script without running it, and a later `+n` or `+o noexec` on the
+  same command line turns that back off, so `bash -n +n -c 'cat
   ./cosign.key'` ran the command under the linter's allow rule — the rule
   matches the `bash -n` prefix and the `+n` is the rest of the string. The
   hook refuses a word beginning with `+` in a `bash -n` invocation, and a
   brace, an unquoted glob, `$` or backtick in one of its words, since
   `{+,+}n` reaches Bash as `+n` and `?n` does the same beside a file of that
   name.
+
+  It also prints what it reads, as ShellCheck does
+  ([#345](https://github.com/Danathar/arch-bootc/issues/345)). `-n` stops
+  Bash running a script, not printing it: `bash -n -v ./cosign.key` printed
+  the whole key, because `-v` prints every line Bash reads. Without `-v`,
+  `bash -n` still prints the line a syntax error stands on, so `bash -n
+  .env` printed a `NAME=value` line whose value held a `(`. The hook now
+  reads a `bash -n` invocation's options the way Bash does — `-nv` is `-n
+  -v`, and `-no verbose` hands `verbose` to the `-o` — and refuses the ones
+  that print or copy what Bash reads: `-v` and `-o verbose`, `-D` (prints
+  every `$"..."` string), `-o history` and `-i` (copy every line into
+  `~/.bash_history`), `-i` and `-l` (read `~/.bashrc` and the login
+  profiles, and print the line a syntax error in them stands on), and `-x`
+  and `-o xtrace`, which print nothing under `-n` but have no use in a
+  syntax check. A login shell started without `-l` is refused with them:
+  `exec -l bash -n`, and `exec -a` or `env -a` (`--argv0`) setting a zeroth
+  argument that begins with `-`. Every other option letter, `-o` name and
+  `-O` name was run under `-n` against a marker file and printed none of
+  it. Every operand, and the target of a bare `<` on the invocation, is held
+  to the ShellCheck operand test. `bash -n tests/run-tests.sh` is unchanged.
+  `tests/check-invariants.sh` runs each spelling through real Bash in a
+  throwaway checkout and HOME as well as through the hook, and fails if one
+  that prints is allowed.
 - **The write primitive is not git's alone either.** Six allow rows end in
   `*` — `shellcheck *`, `bash -n *`, `podman images*`, `podman ps*`,
   `findmnt *`, `df -T*` — which means "this command with any arguments", and
