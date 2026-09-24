@@ -333,10 +333,11 @@ shared base stage needs evidence from more than one flavor.
 A failed `podman build` in this repository is not guaranteed to be
 side-effect-free on the host.
 
-This image intentionally converts `/mnt`, `/root`, `/srv`, and `/opt` into
-symlinks into `/var/...` early in the base stage, and those targets do not exist
-until boot-time tmpfiles run. They are therefore dangling symlinks for the rest
-of the build. When a `--mount=type=bind` step targets a container path whose
+This image intentionally converts `/mnt`, `/root`, `/srv`, `/opt`, `/home`,
+`/usr/local`, and `/ostree` into symlinks into `/var/...` and `/sysroot/...`
+early in the base stage, and nothing in the build creates those targets: they
+appear only on the installed system. They are therefore dangling symlinks for
+the rest of the build. When a `--mount=type=bind` step targets a container path whose
 parent is one of those dangling symlinks, buildah's mount-target preparation
 fails, and its cleanup path has been observed deleting real, previously
 committed files from the bind mount's **host source directory**. This was
@@ -346,8 +347,8 @@ Therefore:
 
 - Never target a bind mount at a container path whose parent could be a dangling
   symlink at that point in the build. In this repository that means avoiding
-  `/mnt`, `/root`, `/srv`, and `/opt` as mount targets anywhere after the
-  directory restructuring step. Prefer `/tmp`, which stays a real directory
+  `/mnt`, `/root`, `/srv`, `/opt`, `/home`, `/usr/local`, and `/ostree` as
+  mount targets anywhere after the directory restructuring step. Prefer `/tmp`, which stays a real directory
   throughout, or another path confirmed to be a plain directory at that stage.
 - After any failed build involving a bind mount, run `git status` immediately,
   before anything else. Treat unexpected deleted entries as real data loss and

@@ -7472,7 +7472,7 @@ fi
 # that each path the rubric names is in fact one of the symlinked ones, and that
 # nothing targets it.
 # shellcheck disable=SC2016  # the backticks are literal Markdown in the document
-rubric_dangling="$(grep -oE '`/[a-z]+`' <<<"$(rubric_bullet 'mount=type=bind')" | tr -d '`' | sort -u)"
+rubric_dangling="$(grep -oE '`/[a-z/]+`' <<<"$(rubric_bullet 'mount=type=bind')" | tr -d '`' | sort -u)"
 rubric_bind_targets="$(grep -oE 'type=bind[^[:space:]]*' <<<"${rubric_cf_active}" |
   grep -oE 'target=[^ ,]+' | cut -d= -f2 | sort -u)"
 if [[ -z "${rubric_dangling}" ]]; then
@@ -10844,6 +10844,113 @@ else
     "docs/security/SECURITY-AI.md" '\]\(\.\./branch-protection\.md\)'
   assert_present "README.md's documentation table links to the page" \
     "README.md" '\]\(docs/branch-protection\.md\)'
+fi
+
+# ---------------------------------------------------------------------------
+group "Dangling restructuring symlinks (AGENTS.md, docs/review-rubric.md, docs/security/SECURITY-AI.md: the paths a bind-mount must never target)"
+
+# Four documents hand an agent the list of paths a `--mount=type=bind` must not
+# target, because a failed bind-mount under a dangling symlink has been observed
+# deleting real files from the host. Each list was a hand copy of one `ln -sT`
+# chain in the Containerfile, and all four named `/mnt`, `/root`, `/srv` and
+# `/opt` while the same step also points `/home`, `/usr/local` and `/ostree` at
+# directories nothing in the build creates. The review-rubric group above checks
+# only that each path the rubric names is symlinked -- the direction that cannot
+# notice an omission -- and only against the rubric's own list.
+#
+# So the set is computed here from the step itself: a link is dangling when it
+# resolves under a directory that step creates empty with `mkdir -p` and no
+# later step creates its target. Every copy of the list must equal that set.
+
+dangling_cf_active="$(grep -Ev '^[[:space:]]*#' "${CONTAINERFILE}" |
+  sed -e ':a' -e '/\\$/N; s/\\\n[[:space:]]*/ /; ta')"
+dangling_step="$(grep -E '^RUN .*rm -rf [^&]*/boot' <<<"${dangling_cf_active}" | head -n 1)"
+dangling_step_line="$(grep -nE '^RUN .*rm -rf [^&]*/boot' "${CONTAINERFILE}" | head -n 1 | cut -d: -f1)"
+dangling_later="$(grep -Ev '^[[:space:]]*#' "${CONTAINERFILE}" | tail -n +"$((${dangling_step_line:-1} + 1))" |
+  sed -e ':a' -e '/\\$/N; s/\\\n[[:space:]]*/ /; ta')"
+
+# Lexically resolve TARGET relative to the directory holding LINK.
+dangling_resolve() {
+  local link="$1" target="$2" path part out=()
+  if [[ "${target}" == /* ]]; then path="${target}"; else path="${link%/*}/${target}"; fi
+  local IFS=/
+  for part in ${path}; do
+    case "${part}" in
+    "" | .) ;;
+    ..) ((${#out[@]})) && unset 'out[${#out[@]}-1]' ;;
+    *) out+=("${part}") ;;
+    esac
+  done
+  printf '/%s\n' "${out[*]}"
+}
+
+dangling_links=""
+dangling_created="$(grep -oE 'mkdir -p( +/[^ &;]+)+' <<<"${dangling_step}" | sed 's/^mkdir -p //' | tr ' ' '\n')"
+dangling_pairs="$(grep -oE 'ln -sT? +[^ ]+ +/[^ &;]+' <<<"${dangling_step}" | sed -E 's/^ln -sT? +//')"
+dangling_pair_count=0
+while read -r dangling_target dangling_link; do
+  [[ -n "${dangling_link:-}" ]] || continue
+  dangling_pair_count=$((dangling_pair_count + 1))
+  dangling_to="$(dangling_resolve "${dangling_link}" "${dangling_target}")"
+  grep -qxF -- "${dangling_to}" <<<"${dangling_created}" && continue
+  grep -qxF -- "${dangling_to%/*}" <<<"${dangling_created}" || continue
+  grep -qE "mkdir [^&;]*${dangling_to}([[:space:]/;&]|$)" <<<"${dangling_later}" && continue
+  dangling_links+="${dangling_link}"$'\n'
+done <<<"${dangling_pairs}"
+dangling_links="$(sort -u <<<"${dangling_links}" | sed '/^$/d' | tr '\n' ' ')"
+
+if [[ -z "${dangling_step}" || "${dangling_pair_count}" -eq 0 ]]; then
+  fail "the Containerfile's directory-restructuring step symlinks directories into /var" \
+    "no RUN step with 'rm -rf ... /boot' and 'ln -sT' found in ${CONTAINERFILE}"
+elif [[ -z "${dangling_links}" ]]; then
+  fail "the directory-restructuring step leaves dangling symlinks the documents can be checked against" \
+    "none of its ${dangling_pair_count} link(s) resolves under a directory it creates empty"
+else
+  pass "the directory-restructuring step leaves ${dangling_links% } dangling"
+fi
+
+# Each copy is the backticked paths between two phrases of its own sentence.
+# Markdown wraps, so the document is flattened first; an anchor that no longer
+# matches extracts nothing and fails rather than passing on an empty set.
+dangling_doc_list() {
+  local file="$1" from="$2" to="$3"
+  # shellcheck disable=SC2016 # the backticks are the documents' own markup
+  tr '\n' ' ' <"${file}" | tr -s ' ' | grep -oE "${from}.{0,200}${to}" | head -n 1 |
+    grep -oE '`/[a-z/]+`' | tr -d '`' | sort -u | tr '\n' ' '
+}
+
+for dangling_copy in \
+  "AGENTS.md|intentionally converts|into symlinks into" \
+  "AGENTS.md|that means avoiding|as mount targets" \
+  "docs/review-rubric.md|targets a path under|after the directory-restructuring step" \
+  "docs/security/SECURITY-AI.md|one of the dangling symlinks \\(|\\) the image creates"; do
+  IFS='|' read -r dangling_file dangling_from dangling_to_phrase <<<"${dangling_copy}"
+  dangling_named="$(dangling_doc_list "${dangling_file}" "${dangling_from}" "${dangling_to_phrase}")"
+  if [[ -z "${dangling_named}" ]]; then
+    fail "${dangling_file} ('${dangling_from//\\/}') names the dangling symlinks" \
+      "the sentence listing them is gone or reworded; nothing was extracted"
+  else
+    assert_equal "${dangling_file} ('${dangling_from//\\/}') names exactly the symlinks the Containerfile leaves dangling" \
+      "${dangling_named% }" "${dangling_links% }"
+  fi
+done
+
+# The rule itself, against the computed set rather than any document's copy:
+# no bind-mount after the restructuring step targets a dangling path.
+dangling_bad=""
+while IFS= read -r dangling_bind; do
+  [[ -n "${dangling_bind}" ]] || continue
+  for dangling_link in ${dangling_links}; do
+    [[ "${dangling_bind}" == "${dangling_link}" || "${dangling_bind}" == "${dangling_link}/"* ]] &&
+      dangling_bad+="${dangling_bind} "
+  done
+done < <(grep -oE 'type=bind[^[:space:]]*' <<<"${dangling_later}" | grep -oE 'target=[^ ,]+' | cut -d= -f2 | sort -u)
+if [[ -z "${dangling_links}" ]]; then
+  fail "no bind-mount after the restructuring step targets a dangling symlink" "no dangling set to check against"
+elif [[ -z "${dangling_bad}" ]]; then
+  pass "no bind-mount after the restructuring step targets a dangling symlink"
+else
+  fail "no bind-mount after the restructuring step targets a dangling symlink" "${dangling_bad}"
 fi
 
 # ---------------------------------------------------------------------------
