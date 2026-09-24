@@ -9,6 +9,11 @@ figure below is derived on demand from the GitHub API with `gh`, which is
 deliberate — a metric you can recompute in one command from the source of truth
 does not drift, and does not become a second thing to maintain.
 
+Dated readings of these numbers are kept in
+[`docs/metrics/`](metrics/2026-09-24.md). Each one carries the exact commands
+that produced it, pinned to a fixed range so they reproduce, and is left as it
+was read.
+
 ## PR acceptance
 
 The headline metric: **of the pull requests opened against this repository, what
@@ -17,15 +22,20 @@ does not fit — bad scoping, missing context, or automation opening changes
 nobody wants.
 
 ```bash
-gh pr list --state all --limit 200 --json state \
+gh pr list --state all --limit 1000 --json state \
   --jq 'group_by(.state)[] | "\(.[0].state): \(length)"'
 ```
+
+`--limit` has to stay above the number of pull requests: `gh` returns the most
+recent N and says nothing about the rest. It was 200 until the repository
+passed 200 pull requests, and from then on these commands undercounted. The
+time-to-merge commands below use the same limit for the same reason.
 
 Split by author, because the number is close to meaningless unpooled — this
 repository's PR volume is dominated by Renovate:
 
 ```bash
-gh pr list --state all --limit 200 --json state,author \
+gh pr list --state all --limit 1000 --json state,author \
   --jq 'group_by(.author.login)[] |
         "\(.[0].author.login): total \(length),
          merged \([.[]|select(.state=="MERGED")]|length),
@@ -35,7 +45,7 @@ gh pr list --state all --limit 200 --json state,author \
 Humans and agents only, excluding bots:
 
 ```bash
-gh pr list --state all --limit 200 --json state,author \
+gh pr list --state all --limit 1000 --json state,author \
   --jq '[.[] | select(.author.login | startswith("app/") | not)] |
         {total: length,
          merged: ([.[]|select(.state=="MERGED")]|length),
@@ -53,7 +63,7 @@ How long a change sits between opening and landing. Use the median, not the
 mean — one PR left open over a weekend distorts an average badly at this volume.
 
 ```bash
-gh pr list --state merged --limit 200 --json createdAt,mergedAt \
+gh pr list --state merged --limit 1000 --json createdAt,mergedAt \
   --jq '[.[] | (((.mergedAt|fromdate) - (.createdAt|fromdate)) / 3600)] | sort |
         {count: length, median: .[length/2|floor], p90: .[length*0.9|floor]}'
 ```
@@ -62,7 +72,7 @@ Bot PRs automerge on a green build, so their time-to-merge is really a measure
 of CI duration. Filter them out to measure review latency instead:
 
 ```bash
-gh pr list --state merged --limit 200 --json createdAt,mergedAt,author \
+gh pr list --state merged --limit 1000 --json createdAt,mergedAt,author \
   --jq '[.[] | select(.author.login | startswith("app/") | not)
              | (((.mergedAt|fromdate) - (.createdAt|fromdate)) / 3600)] | sort |
         {count: length, median: .[length/2|floor]}'
