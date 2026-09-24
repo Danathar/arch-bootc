@@ -3,7 +3,7 @@
 [![Lint workflows](https://github.com/Danathar/arch-bootc/actions/workflows/zizmor.yaml/badge.svg?branch=main)](https://github.com/Danathar/arch-bootc/actions/workflows/zizmor.yaml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Danathar/arch-bootc)
 [![Maintenance assisted by Hivecommons Hive](https://img.shields.io/badge/maintenance%20assisted%20by-Hivecommons%20Hive-1f6feb)](https://github.com/hivecommons/hive)
-[![ACMM L4 Security-Aware](https://img.shields.io/badge/ACMM-L4%20Security--Aware-2da44e)](https://github.com/hivecommons/hive#acmm-levels)
+[![ACMM L5 Semi-Autonomous](https://img.shields.io/badge/ACMM-L5%20Semi--Autonomous-2da44e)](#maintained-with-hive-acmm-l5)
 [![AI assisted](https://img.shields.io/badge/AI-assisted-d29922)](#about-this-project)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
@@ -80,14 +80,22 @@ is the authoritative policy behind it.
 
 > **Note:** This repo was created primarily using directed AI, though its contents have been manually tested and inspected. I believe it's important for anyone using open-source tools on GitHub to have this context before relying on them. Special thanks to the upstream repository [bootcrew/arch-bootc](https://github.com/bootcrew/arch-bootc) for the foundational bootstrapping work.
 
+## Maintained with Hive (ACMM L5)
+
 > [!NOTE]
-> **Maintenance on this repository is assisted by [Hivecommons Hive](https://github.com/hivecommons/hive) at ACMM level 4.**
->
-> Hive orchestrates a fleet of AI agents that continuously review this codebase and file what they find as issues and pull requests.
->
-> At **L4 (Security-Aware)** all agents may file issues, and the quality, security and CI agents may additionally open pull requests that carry a `hold` label. The rest stay advisory: they report, they do not act. Every change is still reviewed and merged by a human maintainer.
->
-> Learn more: [Hive](https://github.com/hivecommons/hive) · [Hive Hub](https://hive.kubestellar.io) · [full ACMM policy matrix](https://github.com/hivecommons/hive/blob/v4/src/docs/acmm-policy-matrix.md)
+> **This repository's Hive runs at ACMM L5 (Semi-Autonomous).** Maintenance here is assisted by [Hivecommons Hive](https://github.com/hivecommons/hive), which orchestrates a fleet of AI agents that continuously review this codebase and file what they find as issues and pull requests.
+
+At L5 all agents may file issues and open pull requests. Every pull request an agent opens gets a `hold` label automatically, a human maintainer reviews them in batches, and no agent pull request merges on its own. This level adds three agents:
+
+- a **reviewer** that works through the open pull requests and backs each finding with a file and line reference, but never merges, approves or closes anything;
+- an **architect** that writes RFCs and opens pull requests for structural changes;
+- a **strategist** that coordinates the other agents.
+
+The telemetry and operations agents ship paused. Every change a Hive agent proposes is still reviewed and merged by a human maintainer. Renovate's dependency updates are separate: most of them merge on their own once the build is green ([Renovate](docs/renovate.md)).
+
+In this repository an agent's pull request passes the same gates as anyone else's. The ruleset on `main` only accepts changes through a pull request that passed `Shell tests and coverage` ([branch protection](docs/branch-protection.md)), and a T3 change — boot, security model, provenance or published artifacts — never merges on a green check alone ([risk tiers](docs/risk-tiers.md)).
+
+Learn more: [Hive](https://github.com/hivecommons/hive) · [Hive Hub](https://hive.kubestellar.io) · [ACMM levels, all six](https://github.com/hivecommons/hive#acmm-levels) · [full ACMM policy matrix](https://github.com/hivecommons/hive/blob/v4/src/docs/acmm-policy-matrix.md)
 
 ## License
 
