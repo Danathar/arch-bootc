@@ -17,6 +17,8 @@ mine along the way — read the gotchas section, they're not hypothetical.
   ```bash
   virsh -c qemu:///session list --all --name
   virsh -c qemu:///session pool-list --all --name
+  virsh -c qemu:///system list --all --name
+  virsh -c qemu:///system pool-list --all --name
   ```
   The host this repo is developed on has pre-existing VMs and pools with names that
   look exactly like what a test might casually choose (e.g. matching this repo's own
@@ -75,7 +77,7 @@ mine along the way — read the gotchas section, they're not hypothetical.
   *not* covered by deleting the VM or the underlying file. During authorized
   cleanup, check `virsh -c qemu:///session pool-list --all`, not just the VM list —
   finding an extra pool there means cleanup isn't done yet.
-  `virsh -c qemu:///session pool-destroy <name> && pool-undefine <name>`.
+  `virsh -c qemu:///session pool-destroy <name> && virsh -c qemu:///session pool-undefine <name>`.
 
 - **qemu-guest-agent's `guest-file-write` truncates large payloads per call** (seen
   truncating at ~1516→800 bytes in one test). If you're pushing a test script into the
@@ -112,7 +114,7 @@ Run this checklist only after the user has explicitly authorized removal of the
 named test resources. Until then, preserve them for inspection and report their
 identifiers, paths, and storage impact.
 
-- `virsh -c qemu:///session destroy <name>` then `undefine <name> --nvram`
+- `virsh -c qemu:///session destroy <name>` then `virsh -c qemu:///session undefine <name> --nvram`
 - `virsh -c qemu:///session pool-list --all` — destroy/undefine anything you didn't
   have at baseline (see the auto-pool gotcha above)
 - `rm -rf` the disk-backed work directory
