@@ -68,13 +68,14 @@ operation it is.
 Also run whatever else the diff calls for — `git diff --check`, `bash -n` on
 changed scripts, `actionlint` or `zizmor` on changed workflows.
 
-Adding a `tests/test-*.sh` file picks it up automatically in `run-tests.sh`,
-which globs, but **not** in either shellcheck invocation — both list files
-explicitly. Add it to the `shellcheck` line in the `Justfile`'s `lint` recipe
-and to the `ShellCheck` step's arguments in the build workflow, or it silently
-escapes linting. `check-invariants.sh` now fails when a file is missing from
-either list, so this is caught rather than noticed in review — which is how it
-was caught the first time.
+Adding a `tests/test-*.sh` file takes three edits. `run-tests.sh` globs, but
+it refuses to start until the file is also listed in `tests/test-manifest`,
+which the glob is checked against. Neither shellcheck invocation globs at all —
+both list files explicitly. Add it to the `shellcheck` line in the `Justfile`'s
+`lint` recipe and to the `ShellCheck` step's arguments in the build workflow,
+or it silently escapes linting. `check-invariants.sh` now fails when a file is
+missing from any of the three lists, so this is caught rather than noticed in
+review — which is how the shellcheck half was caught the first time.
 
 ## Things not to change casually
 

@@ -90,15 +90,16 @@ towards the `1..N` total, which keeps the "a lower total is a real lost test"
 rule below usable; but a run full of `# SKIP` lines has not earned the
 `ostree-pkg-diff` floor, so read the log before concluding that floor is safe.
 
-**`ubuntu-24.04` runners were one of those hosts, and the `test` job works
-around it.** Ubuntu 24.04 restricts unprivileged user namespaces through
-AppArmor, and GitHub's image keeps that restriction, so every one of these cases
+**GitHub's `ubuntu-24.04` runners were one of those hosts, and the `test` job
+works around it.** Ubuntu 24.04 restricted unprivileged user namespaces through
+AppArmor, and GitHub's image kept that restriction, so every one of these cases
 used to skip with `unshare: write failed /proc/self/uid_map: Operation not
 permitted` while the job stayed green. The job now clears
 `kernel.apparmor_restrict_unprivileged_userns` and then *checks* that the
 namespace can be created, before the suite runs — see the `test` job below for
 why the check, and not the sysctl alone, is the part that keeps this from coming
-undone. A return to skipping now fails twice over: at that check, and at
+undone. The job has since moved to `ubuntu-26.04`, whose kernel still has the
+knob, and it clears it there the same way. A return to skipping now fails twice over: at that check, and at
 `ARCH_BOOTC_NO_SKIPS`, which CI sets.
 
 `tests/check-coverage.sh` runs the suite under Bash xtrace and fails if any
@@ -113,10 +114,11 @@ tests add coverage; do not lower one to make a regression pass.
 **Set a floor to the lowest count across supported Bash versions, not the
 highest one CI happens to print.** Bash's xtrace output is not identical between
 releases: the same `ostree-pkg-diff` code, under a suite whose per-file
-assertion totals are identical in both, traces 117 lines under bash 5.2.21 (what
-`ubuntu-24.04` runners ship) and 116 under 5.3.9. A floor calibrated to CI alone
-therefore fails on a developer machine with a newer Bash while CI stays green —
-which is exactly what happened to the `ostree-pkg-diff` floor the first time it
+assertion totals are identical in both, traces 117 lines under bash 5.2.21 (what the
+`ubuntu-24.04` runners CI used at the time shipped) and 116 under 5.3.9 (what
+the `ubuntu-26.04` runners it uses now ship). A floor calibrated to whichever
+Bash CI runs therefore fails on a machine with a different one while CI stays
+green — which is exactly what happened to the `ostree-pkg-diff` floor the first time it
 was set from a 5.2 host alone. The report prints the Bash version it
 traced with so this is visible in the log rather than mysterious.
 
@@ -280,10 +282,11 @@ program rather than sourcing its helpers. `ostree-pkg-diff` is the case in
 hand: it re-executes itself under `sudo` when `EUID` is not 0, so the only way
 to reach its deployment discovery without giving the suite real root is
 `unshare --map-root-user --mount` — root inside a namespace whose one mapped uid
-is still the unprivileged runner. `ubuntu-24.04` refuses unprivileged user
-namespaces by default, through AppArmor's
-`kernel.apparmor_restrict_unprivileged_userns`, so cases written that way skip
-rather than run and the job goes green over them. Clearing the sysctl costs the
+is still the unprivileged runner. Ubuntu restricts unprivileged user
+namespaces through AppArmor's `kernel.apparmor_restrict_unprivileged_userns`;
+the `ubuntu-24.04` runner the job used when this was found refused them by
+default, so cases written that way skipped rather than ran and the job went
+green over them. The job runs on `ubuntu-26.04` now, and clears the same knob. Clearing the sysctl costs the
 job nothing it did not already have — the runner user has passwordless `sudo` —
 and keeps `tests/` root-free, which is the property this document claims for it
 a few paragraphs up.
@@ -295,12 +298,15 @@ the namespace some other way, the job says so in one line instead of going back
 to skipping in silence. With `ARCH_BOOTC_NO_SKIPS` above, that is two
 independent places a silent return to skipping turns red.
 
-Adding a new `tests/test-*.sh` or `tests/e2e/test-*.sh` file picks it up
-automatically in `run-tests.sh`, which globs both locations, but **not** in
-either shellcheck invocation — both list files explicitly. Add it to the
-`shellcheck` line in the `Justfile`'s `lint` recipe and to the `ShellCheck`
-step's `/mnt/tests/...` arguments in `build.yml`, or it silently escapes
-linting.
+Adding a new `tests/test-*.sh` or `tests/e2e/test-*.sh` file takes three
+edits. `run-tests.sh` globs both locations, but it refuses to start until the
+new file is also listed in `tests/test-manifest` — the glob is checked against
+that committed list in both directions, for the reason
+[quality.md](quality.md) gives. Neither shellcheck invocation globs at all:
+add the file to the `shellcheck` line in the `Justfile`'s `lint` recipe and to
+the `ShellCheck` step's `/mnt/tests/...` arguments in `build.yml`, or it
+silently escapes linting. `tests/check-invariants.sh` fails when a test file is
+missing from any of the three.
 
 ## Workflow linting (zizmor)
 

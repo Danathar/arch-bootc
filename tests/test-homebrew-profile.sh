@@ -185,7 +185,7 @@ namespaces_available() {
 # this repo builds maps /home -> /var/home, and a developer running the suite
 # on such a host cannot separate the two branches -- mounting over the symlink
 # lands on /var/home and the fallback case would silently become a repeat of
-# the first one. CI runs on ubuntu-24.04, where /home is a real directory.
+# the first one. CI runs on ubuntu-26.04, where /home is a real directory.
 home_is_mountable() {
   [[ -d /home && ! -L /home ]]
 }
