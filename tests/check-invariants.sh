@@ -5654,12 +5654,13 @@ group "Process metrics (docs/metrics.md is a set of runnable gh/jq commands, a h
 METRICS_DOC="docs/metrics.md"
 
 # Fenced blocks by info string, matching the extractor used for the runbooks
-# above. Only ```bash blocks are commands.
+# above. Only ```bash blocks are commands. The second argument names another
+# document to read; the dated snapshots under docs/metrics/ use it.
 metrics_fenced() {
-  local want="$1"
+  local want="$1" doc="${2:-${METRICS_DOC}}"
   awk -v want="${want}" '
     /^```/ { if (in_block) { in_block = 0 } else { in_block = (substr($0, 4) == want) } ; next }
-    in_block' "${METRICS_DOC}"
+    in_block' "${doc}"
 }
 
 # Headings with fenced blocks excluded: `# Review comments per merged PR` is a
@@ -5706,7 +5707,7 @@ assert_doc_links_resolve "${METRICS_DOC}" \
 # token, which is what separates the `gh api` inside the review-friction loop
 # from the `gh pr list` that feeds it.
 metrics_jq_records() {
-  metrics_fenced bash | awk -v RS=$'\a' '
+  metrics_fenced bash "${1:-${METRICS_DOC}}" | awk -v RS=$'\a' '
     {
       text = $0
       sep = sprintf("%c", 2)
@@ -5728,6 +5729,26 @@ metrics_jq_records() {
         if (match(seg, /--json [A-Za-z0-9,]+/))
           fields = substr(seg, RSTART + 7, RLENGTH - 7)
         printf "%s%s%s%s", fields, fieldsep, program, recsep
+      }
+    }
+  '
+}
+
+# Every gh invocation in a document, whole: continuation lines joined, split at
+# each `gh` token the same way as above, one record per invocation.
+metrics_gh_commands() {
+  metrics_fenced bash "$1" | awk -v RS=$'\a' '
+    {
+      text = $0
+      sep = sprintf("%c", 2)
+      recsep = sprintf("%c", 4)
+      gsub(/\\\n[ \t]*/, " ", text)
+      gsub(/(^|[ \t(\n])gh /, sep "&", text)
+      n = split(text, segment, sep)
+      for (i = 2; i <= n; i++) {
+        seg = segment[i]
+        sub(/^[ \t(\n]/, "", seg)
+        printf "%s%s", seg, recsep
       }
     }
   '
@@ -5794,6 +5815,29 @@ metrics_norm() {
   tr '\n' ' ' | sed 's/\\n/ /g; s/"//g' | tr -s ' ' | sed 's/^ //; s/ $//'
 }
 
+# A `gh api` call has no --json: the endpoint decides the shape. The only one
+# these documents call is a pull request's review comments, so a program with
+# no requested fields runs against that shape. It must run, print something,
+# and read only keys the fixture has -- a key it lacks would read as null and
+# pass. Prints what is wrong, or nothing.
+metrics_api_comments='[
+  {"user":{"login":"chatgpt-codex-connector[bot]"},"in_reply_to_id":null},
+  {"user":{"login":"Danathar"},"in_reply_to_id":101}
+]'
+metrics_api_problems() {
+  local program="$1" out field
+  if ! out="$(jq "${program}" <<<"${metrics_api_comments}" 2>&1)"; then
+    printf '[gh api] %s | ' "${out//$'\n'/ }"
+    return
+  fi
+  [[ -n "${out}" ]] || printf '[gh api] produced no output | '
+  while IFS= read -r field; do
+    [[ -n "${field}" ]] || continue
+    [[ "${field}" == user || "${field}" == in_reply_to_id ]] ||
+      printf '[gh api] %s (no review-comment fixture shape) | ' "${field}"
+  done < <(printf '%s' "${program}" | metrics_program_fields)
+}
+
 metrics_prs='[
   {"state":"MERGED","author":{"login":"app/renovate"}},
   {"state":"MERGED","author":{"login":"app/renovate"}},
@@ -5828,6 +5872,9 @@ while IFS= read -r -d $'\004' metrics_record; do
 
   # The program runs, against exactly the fields its own command requested.
   if [[ -n "${metrics_fields}" ]]; then
+    # Once in this shell first, so an unknown field is recorded: the call in
+    # the pipeline below runs in a subshell, and what it appends is lost.
+    metrics_fixture "${metrics_fields}" >/dev/null
     metrics_out="$(metrics_fixture "${metrics_fields}" | jq "${metrics_program}" 2>&1)" ||
       metrics_broken+="[${metrics_fields}] ${metrics_out//$'\n'/ } | "
     [[ -n "${metrics_out}" ]] ||
@@ -5841,6 +5888,8 @@ while IFS= read -r -d $'\004' metrics_record; do
       grep -qx -- "${metrics_read_field}" <<<"${metrics_fields//,/$'\n'}" ||
         metrics_unrequested+="${metrics_read_field} (not in --json ${metrics_fields}) "
     done < <(printf '%s' "${metrics_program}" | metrics_program_fields)
+  else
+    metrics_broken+="$(metrics_api_problems "${metrics_program}")"
   fi
 
   # The headline figures, computed by the document's own filters.
@@ -6028,7 +6077,7 @@ assert_present "Renovate still automerges, which is why docs/metrics.md reads bo
 # acceptance rates derived from them, the by-author line, and the prose below
 # the table that restates two of the figures in different units.
 metrics_row() {
-  grep -E "^\| $1 \|" "${METRICS_DOC}" | head -1 | awk -F'|' '{print $3}' | sed 's/^ *//; s/ *$//'
+  grep -E "^\| $1 \|" "${2:-${METRICS_DOC}}" | head -1 | awk -F'|' '{print $3}' | sed 's/^ *//; s/ *$//'
 }
 
 metrics_opened="$(metrics_row 'PRs opened, all time')"
@@ -6138,6 +6187,161 @@ elif [[ "${metrics_asof}" > "$(date -u +%F)" ]]; then
   fail "docs/metrics.md's snapshot date is not in the future" "as of ${metrics_asof}"
 else
   pass "docs/metrics.md dates its snapshot, and the date has passed"
+fi
+
+# -- The dated snapshots ----------------------------------------------------
+#
+# docs/metrics/ holds readings of the numbers above, one file per date, each
+# carrying the commands that produced it. They are left as they were read, so
+# the figures are not re-derived here. What can rot is everything around them:
+#
+#   - The commands, held to the same two checks as the ones above: each jq
+#     program runs against exactly the fields its command requests, and reads
+#     nothing else.
+#   - The pinning. A snapshot's commands are meant to reproduce it. A
+#     `gh pr list` that does not select the snapshot's own "pull requests up
+#     to #N", a `gh run list` without `--created '<DATE'`, or a command that
+#     leans on the clone's remotes instead of naming the repository gives a
+#     different answer each time it is run -- and in a fork, a different
+#     repository's answer.
+#   - The table's own arithmetic, held to the same totals as the snapshot
+#     table above.
+#   - The file name, the title, and docs/metrics.md's link to the newest one.
+METRICS_SNAPSHOT_DIR="docs/metrics"
+METRICS_REPO="Danathar/arch-bootc"
+shopt -s nullglob
+metrics_snapshots=("${METRICS_SNAPSHOT_DIR}"/*)
+shopt -u nullglob
+metrics_latest=""
+if ((${#metrics_snapshots[@]} == 0)); then
+  fail "docs/metrics/ holds at least one dated snapshot" \
+    "${METRICS_SNAPSHOT_DIR} is empty or missing"
+fi
+for snapshot in "${metrics_snapshots[@]}"; do
+  if [[ ! "${snapshot##*/}" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2})\.md$ ]]; then
+    fail "every file in docs/metrics/ is a dated snapshot named YYYY-MM-DD.md" "${snapshot}"
+    continue
+  fi
+  snapshot_date="${BASH_REMATCH[1]}"
+  [[ "${snapshot_date}" > "${metrics_latest}" ]] && metrics_latest="${snapshot_date}"
+
+  assert_equal "${snapshot}'s title carries the date in its file name" \
+    "$(head -n 1 "${snapshot}")" "# Metrics snapshot — ${snapshot_date}"
+  if [[ "${snapshot_date}" > "$(date -u +%F)" ]]; then
+    fail "${snapshot}'s date is not in the future" "dated ${snapshot_date}"
+  else
+    pass "${snapshot}'s date has passed"
+  fi
+  assert_doc_links_resolve "${snapshot}" \
+    "no relative links found; the hand-off back to docs/metrics.md is gone"
+
+  # The commands run, against the fields they request.
+  snapshot_programs=0
+  snapshot_broken=""
+  snapshot_unrequested=""
+  metrics_unknown_fields=""
+  while IFS= read -r -d $'\004' metrics_record; do
+    metrics_fields="${metrics_record%%$'\003'*}"
+    metrics_program="${metrics_record#*$'\003'}"
+    [[ -n "${metrics_program}" ]] || continue
+    snapshot_programs=$((snapshot_programs + 1))
+    if [[ -z "${metrics_fields}" ]]; then
+      snapshot_broken+="$(metrics_api_problems "${metrics_program}")"
+      continue
+    fi
+    metrics_fixture "${metrics_fields}" >/dev/null
+    metrics_out="$(metrics_fixture "${metrics_fields}" | jq "${metrics_program}" 2>&1)" ||
+      snapshot_broken+="[${metrics_fields}] ${metrics_out//$'\n'/ } | "
+    [[ -n "${metrics_out}" ]] || snapshot_broken+="[${metrics_fields}] produced no output | "
+    while IFS= read -r metrics_read_field; do
+      [[ -n "${metrics_read_field}" ]] || continue
+      grep -qx -- "${metrics_read_field}" <<<"${metrics_fields//,/$'\n'}" ||
+        snapshot_unrequested+="${metrics_read_field} (not in --json ${metrics_fields}) "
+    done < <(printf '%s' "${metrics_program}" | metrics_program_fields)
+  done < <(metrics_jq_records "${snapshot}")
+  if ((snapshot_programs == 0)); then
+    fail "${snapshot} still carries the commands that produced it" "no gh ... --jq command found"
+  elif [[ -z "${snapshot_broken}${snapshot_unrequested}${metrics_unknown_fields}" ]]; then
+    pass "every jq program in ${snapshot} runs against the fields its command requests, and reads no other"
+  else
+    fail "every jq program in ${snapshot} runs against the fields its command requests, and reads no other" \
+      "${snapshot_broken}${snapshot_unrequested}${metrics_unknown_fields:+unknown field(s): ${metrics_unknown_fields}}"
+  fi
+
+  # The commands are pinned, and name the repository.
+  snapshot_pr_limit="$(grep -oE 'pull requests up to #[0-9]+' "${snapshot}" | head -n 1 | grep -oE '[0-9]+$')"
+  snapshot_unpinned=""
+  snapshot_commands=0
+  while IFS= read -r -d $'\004' snapshot_command; do
+    snapshot_commands=$((snapshot_commands + 1))
+    snapshot_command="${snapshot_command//$'\n'/ }"
+    case "${snapshot_command}" in
+      "gh api "*)
+        [[ "${snapshot_command}" == *"repos/${METRICS_REPO}/"* ]] ||
+          snapshot_unpinned+="does not name repos/${METRICS_REPO}/: ${snapshot_command:0:60} | "
+        continue
+        ;;
+    esac
+    [[ "${snapshot_command}" == *"--repo ${METRICS_REPO} "* ]] ||
+      snapshot_unpinned+="no --repo ${METRICS_REPO}: ${snapshot_command:0:60} | "
+    case "${snapshot_command}" in
+      "gh pr list "*)
+        [[ -n "${snapshot_pr_limit}" && "${snapshot_command}" == *"select(.number <= ${snapshot_pr_limit})"* ]] ||
+          snapshot_unpinned+="not limited to PRs up to #${snapshot_pr_limit:-?}: ${snapshot_command:0:60} | "
+        ;;
+      "gh run list "*)
+        [[ "${snapshot_command}" == *"--created '<${snapshot_date}'"* ]] ||
+          snapshot_unpinned+="no --created '<${snapshot_date}': ${snapshot_command:0:60} | "
+        ;;
+    esac
+  done < <(metrics_gh_commands "${snapshot}")
+  if ((snapshot_commands == 0)); then
+    fail "every command in ${snapshot} is pinned to its range and names ${METRICS_REPO}" "no gh command found"
+  elif [[ -z "${snapshot_unpinned}" ]]; then
+    pass "every command in ${snapshot} is pinned to its range and names ${METRICS_REPO}"
+  else
+    fail "every command in ${snapshot} is pinned to its range and names ${METRICS_REPO}" "${snapshot_unpinned}"
+  fi
+
+  # The table's arithmetic, when the snapshot has the acceptance table.
+  snapshot_opened="$(metrics_row 'PRs opened' "${snapshot}")"
+  snapshot_merged="$(metrics_row 'Merged' "${snapshot}")"
+  snapshot_closed="$(metrics_row 'Closed unmerged' "${snapshot}")"
+  snapshot_open="$(metrics_row 'Open' "${snapshot}")"
+  if [[ "${snapshot_opened}${snapshot_merged}${snapshot_closed}${snapshot_open}" == "" ]]; then
+    continue
+  fi
+  if [[ ! "${snapshot_opened}" =~ ^[0-9]+$ || ! "${snapshot_merged}" =~ ^[0-9]+$ ||
+    ! "${snapshot_closed}" =~ ^[0-9]+$ || ! "${snapshot_open}" =~ ^[0-9]+$ ]]; then
+    fail "${snapshot}'s acceptance table reports whole PR counts" \
+      "opened='${snapshot_opened}' merged='${snapshot_merged}' closed='${snapshot_closed}' open='${snapshot_open}'"
+    continue
+  fi
+  assert_equal "${snapshot} accounts for every PR it says was opened" \
+    "$((snapshot_merged + snapshot_closed + snapshot_open))" "${snapshot_opened}"
+  snapshot_rate="$(metrics_row 'Acceptance rate, all authors' "${snapshot}")"
+  if [[ "${snapshot_rate}" =~ ^([0-9]+)\ /\ ([0-9]+)\ resolved\ \(([0-9]+)%\)$ ]]; then
+    assert_equal "${snapshot}'s all-author acceptance rate is merged over merged plus closed" \
+      "${BASH_REMATCH[1]} / ${BASH_REMATCH[2]} (${BASH_REMATCH[3]}%)" \
+      "${snapshot_merged} / $((snapshot_merged + snapshot_closed)) ($((snapshot_merged * 100 / (snapshot_merged + snapshot_closed)))%)"
+  else
+    fail "${snapshot} records the all-author acceptance rate as 'N / M resolved (P%)'" "found '${snapshot_rate}'"
+  fi
+  snapshot_by_author="$(grep -oE '[0-9]+ \([0-9]+ merged(, [0-9]+ closed)?\)' "${snapshot}" |
+    sed -E 's/^([0-9]+) \(([0-9]+) merged(, ([0-9]+) closed)?\)$/\1 \2 \4/' |
+    awk '{t += $1; m += $2; c += $3; n++} END {print n + 0, t + 0, m + 0, c + 0}')"
+  if [[ "${snapshot_by_author%% *}" == "0" ]]; then
+    fail "${snapshot} splits its PRs by author" "no 'N (M merged, C closed)' entries found"
+  else
+    assert_equal "${snapshot}'s by-author counts add up to its opened, merged and closed rows" \
+      "${snapshot_by_author#* }" "${snapshot_opened} ${snapshot_merged} ${snapshot_closed}"
+  fi
+done
+
+if [[ -n "${metrics_latest}" ]]; then
+  assert_present "docs/metrics.md links to the newest snapshot, ${metrics_latest}" \
+    "${METRICS_DOC}" "\]\(metrics/${metrics_latest}\.md\)" \
+    "docs/metrics.md's pointer into docs/metrics/ names an older reading, or is gone"
 fi
 
 fi
