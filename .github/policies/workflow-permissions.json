@@ -1,0 +1,50 @@
+{
+  "$comment": [
+    "The GITHUB_TOKEN permissions each workflow in .github/workflows/ is allowed to request.",
+    "The 'Workflow token permissions' group in tests/check-invariants.sh reads every workflow",
+    "and fails when a job asks for anything not written here, when a workflow or job is missing",
+    "from this file, or when an entry here names a workflow or job that no longer exists. So",
+    "widening a token's reach takes two edits a reviewer sees side by side: the workflow, and",
+    "this file. 'workflow' is the top-level permissions block; null means the file declares",
+    "none, which is the rule here: docs/security/SECURITY-AI.md has every job declare its own.",
+    "'jobs' lists every job, and each must declare exactly the block shown. Changing this file",
+    "is T3 in docs/risk-tiers.md."
+  ],
+  "workflows": {
+    "ai-fix.yml": {
+      "workflow": null,
+      "jobs": {
+        "work-order": {"contents": "read", "issues": "write", "pull-requests": "write"}
+      }
+    },
+    "build.yml": {
+      "workflow": null,
+      "jobs": {
+        "lint": {"contents": "read"},
+        "test": {"contents": "read"},
+        "build_push": {"contents": "read", "packages": "write"},
+        "cleanup_packages": {"contents": "read", "packages": "write"}
+      }
+    },
+    "labeler.yml": {
+      "workflow": null,
+      "jobs": {
+        "label": {"contents": "read", "pull-requests": "write", "issues": "write"}
+      }
+    },
+    "nightly-compliance.yml": {
+      "workflow": null,
+      "jobs": {
+        "invariants": {"contents": "read"},
+        "bootc-pin": {"contents": "read"},
+        "signatures": {"contents": "read"}
+      }
+    },
+    "zizmor.yaml": {
+      "workflow": null,
+      "jobs": {
+        "zizmor": {"contents": "read"}
+      }
+    }
+  }
+}
