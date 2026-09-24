@@ -3782,7 +3782,8 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     fi
   done
 
-  # A redirection written after a subshell or a brace group:
+  # A redirection written after a subshell, a brace group or a keyword
+  # compound command:
   # `(git diff HEAD) >cosign.pub` and `{ git log --stdin; } <cosign.key`
   # write and read the same files as the refused `git diff HEAD >cosign.pub`
   # and `git log --stdin <cosign.key`, but the redirection stands outside the
@@ -3792,23 +3793,32 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   # whatever the allow rows say about the command inside ("Contains
   # subshell", "Contains compound_statement"). Checked on 2.1.273 and 2.1.280
   # with `Bash(git diff:*)` and `Bash(git log:*)` allowed, in the default and
-  # acceptEdits modes, and in both the `:*` and the ` *` spelling used here.
-  # The one way such a string ran with no prompt was a row that names the
-  # grouped string itself (`Bash({ git diff HEAD; } >out3.txt)` ran exactly
-  # that string), or a bare `Bash` row that allows everything. This fails if
-  # a row like that is added.
+  # acceptEdits modes, and in both the `:*` and the ` *` spelling used here;
+  # the `if`, `for`, `while` and function forms were asked the same way
+  # ("Contains if_statement" and so on). The one way such a string ran with
+  # no prompt was a row that names the grouped string itself
+  # (`Bash({ git diff HEAD; } >out3.txt)` ran exactly that string), or a bare
+  # `Bash` row that allows everything. This fails if a row like that is
+  # added. A row naming a compound command has a parenthesis or a brace in
+  # it, or, for the keyword forms (`if ...; then ...; fi >f`), what ends each
+  # part: a `;`, a newline or a lone `&` (`if true & then ... & fi >f` is the
+  # same `if`). Those are what it looks for; the `&` in `&&`, `2>&1`, `&>`
+  # and `|&` ends nothing, so it is taken out first (aurora-zfs-simple#241).
+  # Each row is printed as JSON so one with a newline in it stays one row.
   grouped_rows="$(jq -r '
     .permissions.allow[]?
     | select(. == "Bash" or (startswith("Bash(") and (
         ltrimstr("Bash(") | rtrimstr(")")
-        | test("[(){}]") or (rtrimstr(":*") | gsub("^\\s+|\\s+$"; "") | . == "" or . == "*")
+        | (gsub("&&|[<>|]&|&>"; "") | test("[(){};&\n]"))
+          or (rtrimstr(":*") | gsub("^\\s+|\\s+$"; "") | . == "" or . == "*")
       )))
+    | @json
   ' "${CLAUDE_SETTINGS}")"
   if [[ -z "${grouped_rows}" ]]; then
-    pass "no allow rule reaches a redirection written after a subshell or a brace group"
+    pass "no allow rule reaches a redirection written after a compound command"
   else
-    fail "no allow rule reaches a redirection written after a subshell or a brace group" \
-      "${grouped_rows//$'\n'/ } can let a command that contains a subshell or a brace group run with no prompt, and the hook does not charge a redirection written after the group to the command inside it. Teach the hook that before adding the row."
+    fail "no allow rule reaches a redirection written after a compound command" \
+      "${grouped_rows//$'\n'/ } can let a command that contains a subshell, a brace group or an if/for/while compound run with no prompt, and the hook does not charge a redirection written after the group to the command inside it. Teach the hook that before adding the row."
   fi
 
   # The reaches the new rules exist for, run rather than reasoned about. A
