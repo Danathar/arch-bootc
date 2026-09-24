@@ -3797,28 +3797,89 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   # the `if`, `for`, `while` and function forms were asked the same way
   # ("Contains if_statement" and so on). The one way such a string ran with
   # no prompt was a row that names the grouped string itself
-  # (`Bash({ git diff HEAD; } >out3.txt)` ran exactly that string), or a bare
-  # `Bash` row that allows everything. This fails if a row like that is
-  # added. A row naming a compound command has a parenthesis or a brace in
-  # it, or, for the keyword forms (`if ...; then ...; fi >f`), what ends each
-  # part: a `;`, a newline or a lone `&` (`if true & then ... & fi >f` is the
-  # same `if`). Those are what it looks for; the `&` in `&&`, `2>&1`, `&>`
-  # and `|&` ends nothing, so it is taken out first (aurora-zfs-simple#241).
-  # Each row is printed as JSON so one with a newline in it stays one row.
-  grouped_rows="$(jq -r '
+  # (`Bash({ git diff HEAD; } >out3.txt)` ran exactly that string), or a row
+  # that allows everything (`Bash`, `Bash(*)`). A wildcard row whose fixed
+  # part opens a compound (`Bash(if true:*)`) matches such a string the same
+  # way. This fails if a row like that is added.
+  #
+  # What counts: a row naming a compound command has a parenthesis or a brace
+  # in it, or, for the keyword forms (`if ...; then ...; fi >f`), what ends
+  # each part: a `;`, a newline or a lone `&` (`if true & then ... & fi >f` is
+  # the same `if`). The `&` in `&&`, `2>&1`, `&>` and `|&` ends nothing, so it
+  # is taken out first (aurora-zfs-simple#241). A row with a `*` counts when
+  # the text in front of the `*` is empty or could begin a compound:
+  # `Bash(*)`, `Bash(if *)`, `Bash(i*)`, `Bash(time:*)`. Each row is printed
+  # as JSON so one with a newline in it stays one row.
+  # shellcheck disable=SC2016 # the $ names are jq variables, not shell ones
+  grouped_filter='
+    def reaches_a_group:
+      ["if", "for", "while", "until", "case", "select", "function", "coproc", "time", "!"] as $openers
+      | (gsub("&&|[<>|]&|&>"; "") | test("[(){};&\n]"))
+        or (gsub("\\s"; "") == "")
+        or (contains("*") and (
+          (if endswith(":*") and (.[:-2] | contains("*") | not) then .[:-2] + " " else split("*")[0] end) as $head
+          | [$head | splits("\\s+") | select(. != "")] as $words
+          | ($words | length) == 0
+            or (($words | length) == 1 and ($head | test("\\s$") | not)
+                and any($openers[]; startswith($words[0])))
+            or ($words[0] as $first | any($openers[]; . == $first))
+        ));
     .permissions.allow[]?
-    | select(. == "Bash" or (startswith("Bash(") and (
-        ltrimstr("Bash(") | rtrimstr(")")
-        | (gsub("&&|[<>|]&|&>"; "") | test("[(){};&\n]"))
-          or (rtrimstr(":*") | gsub("^\\s+|\\s+$"; "") | . == "" or . == "*")
-      )))
+    | select(. == "Bash" or (startswith("Bash(") and (ltrimstr("Bash(") | rtrimstr(")") | reaches_a_group)))
     | @json
-  ' "${CLAUDE_SETTINGS}")"
+  '
+  grouped_rows="$(jq -r "${grouped_filter}" "${CLAUDE_SETTINGS}")"
   if [[ -z "${grouped_rows}" ]]; then
     pass "no allow rule reaches a redirection written after a compound command"
   else
     fail "no allow rule reaches a redirection written after a compound command" \
       "${grouped_rows//$'\n'/ } can let a command that contains a subshell, a brace group or an if/for/while compound run with no prompt, and the hook does not charge a redirection written after the group to the command inside it. Teach the hook that before adding the row."
+  fi
+  # The settings file has no row of the first list, so the check above passes
+  # whatever the filter looks for. These rows hold the filter to its job.
+  grouped_reaching='[
+    "Bash",
+    "Bash()",
+    "Bash(*)",
+    "Bash(:*)",
+    "Bash({ git diff HEAD; } >out)",
+    "Bash((git diff HEAD) >out)",
+    "Bash(if true; then git diff HEAD; fi >out)",
+    "Bash(for f in a; do git diff HEAD; done >out)",
+    "Bash(while false; do :; done >out)",
+    "Bash(if true\nthen git diff HEAD\nfi >out)",
+    "Bash(if true & then git diff HEAD & fi >out)",
+    "Bash(if *)",
+    "Bash(if:*)",
+    "Bash(if true:*)",
+    "Bash(for f in a:*)",
+    "Bash(while *)",
+    "Bash(i*)",
+    "Bash(time *)",
+    "Bash(! *)"
+  ]'
+  grouped_plain='[
+    "Bash(git diff:*)",
+    "Bash(git diff *)",
+    "Bash(git status*)",
+    "Bash(git diff HEAD >out)",
+    "Bash(git diff HEAD 2>&1)",
+    "Bash(git status && git diff HEAD)",
+    "Bash(git diff HEAD &>out)",
+    "Bash(git diff HEAD |& cat)",
+    "Bash(ruff check)",
+    "Bash(t:*)",
+    "Bash(ifconfig:*)",
+    "Read(*)"
+  ]'
+  grouped_picked="$(jq -n --argjson reaching "${grouped_reaching}" --argjson plain "${grouped_plain}" \
+    '{permissions: {allow: ($reaching + $plain)}}' | jq -r "${grouped_filter}")"
+  grouped_expected="$(jq -r '.[] | @json' <<<"${grouped_reaching}")"
+  if [[ "${grouped_picked}" == "${grouped_expected}" ]]; then
+    pass "the grouped-row filter picks every row that reaches a group and no plain row"
+  else
+    fail "the grouped-row filter picks every row that reaches a group and no plain row" \
+      "expected ${grouped_expected//$'\n'/ } but it picked ${grouped_picked//$'\n'/ }"
   fi
 
   # The reaches the new rules exist for, run rather than reasoned about. A
