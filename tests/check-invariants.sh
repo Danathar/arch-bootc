@@ -9461,8 +9461,11 @@ cicd_trigger_paths() {
 }
 
 # The paragraph (blank-line delimited) or list item containing PATTERN, flattened.
+# PATTERN goes through the environment, not `awk -v`: -v runs escape processing
+# on its value, so a `\*` meant for the regex arrives as a bare `*`.
 cicd_block() {
-  awk -v pattern="$2" '
+  CICD_BLOCK_PATTERN="$2" awk '
+    BEGIN { pattern = ENVIRON["CICD_BLOCK_PATTERN"] }
     function flush() { if (block ~ pattern) print block; block = "" }
     /^[[:space:]]*$/ { flush(); next }
     /^[[:space:]]*- / { flush() }
