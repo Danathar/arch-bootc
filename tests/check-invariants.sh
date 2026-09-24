@@ -932,6 +932,13 @@ WORKFLOW_POLICY=".github/policies/workflow-permissions.json"
 # a workflow indented by four spaces is read as well as one indented by two.
 # Only a key at exactly the job-key indent counts: a step input named
 # `permissions` sits deeper and is not a token block.
+#
+# A job key, or the jobs: key itself, may carry a value. An anchor
+# (`release: &release_job`) only names the block under it, so that block is
+# read as usual. Anything else -- a flow mapping (`release: {permissions:
+# ...}`) or an alias (`release: *other`) -- holds the job on the same line,
+# where this parser does not look, so it is printed as `* <unreadable: ...>`
+# and fails against any policy rather than reading as a job with no block.
 wp_declared() {
   sed -E "s/^([[:space:]]*)[\"']([A-Za-z0-9_-]+)[\"']:/\1\2:/" "$@" | awk '
     function flush() {
@@ -959,6 +966,7 @@ wp_declared() {
     owner != "" { flush() }
     ind == 0 {
       in_jobs = (key == "jobs")
+      if (in_jobs && value != "" && value !~ /^&[A-Za-z0-9_-]+$/) printf "P\t-\t*\t<unreadable jobs: %s>\n", value
       if (key == "permissions") {
         if (value != "") printf "P\t-\t*\t%s\n", value
         else { owner = "-"; block_ind = 0; entries = 0 }
@@ -967,7 +975,12 @@ wp_declared() {
     }
     !in_jobs || key == "" { next }
     !step { step = ind }
-    ind == step && value == "" { job = key; printf "J\t%s\n", job; next }
+    ind == step {
+      job = key
+      printf "J\t%s\n", job
+      if (value != "" && value !~ /^&[A-Za-z0-9_-]+$/) printf "P\t%s\t*\t<unreadable: %s>\n", job, value
+      next
+    }
     ind == 2 * step && key == "permissions" {
       if (value != "") printf "P\t%s\t*\t%s\n", job, value
       else { owner = job; block_ind = ind; entries = 0 }
@@ -1016,6 +1029,18 @@ wp_fixture_check "comments and blank lines inside a block, and a four-space work
 wp_fixture_check "a key with nothing under it as an empty block" \
   $'jobs:\n  a:\n    permissions:\n    steps: []\n' \
   $'P\ta\t*\t<empty>'
+wp_fixture_check "the block under an anchored job key" \
+  $'jobs:\n  release: &release_job\n    permissions:\n      contents: write\n    runs-on: x\n' \
+  $'P\trelease\tcontents\twrite'
+wp_fixture_check "a job written as a flow mapping as unreadable, not as no block" \
+  $'jobs:\n  release: {runs-on: x, permissions: {contents: write}}\n' \
+  $'P\trelease\t*\t<unreadable: {runs-on: x, permissions: {contents: write}}>'
+wp_fixture_check "a job that is an alias as unreadable, not as no block" \
+  $'jobs:\n  a: &j\n    permissions:\n      contents: read\n  b: *j\n' \
+  $'P\ta\tcontents\tread\nP\tb\t*\t<unreadable: *j>'
+wp_fixture_check "a jobs: key written as a flow mapping as unreadable" \
+  $'jobs: {a: {permissions: write-all}}\n' \
+  $'P\t-\t*\t<unreadable jobs: {a: {permissions: write-all}}>'
 
 if ! jq -e '.workflows | type == "object"' "${WORKFLOW_POLICY}" >/dev/null 2>&1; then
   fail "the workflow permissions policy is readable" "${WORKFLOW_POLICY} is missing, is not JSON, or has no .workflows object"
