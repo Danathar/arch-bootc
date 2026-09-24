@@ -2372,6 +2372,143 @@ if ((settings_readable)); then
       "${noexec_command}"
   done
 
+  # What `bash -n` prints (issue #345). `-n` stops bash running a script,
+  # not reading it out: `bash -n -v ./cosign.key` printed the key, because
+  # `-v` prints every line bash reads, and the hook let it through. So the
+  # options that print or copy what bash reads are refused in a `bash -n`
+  # invocation, read the way bash reads its own (`-nv` is `-n -v`; `-no
+  # verbose` hands `verbose` to the `-o`), and the script it opens -- an
+  # operand, or stdin when none is named -- is held to the shellcheck operand
+  # test, since bash prints the line a syntax error stands on. A login shell
+  # reached from outside bash's own words -- `exec -l`, or a zeroth argument
+  # that begins with `-` (review on aurora-zfs-simple#237) -- reads the same
+  # startup files `-l` does, and is refused with it.
+  #
+  # Each row is run twice: by real bash, in a throwaway checkout holding a
+  # synthetic key, `.env` and script under a throwaway HOME, and through the
+  # hook. The first column is what bash was *seen* to do -- `prints` when a
+  # marker from one of those files reached the output or HOME's history
+  # file, `quiet` otherwise -- so a row cannot claim a leak bash does not
+  # have, and a `prints` row the hook allows fails. A `quiet` row that is
+  # refused is refused on purpose, with the reason beside it.
+  bash_n_work="$(mktemp -d)"
+  mkdir -p "${bash_n_work}/checkout/tests"
+  # The PEM marker is passed as an argument, so this file carries no copy of
+  # it for a scan for private keys to find.
+  printf -- '-----BEGIN ENCRYPTED SIGSTORE %s-----\nNOT-A-REAL-KEY-BASH-N-42\n-----END ENCRYPTED SIGSTORE %s-----\n' \
+    'PRIVATE KEY' 'PRIVATE KEY' >"${bash_n_work}/checkout/cosign.key"
+  printf 'API_TOKEN=NOT-A-REAL-TOKEN-BASH-N-42\nDB_PASSWORD=NOT-A-REAL-PASSWORD-BASH-N-42(x\n' \
+    >"${bash_n_work}/checkout/.env"
+  cp "${bash_n_work}/checkout/.env" "${bash_n_work}/outside.env"
+  # shellcheck disable=SC2016 # the $"..." is the script's own text
+  printf 'X=NOT-A-REAL-SCRIPT-LINE-BASH-N-42\ny=$"NOT-A-REAL-STRING-BASH-N-42"\n' \
+    >"${bash_n_work}/checkout/tests/run-tests.sh"
+  # Runs `$1` in the throwaway checkout, with a fresh HOME whose startup
+  # files a login or interactive shell reads, and an environment of PATH
+  # alone so no HISTFILE or HISTSIZE of the host's decides where history goes.
+  bash_n_prints() {
+    local out
+    rm -rf "${bash_n_work:?}/home"
+    mkdir -p "${bash_n_work}/home"
+    printf 'PROFILE=NOT-A-REAL-PROFILE-BASH-N-42(x\n' >"${bash_n_work}/home/.bash_profile"
+    printf 'RC=NOT-A-REAL-RC-BASH-N-42(x\n' >"${bash_n_work}/home/.bashrc"
+    out="$(cd "${bash_n_work}/checkout" && env -i HOME="${bash_n_work}/home" PATH="${PATH}" \
+      bash --norc --noprofile -c "$1" 2>&1 </dev/null)"
+    [[ -f "${bash_n_work}/home/.bash_history" ]] && out+="$(cat "${bash_n_work}/home/.bash_history")"
+    [[ "${out}" == *NOT-A-REAL* ]]
+  }
+  bash_n_rows=()
+  bash_n_row() { bash_n_rows+=("$1"$'\t'"$2"$'\t'"$3"); }
+  # The four spellings the issue reproduced, and the option spellings around them.
+  bash_n_row prints refuse 'bash -n -v ./cosign.key'
+  bash_n_row prints refuse 'bash -nv ./cosign.key'
+  bash_n_row prints refuse 'bash -n -o verbose ./cosign.key'
+  bash_n_row prints refuse 'bash -n -v - < .env'
+  bash_n_row prints refuse 'bash -n -v tests/run-tests.sh'
+  bash_n_row prints refuse 'bash -n -no verbose tests/run-tests.sh'
+  bash_n_row prints refuse 'bash -n -oo noexec verbose tests/run-tests.sh'
+  bash_n_row prints refuse 'bash -n -O extglob -o verbose tests/run-tests.sh'
+  bash_n_row prints refuse 'bash -n -D tests/run-tests.sh'
+  bash_n_row prints refuse 'bash -n -o history tests/run-tests.sh'
+  bash_n_row prints refuse 'bash -n -i tests/run-tests.sh'
+  bash_n_row prints refuse 'bash -n -l tests/run-tests.sh'
+  bash_n_row prints refuse 'command -p bash -n -v tests/run-tests.sh'
+  bash_n_row prints refuse 'echo x; bash -nv tests/run-tests.sh'
+  bash_n_row prints refuse 'exec -l bash -n tests/run-tests.sh'
+  bash_n_row prints refuse 'exec -a -bash bash -n tests/run-tests.sh'
+  # The file bash opens: an operand, or stdin when no operand is named.
+  bash_n_row prints refuse 'bash -n .env'
+  bash_n_row prints refuse 'bash -n ./.env'
+  bash_n_row prints refuse 'bash -n ../outside.env'
+  bash_n_row prints refuse "bash -n ${bash_n_work}/outside.env"
+  bash_n_row prints refuse 'bash -n - < .env'
+  bash_n_row prints refuse 'bash -n < .env'
+  bash_n_row prints refuse '< .env bash -n'
+  bash_n_row prints refuse 'bash -n -s < ./.env'
+  # Refused though bash prints nothing here. -x traces what runs, and under
+  # -n nothing does; a key parses cleanly, and is refused by name, as a
+  # ShellCheck operand is; bash rejects a `--word` after -n and exits, and
+  # this one names a refused letter; and with a script named, stdin is not
+  # read, but the test on a bare `<` is the one shellcheck's stdin is held to.
+  bash_n_row quiet refuse 'bash -n -x tests/run-tests.sh'
+  bash_n_row quiet refuse 'bash -n -o xtrace tests/run-tests.sh'
+  bash_n_row quiet refuse 'bash -n ./cosign.key'
+  bash_n_row quiet refuse 'bash -n --verbose .env'
+  bash_n_row quiet refuse 'bash -n tests/run-tests.sh < .env'
+  # The syntax checks this repository runs, and the option spellings bash
+  # reads as something other than a refused option: `-` and `--` end the
+  # options, so a `-v` after them is a file name; a `-v` after the script is
+  # its first argument; `-O` and `-o` take the next word as their value.
+  bash_n_row quiet allow 'bash -n tests/run-tests.sh'
+  bash_n_row quiet allow 'bash -n -- tests/run-tests.sh'
+  bash_n_row quiet allow 'bash -n - tests/run-tests.sh'
+  bash_n_row quiet allow 'bash -n -O extglob tests/run-tests.sh'
+  bash_n_row quiet allow 'bash -n -o posix tests/run-tests.sh'
+  bash_n_row quiet allow 'bash -n - < tests/run-tests.sh'
+  bash_n_row quiet allow 'bash -n tests/run-tests.sh < /dev/null'
+  bash_n_row quiet allow 'bash -n -- -v'
+  bash_n_row quiet allow 'bash -n tests/run-tests.sh -v'
+  bash_n_row quiet allow "bash -n -c 'x=1'"
+  bash_n_row quiet allow 'exec bash -n tests/run-tests.sh'
+  bash_n_prints_rows=0
+  bash_n_allow_rows=0
+  for bash_n_entry in "${bash_n_rows[@]}"; do
+    IFS=$'\t' read -r bash_n_seen bash_n_want bash_n_command <<<"${bash_n_entry}"
+    if bash_n_prints "${bash_n_command}"; then
+      bash_n_real=prints
+    else
+      bash_n_real=quiet
+    fi
+    if [[ "${bash_n_real}" == "${bash_n_seen}" ]]; then
+      pass "real bash ${bash_n_seen}: ${bash_n_command}"
+    else
+      fail "real bash ${bash_n_seen}: ${bash_n_command}" \
+        "bash was seen to be ${bash_n_real}; the row's first column is wrong"
+    fi
+    if [[ "${bash_n_real}" == prints ]]; then
+      ((bash_n_prints_rows++))
+      if [[ "${bash_n_want}" == refuse ]]; then
+        pass "and a row that prints is a refuse row: ${bash_n_command}"
+      else
+        fail "and a row that prints is a refuse row: ${bash_n_command}" \
+          "bash prints a marker for this spelling, and the row allows it"
+      fi
+    fi
+    if [[ "${bash_n_want}" == refuse ]]; then
+      assert_hook_refuses_naming "the hook refuses: ${bash_n_command}" "${bash_n_command}" 'bash -n'
+    else
+      ((bash_n_allow_rows++))
+      assert_hook_permits "the hook allows: ${bash_n_command}" "${bash_n_command}"
+    fi
+  done
+  rm -rf "${bash_n_work}"
+  if ((bash_n_prints_rows >= 20 && bash_n_allow_rows >= 10)); then
+    pass "the bash -n table carries its rows (${bash_n_prints_rows} print, ${bash_n_allow_rows} allow)"
+  else
+    fail "the bash -n table carries its rows" \
+      "found ${bash_n_prints_rows} rows that print and ${bash_n_allow_rows} allow rows; a shrunken table passes vacuously"
+  fi
+
   # A `(` behind an unquoted `<` or `>` is a process substitution, not a
   # subshell: it hands git a /dev/fd path as an operand the scan never
   # counted, and the first split reset the operand count at its `(` instead.
@@ -3191,6 +3328,9 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row redirection refused 'shellcheck reads standard input' \
     'the same, written before the name, which bash attaches to the same simple command' \
     '< .env shellcheck -'
+  corpus_row redirection refused 'prints the line a syntax error stands on' \
+    'bash -n reads its script from stdin when no file is named, and prints the line a syntax error stands on' \
+    'bash -n - < .env'
   corpus_row redirection refused '--no-index mode' \
     "the stdin operand is how a file reaches git's plain-file mode; it counts as an operand" \
     'git diff /etc/shadow -'
@@ -3434,6 +3574,30 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row options refused 'bash -n' \
     '+n turns noexec back off, so the linter runs what it was asked to parse' \
     'bash -n +n -c "cat ./cosign.key"'
+  corpus_row options refused 'print or copy what it reads' \
+    '-v prints every line bash reads, and -n does not stop it' \
+    'bash -n -v tests/run-tests.sh'
+  corpus_row options refused 'print or copy what it reads' \
+    'bash reads -nv as -n -v, and the string begins with the characters of the allow row' \
+    'bash -nv tests/run-tests.sh'
+  corpus_row options refused 'print or copy what it reads' \
+    'the long spelling of -v' \
+    'bash -n -o verbose tests/run-tests.sh'
+  corpus_row options refused 'print or copy what it reads' \
+    'an o inside a cluster takes the next word as its value, as bash reads it' \
+    'bash -n -no verbose tests/run-tests.sh'
+  corpus_row options refused 'prints the line a syntax error stands on' \
+    'a bash -n operand is held to the shellcheck operand test' \
+    'bash -n .env'
+  corpus_row options allowed '' \
+    '-O takes a value, and no shopt name prints what bash reads' \
+    'bash -n -O extglob tests/run-tests.sh'
+  corpus_row options refused 'print or copy what it reads' \
+    'exec -l puts a dash in front of the zeroth argument, which makes bash a login shell that reads ~/.bash_profile' \
+    'exec -l bash -n tests/run-tests.sh'
+  corpus_row options refused 'print or copy what it reads' \
+    'env --argv0 can set the same dash' \
+    'env --argv0=-bash bash -n tests/run-tests.sh'
   corpus_row options refused 'shellcheck prints the source line' \
     'a value-taking option must be stepped over so the operand after it is still reached' \
     'shellcheck -f gcc ./.env'
@@ -3751,6 +3915,34 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     '    case "${raw_word}" in' \
     '    case "${word}" in' \
     "'\\nohup' git diff HEAD"
+  mutation_row 'refusing the bash options that print what bash -n reads' \
+    '[[ "${words[idx]}" == -*[vxilD]* ]] && refuse "${BASH_ECHO_MSG}"' \
+    ':' \
+    'bash -n -v tests/run-tests.sh'
+  mutation_row 'a -nv first word completing the bash -n prefix' \
+    '((cmd_bash)) && [[ "${cmd_prefix}" == '"'"'bash -n'"'"'?* ]] && cmd_gated=1' \
+    ':' \
+    'bash -nv tests/run-tests.sh'
+  mutation_row 'refusing the -o names that print or copy what bash reads' \
+    'verbose | xtrace | history) refuse' \
+    'verbose | xtrace | history) :' \
+    'bash -n -o verbose tests/run-tests.sh'
+  mutation_row 'handing each o in a cluster the next word as its value' \
+    'bash_optvals+="${words[idx]//[!oO]/}"' \
+    ':' \
+    'bash -n -no verbose tests/run-tests.sh'
+  mutation_row 'holding a bash -n operand to the shellcheck operand test' \
+    'if ! path_inside_worktree "${words[idx]}" || denied_read_shape "${words[idx]}"; then' \
+    'if false; then' \
+    'bash -n .env'
+  mutation_row "holding a file on bash -n's stdin to the same test" \
+    '((cmd_gated && cmd_read && cmd_bash))' \
+    '((0))' \
+    'bash -n - < .env'
+  mutation_row 'refusing a login shell set up by exec -l or a dashed zeroth argument' \
+    '((${argv0_words[idx]:-0})) && ((cmd_gated == 0)) && cmd_argv0=1' \
+    ':' \
+    'exec -l bash -n tests/run-tests.sh'
   }
   mutation_table
 
