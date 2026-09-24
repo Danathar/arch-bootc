@@ -5636,6 +5636,29 @@ metrics_norm() {
   tr '\n' ' ' | sed 's/\\n/ /g; s/"//g' | tr -s ' ' | sed 's/^ //; s/ $//'
 }
 
+# A `gh api` call has no --json: the endpoint decides the shape. The only one
+# these documents call is a pull request's review comments, so a program with
+# no requested fields runs against that shape. It must run, print something,
+# and read only keys the fixture has -- a key it lacks would read as null and
+# pass. Prints what is wrong, or nothing.
+metrics_api_comments='[
+  {"user":{"login":"chatgpt-codex-connector[bot]"},"in_reply_to_id":null},
+  {"user":{"login":"Danathar"},"in_reply_to_id":101}
+]'
+metrics_api_problems() {
+  local program="$1" out field
+  if ! out="$(jq "${program}" <<<"${metrics_api_comments}" 2>&1)"; then
+    printf '[gh api] %s | ' "${out//$'\n'/ }"
+    return
+  fi
+  [[ -n "${out}" ]] || printf '[gh api] produced no output | '
+  while IFS= read -r field; do
+    [[ -n "${field}" ]] || continue
+    [[ "${field}" == user || "${field}" == in_reply_to_id ]] ||
+      printf '[gh api] %s (no review-comment fixture shape) | ' "${field}"
+  done < <(printf '%s' "${program}" | metrics_program_fields)
+}
+
 metrics_prs='[
   {"state":"MERGED","author":{"login":"app/renovate"}},
   {"state":"MERGED","author":{"login":"app/renovate"}},
@@ -5686,6 +5709,8 @@ while IFS= read -r -d $'\004' metrics_record; do
       grep -qx -- "${metrics_read_field}" <<<"${metrics_fields//,/$'\n'}" ||
         metrics_unrequested+="${metrics_read_field} (not in --json ${metrics_fields}) "
     done < <(printf '%s' "${metrics_program}" | metrics_program_fields)
+  else
+    metrics_broken+="$(metrics_api_problems "${metrics_program}")"
   fi
 
   # The headline figures, computed by the document's own filters.
@@ -6041,7 +6066,10 @@ for snapshot in "${metrics_snapshots[@]}"; do
     metrics_program="${metrics_record#*$'\003'}"
     [[ -n "${metrics_program}" ]] || continue
     snapshot_programs=$((snapshot_programs + 1))
-    [[ -n "${metrics_fields}" ]] || continue
+    if [[ -z "${metrics_fields}" ]]; then
+      snapshot_broken+="$(metrics_api_problems "${metrics_program}")"
+      continue
+    fi
     metrics_fixture "${metrics_fields}" >/dev/null
     metrics_out="$(metrics_fixture "${metrics_fields}" | jq "${metrics_program}" 2>&1)" ||
       snapshot_broken+="[${metrics_fields}] ${metrics_out//$'\n'/ } | "

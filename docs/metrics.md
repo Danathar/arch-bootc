@@ -11,8 +11,9 @@ does not drift, and does not become a second thing to maintain.
 
 Dated readings of these numbers are kept in
 [`docs/metrics/`](metrics/2026-09-24.md). Each one carries the exact commands
-that produced it, pinned to a fixed range so they reproduce, and is left as it
-was read.
+that produced it, pinned to a fixed range of pull requests and runs, and is
+left as it was read. A rerun reads the same range but its current state, so it
+can differ where something in the range has changed since.
 
 ## PR acceptance
 
