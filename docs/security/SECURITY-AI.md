@@ -230,7 +230,13 @@ must be described as such.
   input redirections from a file the read test below allows, and a
   redirection on another command of the same string
   (`echo x >out; git diff HEAD`, `git diff HEAD | jq . > out`) are not
-  affected.
+  affected. A redirection written after a subshell or a brace group
+  (`(git diff HEAD) >cosign.pub`, `{ git log --stdin; } <cosign.key`,
+  `(shellcheck -) <cosign.key`) is not charged to the command inside, here or
+  in the rules for the other allow-listed commands below: Claude Code asks
+  before it runs any command that contains a subshell or a brace group,
+  whatever the allow rows say, and `tests/check-invariants.sh` fails if an
+  allow row that could reach one is added.
 
   The read half has a shell spelling of its own as well. An unquoted leading
   `~` is `$HOME` to Bash and a literal `~` to a scan of the typed words, and

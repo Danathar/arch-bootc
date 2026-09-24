@@ -2303,11 +2303,13 @@ if ((settings_readable)); then
   done
   # The hook re-gates what the permission rules wave through. A command no
   # allow rule covers prompts on its own, and a redirection on another
-  # command of the same string is that command's own. The last two are
-  # decided by Claude Code itself: a redirection on a brace group or a
-  # subshell is refused by the Bash tool before any rule or hook sees it
-  # ("does not accept compound statements with redirection", 2.1.267), so
-  # the hook does not restate that refusal.
+  # command of the same string is that command's own. The brace group and
+  # the subshell below are decided by Claude Code itself: it asks before it
+  # runs any command that contains one, whatever the allow rows say
+  # ("Contains compound_statement", "Contains subshell"; 2.1.273 and
+  # 2.1.280), so the hook does not restate that. The check after the
+  # unreachable rows below fails if an allow row that could reach one is
+  # added.
   # shellcheck disable=SC2016 # the substitutions are spellings handed to the hook, not run here
   for redirect_command in \
     'echo x >cosign.pub' \
@@ -3779,6 +3781,35 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
         "an allow rule now covers it (${unreachable_hit}), so the recorded decision is stale: ${unreachable_why[corpus_i]}"
     fi
   done
+
+  # A redirection written after a subshell or a brace group:
+  # `(git diff HEAD) >cosign.pub` and `{ git log --stdin; } <cosign.key`
+  # write and read the same files as the refused `git diff HEAD >cosign.pub`
+  # and `git log --stdin <cosign.key`, but the redirection stands outside the
+  # git command, and the hook does not charge it to git (issue #355). It does
+  # not need to while nothing here reaches those strings: Claude Code asks
+  # before it runs any command that contains a subshell or a brace group,
+  # whatever the allow rows say about the command inside ("Contains
+  # subshell", "Contains compound_statement"). Checked on 2.1.273 and 2.1.280
+  # with `Bash(git diff:*)` and `Bash(git log:*)` allowed, in the default and
+  # acceptEdits modes, and in both the `:*` and the ` *` spelling used here.
+  # The one way such a string ran with no prompt was a row that names the
+  # grouped string itself (`Bash({ git diff HEAD; } >out3.txt)` ran exactly
+  # that string), or a bare `Bash` row that allows everything. This fails if
+  # a row like that is added.
+  grouped_rows="$(jq -r '
+    .permissions.allow[]?
+    | select(. == "Bash" or (startswith("Bash(") and (
+        ltrimstr("Bash(") | rtrimstr(")")
+        | test("[(){}]") or (rtrimstr(":*") | gsub("^\\s+|\\s+$"; "") | . == "" or . == "*")
+      )))
+  ' "${CLAUDE_SETTINGS}")"
+  if [[ -z "${grouped_rows}" ]]; then
+    pass "no allow rule reaches a redirection written after a subshell or a brace group"
+  else
+    fail "no allow rule reaches a redirection written after a subshell or a brace group" \
+      "${grouped_rows//$'\n'/ } can let a command that contains a subshell or a brace group run with no prompt, and the hook does not charge a redirection written after the group to the command inside it. Teach the hook that before adding the row."
+  fi
 
   # The reaches the new rules exist for, run rather than reasoned about. A
   # refusal asserted against a described exposure is a refusal that outlives
