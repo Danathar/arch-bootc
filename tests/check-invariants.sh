@@ -909,8 +909,9 @@ fi
 # ---------------------------------------------------------------------------
 group "Lint manifests (docs/quality.md: 'the two lists are maintained by hand')"
 
-# A new test file is picked up automatically by run-tests.sh, which globs, but
-# not by either ShellCheck invocation -- both list files explicitly. This has
+# run-tests.sh globs for test files (and checks the glob against
+# tests/test-manifest, asserted further down), but neither ShellCheck
+# invocation globs -- both list files explicitly. This has
 # already reached main once: tests/test-ostree-pkg-diff-db.sh was in the
 # Justfile list but not the CI one, and went ungated in CI until review caught
 # it. Both lists are checked here so the next one cannot.
@@ -9401,6 +9402,372 @@ if ((vm_build_steps > 0)); then
 else
   fail "build.yml still builds with redhat-actions/buildah-build" "no such step"
 fi
+
+fi
+
+# ---------------------------------------------------------------------------
+group "CI/CD reference (docs/ci-cd.md: what each workflow runs, on what runner, and what a new test file needs)"
+
+# docs/ci-cd.md is the page a contributor reads to learn what CI does, and until
+# this group it was cited by many checks and read as a subject by few. The
+# review-state and label sections were joined (tests/test-pr-review-state.sh),
+# and so was the zizmor version; the rest -- the nightly job table, the runner
+# the `test` job uses, the gating between jobs, the prune job's retention and
+# the "adding a new test file" rule -- was a hand copy of files that move far
+# more often than it does.
+#
+# Two of those copies had already gone false when this group was written:
+#
+#   - "Adding a new `tests/test-*.sh` ... picks it up automatically in
+#     `run-tests.sh`". Since tests/test-manifest landed, run-tests.sh refuses to
+#     start until the file is listed there too. The same sentence had been
+#     copied into CONTRIBUTING.md, docs/risk-tiers.md and the review rubric's
+#     checklist, so all four were checked, not just the one found first.
+#   - The runner. The page said `ubuntu-24.04` "refuses" unprivileged user
+#     namespaces and "ships" bash 5.2.21, in the present tense, after every job
+#     had moved to `ubuntu-26.04` (CI now traces with bash 5.3.9).
+CICD_DOC="docs/ci-cd.md"
+NIGHTLY_WORKFLOW=".github/workflows/nightly-compliance.yml"
+
+# One job's block out of a workflow: from `  <job>:` to the next two-space key.
+cicd_job() {
+  awk -v job="$2" '
+    $0 == "  " job ":" { in_job = 1; next }
+    in_job && /^  [A-Za-z0-9_-]+:/ { exit }
+    in_job { print }
+  ' "$1"
+}
+
+# The keys directly under a workflow's top-level `on:`.
+cicd_triggers() {
+  awk '
+    /^on:/ { in_on = 1; next }
+    in_on && /^[^[:space:]#]/ { exit }
+    in_on && /^  [A-Za-z_]+:/ { sub(/^  /, ""); sub(/:.*/, ""); print }
+  ' "$1" | sort | tr '\n' ' ' | sed 's/ $//'
+}
+
+# The `paths:` list under one trigger, one path per line, quotes removed.
+cicd_trigger_paths() {
+  awk -v trigger="$2" '
+    /^on:/ { in_on = 1; next }
+    in_on && /^[^[:space:]#]/ { exit }
+    in_on && $0 == "  " trigger ":" { in_trigger = 1; next }
+    in_trigger && /^  [A-Za-z_]+:/ { in_trigger = 0 }
+    in_trigger && /^    paths:/ { in_paths = 1; next }
+    in_paths && /^      - / { sub(/^      - /, ""); gsub(/"/, ""); print; next }
+    in_paths && !/^[[:space:]]*#/ { in_paths = 0 }
+  ' "$1"
+}
+
+# The paragraph (blank-line delimited) or list item containing PATTERN, flattened.
+# PATTERN goes through the environment, not `awk -v`: -v runs escape processing
+# on its value, so a `\*` meant for the regex arrives as a bare `*`.
+cicd_block() {
+  CICD_BLOCK_PATTERN="$2" awk '
+    BEGIN { pattern = ENVIRON["CICD_BLOCK_PATTERN"] }
+    function flush() { if (block ~ pattern) print block; block = "" }
+    /^[[:space:]]*$/ { flush(); next }
+    /^[[:space:]]*- / { flush() }
+    { block = block " " $0 }
+    END { flush() }
+  ' "$1" | tr -s '[:space:]' ' '
+}
+
+if [[ ! -f "${CICD_DOC}" ]]; then
+  fail "the CI/CD reference exists" "${CICD_DOC} is missing"
+else
+
+cicd_flat="$(tr '\n' ' ' <"${CICD_DOC}" | tr -s '[:space:]' ' ')"
+
+# --- A new test file: every list it has to be added to ----------------------
+#
+# The set of lists is read out of the tree rather than typed here: the manifest
+# run-tests.sh compares its glob against, and each ShellCheck invocation that
+# names test files by hand. A fourth list would raise the count and fail the
+# docs that say "three".
+# shellcheck disable=SC2016 # a literal ${SCRIPT_DIR} in the line being matched
+cicd_manifest="$(sed -n 's|^MANIFEST="${SCRIPT_DIR}/\(.*\)"$|tests/\1|p' "${RUN_TESTS}")"
+if [[ -n "${cicd_manifest}" ]]; then
+  pass "run-tests.sh names the manifest it checks its glob against (${cicd_manifest})"
+else
+  fail "run-tests.sh names the manifest it checks its glob against" \
+    "no MANIFEST=\"\${SCRIPT_DIR}/...\" line in ${RUN_TESTS}"
+fi
+cicd_just_lists="$(grep -cE '^[[:space:]]+shellcheck .*tests/' "${JUSTFILE}")"
+cicd_ci_lists="$(grep -cE '^[[:space:]]+/mnt/tests/run-tests\.sh' "${BUILD_WORKFLOW}")"
+cicd_list_count=$((cicd_just_lists + cicd_ci_lists))
+[[ -n "${cicd_manifest}" ]] && cicd_list_count=$((cicd_list_count + 1))
+assert_equal "a new test file has three lists to join (the manifest and two ShellCheck invocations)" \
+  "${cicd_list_count}" "3"
+
+# "Neither shellcheck invocation globs at all" -- a glob in either would make
+# the manual-listing half of every copy of the rule false.
+# shellcheck disable=SC2016 # literal backticks and a literal glob
+if grep -E '^[[:space:]]+shellcheck .*tests/' "${JUSTFILE}" | grep -Fq '*' ||
+  grep -E '^[[:space:]]+/mnt/tests/' "${BUILD_WORKFLOW}" | grep -Fq '*'; then
+  fail "neither ShellCheck invocation lists test files by glob" \
+    "a glob appeared in the Justfile lint recipe or the CI ShellCheck step; the docs say both list files by hand"
+else
+  pass "neither ShellCheck invocation lists test files by glob"
+fi
+
+for cicd_rule_doc in "${CICD_DOC}" CONTRIBUTING.md docs/risk-tiers.md docs/review-rubric.md; do
+  # shellcheck disable=SC2016 # a literal backticked glob
+  cicd_rule="$(cicd_block "${cicd_rule_doc}" '(Adding a|A new|new) `tests/test-\*\.sh`')"
+  if [[ -z "${cicd_rule}" ]]; then
+    fail "${cicd_rule_doc} still states the rule for adding a test file" \
+      "no paragraph or list item about a new \`tests/test-*.sh\` found"
+    continue
+  fi
+  if grep -Fq -- "\`${cicd_manifest}\`" <<<"${cicd_rule}"; then
+    pass "${cicd_rule_doc}'s new-test-file rule names ${cicd_manifest}"
+  else
+    fail "${cicd_rule_doc}'s new-test-file rule names ${cicd_manifest}" \
+      "run-tests.sh refuses to start until a new test file is listed there; the rule does not say so"
+  fi
+  if grep -Eq '(picks it up|is picked up|are picked up) automatically' <<<"${cicd_rule}"; then
+    fail "${cicd_rule_doc} does not say a new test file is picked up automatically" \
+      "run-tests.sh globs, but refuses an unlisted file: ${cicd_rule}"
+  else
+    pass "${cicd_rule_doc} does not say a new test file is picked up automatically"
+  fi
+  # shellcheck disable=SC2016 # literal backticks
+  if grep -Fq '`Justfile`' <<<"${cicd_rule}" && grep -Eiq 'shellcheck`? step' <<<"${cicd_rule}"; then
+    pass "${cicd_rule_doc}'s new-test-file rule names both ShellCheck lists"
+  else
+    fail "${cicd_rule_doc}'s new-test-file rule names both ShellCheck lists" \
+      "expected the Justfile lint recipe and the CI ShellCheck step: ${cicd_rule}"
+  fi
+  # A doc that counts the edits must count them right.
+  cicd_count_word="$(grep -oE '\b(one|two|three|four|five) edits\b' <<<"${cicd_rule}" | head -n 1)"
+  if [[ -n "${cicd_count_word}" ]]; then
+    assert_equal "${cicd_rule_doc}'s edit count matches the lists a new test file must join" \
+      "${cicd_count_word% edits}" "$(number_word "${cicd_list_count}")"
+  fi
+done
+
+# --- The runner -------------------------------------------------------------
+#
+# The label is the `test` job's, because every runner-specific sentence on the
+# page is about that job: the AppArmor knob it clears and the Bash it traces
+# the coverage floors with. A sentence naming any other Ubuntu label has to be
+# in the past tense -- that is history, which the page is right to keep -- and
+# a present-tense one is the drift this caught.
+cicd_runner="$(cicd_job "${BUILD_WORKFLOW}" test | sed -n 's/^[[:space:]]*runs-on:[[:space:]]*\([^[:space:]#]*\).*/\1/p' | head -n 1)"
+if [[ -z "${cicd_runner}" ]]; then
+  fail "the build workflow's test job names its runner" "no runs-on under the test job"
+else
+  if grep -Fq -- "\`${cicd_runner}\`" <<<"${cicd_flat}"; then
+    pass "${CICD_DOC} names the runner the test job uses (${cicd_runner})"
+  else
+    fail "${CICD_DOC} names the runner the test job uses (${cicd_runner})" \
+      "the page's runner-specific claims are about a runner it never names"
+  fi
+  cicd_stale=""
+  # shellcheck disable=SC2001 # one sentence per line needs a newline in the replacement
+  while IFS= read -r cicd_sentence; do
+    [[ -n "${cicd_sentence}" ]] || continue
+    cicd_other="$(grep -oE 'ubuntu-[0-9]+\.[0-9]+' <<<"${cicd_sentence}" | grep -vxF -- "${cicd_runner}" || true)"
+    [[ -n "${cicd_other}" ]] || continue
+    if ! grep -Eq '\b(was|were|did|used|kept|restricted|shipped|refused|skipped)\b' <<<"${cicd_sentence}"; then
+      cicd_stale+="[${cicd_sentence}] "
+    fi
+  done < <(sed 's/\([.!?]\) /\1\n/g' <<<"${cicd_flat}")
+  if [[ -z "${cicd_stale}" ]]; then
+    pass "${CICD_DOC} names a runner other than ${cicd_runner} only in the past tense"
+  else
+    fail "${CICD_DOC} names a runner other than ${cicd_runner} only in the past tense" \
+      "present-tense claim about a runner the test job no longer uses: ${cicd_stale}"
+  fi
+  # Test files say which runner CI uses in their comments, to explain why a
+  # branch is or is not exercised there. check-invariants.sh itself is excluded:
+  # its comments quote the old label as history.
+  cicd_test_labels=""
+  for cicd_test_file in tests/test-*.sh tests/e2e/test-*.sh tests/run-tests.sh tests/check-coverage.sh; do
+    [[ -f "${cicd_test_file}" ]] || continue
+    while IFS= read -r cicd_hit; do
+      [[ "${cicd_hit#*:}" == "${cicd_runner}" ]] || cicd_test_labels+="${cicd_test_file}:${cicd_hit} "
+    done < <(grep -noE 'ubuntu-[0-9]+\.[0-9]+' "${cicd_test_file}" || true)
+  done
+  if [[ -z "${cicd_test_labels}" ]]; then
+    pass "every runner label in a test file's comments is the one the test job uses"
+  else
+    fail "every runner label in a test file's comments is the one the test job uses" \
+      "expected ${cicd_runner}: ${cicd_test_labels}"
+  fi
+fi
+
+# --- The test job and what it gates -------------------------------------------
+cicd_test_job="$(cicd_job "${BUILD_WORKFLOW}" test | grep -Ev '^[[:space:]]*#')"
+cicd_build_needs="$(cicd_job "${BUILD_WORKFLOW}" build_push | sed -n 's/^    needs:[[:space:]]*//p' | head -n 1)"
+for cicd_needed in lint test; do
+  if [[ "${cicd_build_needs}" =~ (^|[^A-Za-z_])${cicd_needed}([^A-Za-z_]|$) ]]; then
+    pass "build_push needs ${cicd_needed}, as '${CICD_DOC}' says ('build_push needs [lint, test]')"
+  else
+    fail "build_push needs ${cicd_needed}, as '${CICD_DOC}' says ('build_push needs [lint, test]')" \
+      "needs: ${cicd_build_needs:-<none>}"
+  fi
+done
+# shellcheck disable=SC2016 # literal backticks
+assert_equal "${CICD_DOC} quotes build_push's needs exactly" \
+  "$(grep -oE 'needs `\[[^]`]*\]`' <<<"${cicd_flat}" | head -n 1)" "needs \`${cicd_build_needs}\`"
+for cicd_gate in ./tests/check-coverage.sh ./tests/check-invariants.sh; do
+  if grep -Eq "^[[:space:]]+run: ${cicd_gate//./\\.}$" <<<"${cicd_test_job}"; then
+    pass "the test job runs ${cicd_gate}"
+  else
+    fail "the test job runs ${cicd_gate}" \
+      "${CICD_DOC} says the test job runs the coverage gate and has the invariants 'also wired into' it"
+  fi
+done
+if grep -Eq '^[[:space:]]+ARCH_BOOTC_NO_SKIPS: "1"$' <<<"${cicd_test_job}"; then
+  pass "the test job sets ARCH_BOOTC_NO_SKIPS ('CI sets it')"
+else
+  fail "the test job sets ARCH_BOOTC_NO_SKIPS ('CI sets it')" "not in the test job's env"
+fi
+# The namespace step has to run BEFORE the suite, and has to check, not assume.
+cicd_ns_line="$(grep -n 'unshare --map-root-user --mount true' <<<"${cicd_test_job}" | head -n 1 | cut -d: -f1)"
+cicd_suite_line="$(grep -n 'run: ./tests/check-coverage.sh' <<<"${cicd_test_job}" | head -n 1 | cut -d: -f1)"
+if [[ -n "${cicd_ns_line}" && -n "${cicd_suite_line}" ]] && ((cicd_ns_line < cicd_suite_line)); then
+  pass "the test job checks unprivileged namespaces before it runs the suite"
+else
+  fail "the test job checks unprivileged namespaces before it runs the suite" \
+    "check at line ${cicd_ns_line:-<none>}, suite at line ${cicd_suite_line:-<none>} of the job"
+fi
+assert_present "the namespace step clears the AppArmor knob the page names" \
+  "${BUILD_WORKFLOW}" 'key="kernel\.apparmor_restrict_unprivileged_userns"'
+
+# --- Workflow linting (zizmor) --------------------------------------------------
+for cicd_trigger in pull_request push; do
+  assert_equal "zizmor runs on a ${cicd_trigger} touching .github/workflows/** and nothing else" \
+    "$(cicd_trigger_paths "${ZIZMOR_WORKFLOW}" "${cicd_trigger}" | tr '\n' ' ' | sed 's/ $//')" ".github/workflows/**"
+done
+assert_present "the zizmor job runs with GH_TOKEN, so its online audits are active" \
+  "${ZIZMOR_WORKFLOW}" '^[[:space:]]+GH_TOKEN: \$\{\{ github\.token \}\}'
+# "Several steps in build.yml do this now (`METADATA_TAGS`, `PUSH_DIGEST`,
+# `REPO_NAME`)": each name must be an env: key fed by an expression AND be read
+# as a shell variable, which is the pattern the page tells readers to follow.
+# shellcheck disable=SC2016 # literal backticks
+cicd_env_names="$(grep -oE 'Several steps in `build\.yml` do this now \([^)]*\)' <<<"${cicd_flat}" | grep -oE '`[A-Z_]+`' | tr -d '`')"
+if [[ -z "${cicd_env_names}" ]]; then
+  fail "${CICD_DOC} still names the build.yml steps that pass expansions through env:" \
+    "the 'Several steps in build.yml do this now (...)' list is gone"
+else
+  cicd_bad_env=""
+  while IFS= read -r cicd_env; do
+    # shellcheck disable=SC2016 # a literal GitHub expression and shell expansion
+    grep -Eq "^[[:space:]]+${cicd_env}: \\\$\\{\\{ " "${BUILD_WORKFLOW}" &&
+      grep -Eq "\\\$\\{${cicd_env}[},]" "${BUILD_WORKFLOW}" || cicd_bad_env+="${cicd_env} "
+  done <<<"${cicd_env_names}"
+  if [[ -z "${cicd_bad_env}" ]]; then
+    pass "every env name ${CICD_DOC} cites is set from an expression and read as a shell variable in build.yml"
+  else
+    fail "every env name ${CICD_DOC} cites is set from an expression and read as a shell variable in build.yml" \
+      "not both: ${cicd_bad_env}"
+  fi
+fi
+
+# --- Nightly compliance -----------------------------------------------------------
+cicd_nightly_jobs="$(awk '/^jobs:/ {j = 1; next} j && /^  [A-Za-z0-9_-]+:$/ {sub(/^  /, ""); sub(/:$/, ""); print}' "${NIGHTLY_WORKFLOW}" | sort | tr '\n' ' ' | sed 's/ $//')"
+# shellcheck disable=SC2016 # literal backticks
+cicd_table_jobs="$(awk '
+  /^\| Job \| Asks \| Fails when \|/ { t = 1; next }
+  t && /^\|[ :-]*-/ { next }
+  t && /^\|/ { split($0, cell, "|"); print cell[2]; next }
+  t { exit }
+' "${CICD_DOC}" | grep -oE '`[^`]+`' | tr -d '`' | sort | tr '\n' ' ' | sed 's/ $//')"
+assert_equal "the nightly table lists exactly the nightly workflow's jobs" \
+  "${cicd_table_jobs}" "${cicd_nightly_jobs}"
+cicd_nightly_count="$(wc -w <<<"${cicd_nightly_jobs}" | tr -d ' ')"
+# shellcheck disable=SC2016 # a literal backticked path
+assert_equal "the nightly paragraph's check count matches the job count" \
+  "$(grep -oE '`\.github/workflows/nightly-compliance\.yml` runs [a-z]+ checks' <<<"${cicd_flat}" | sed -E 's/.* runs ([a-z]+) checks/\1/')" \
+  "$(number_word "${cicd_nightly_count}")"
+cicd_cron="$(sed -n 's/^[[:space:]]*- cron: "\([^"]*\)".*/\1/p' "${NIGHTLY_WORKFLOW}" | head -n 1)"
+cicd_cron_time=""
+if [[ "${cicd_cron}" =~ ^([0-9]+)\ ([0-9]+)\ \*\ \*\ \*$ ]]; then
+  cicd_cron_time="$(printf '%02d:%02d UTC' "${BASH_REMATCH[2]}" "${BASH_REMATCH[1]}")"
+fi
+# shellcheck disable=SC2016 # a literal quote in the failure text
+assert_equal "the nightly paragraph's time is the workflow's daily cron" \
+  "$(grep -oE 'runs [a-z]+ checks at [0-9]{2}:[0-9]{2} UTC' <<<"${cicd_flat}" | grep -oE '[0-9]{2}:[0-9]{2} UTC')" \
+  "${cicd_cron_time:-<cron '${cicd_cron}' is not daily>}"
+assert_equal "the nightly workflow triggers are the three the page names" \
+  "$(cicd_triggers "${NIGHTLY_WORKFLOW}")" "pull_request schedule workflow_dispatch"
+assert_equal "the nightly workflow runs on pull requests only for the workflow file itself" \
+  "$(cicd_trigger_paths "${NIGHTLY_WORKFLOW}" pull_request | tr '\n' ' ' | sed 's/ $//')" "${NIGHTLY_WORKFLOW}"
+cicd_signatures="$(cicd_job "${NIGHTLY_WORKFLOW}" signatures | grep -Ev '^[[:space:]]*#')"
+if grep -Eq '^[[:space:]]+fail-fast: false$' <<<"${cicd_signatures}"; then
+  pass "the signatures matrix is fail-fast: false, so one bad flavor does not cancel the others"
+else
+  fail "the signatures matrix is fail-fast: false, so one bad flavor does not cancel the others" \
+    "no 'fail-fast: false' in the signatures job"
+fi
+cicd_sig_flavors="$(sed -n 's/^[[:space:]]*flavor: \[\(.*\)\]$/\1/p' <<<"${cicd_signatures}" | tr -d ' ' | tr ',' ' ')"
+cicd_sig_count="$(wc -w <<<"${cicd_sig_flavors}" | tr -d ' ')"
+if grep -Fq "does not cancel the other $(number_word $((cicd_sig_count - 1)))" <<<"${cicd_flat}"; then
+  pass "'does not cancel the other N' matches the signatures matrix (${cicd_sig_flavors})"
+else
+  fail "'does not cancel the other N' matches the signatures matrix (${cicd_sig_flavors})" \
+    "expected 'the other $(number_word $((cicd_sig_count - 1)))'"
+fi
+# shellcheck disable=SC2016 # a literal shell expansion
+if grep -Eq 'cosign verify[^|]*--key cosign\.pub' <<<"${cicd_signatures}"; then
+  pass "the signatures job verifies against cosign.pub from the checkout"
+else
+  fail "the signatures job verifies against cosign.pub from the checkout" \
+    "no 'cosign verify ... --key cosign.pub' in the job"
+fi
+# The page's reproduce-it-locally command for one flavor names an image the
+# build publishes: arch-bootc-<flavor> for a flavor in the matrix.
+cicd_local_flavor="$(grep -oE 'cosign verify --key cosign\.pub ghcr\.io/danathar/arch-bootc-[a-z]+:latest' <<<"${cicd_flat}" | sed -E 's/.*arch-bootc-([a-z]+):latest/\1/')"
+if [[ -n "${cicd_local_flavor}" && " ${cicd_sig_flavors} " == *" ${cicd_local_flavor} "* ]]; then
+  pass "the page's local cosign verify names a published flavor (${cicd_local_flavor})"
+else
+  fail "the page's local cosign verify names a published flavor" \
+    "found '${cicd_local_flavor:-<none>}', matrix is ${cicd_sig_flavors}"
+fi
+# bootc-pin's reproduce-by-hand command reads the version the way the job does
+# and asks upstream for the peeled ref the job compares.
+cicd_bootc_job="$(cicd_job "${NIGHTLY_WORKFLOW}" bootc-pin)"
+# shellcheck disable=SC2016 # literal shell text
+cicd_doc_sed="$(grep -oE "sed -nE '[^']*' Containerfile \| head -1" "${CICD_DOC}" | head -n 1)"
+if [[ -n "${cicd_doc_sed}" ]] && grep -Fq -- "${cicd_doc_sed}" <<<"${cicd_bootc_job}"; then
+  pass "the page's bootc-pin command reads BOOTC_VERSION the way the job does"
+else
+  fail "the page's bootc-pin command reads BOOTC_VERSION the way the job does" \
+    "doc: '${cicd_doc_sed:-<none>}' is not in the bootc-pin job"
+fi
+# shellcheck disable=SC2016 # literal shell text
+for cicd_needle in 'git ls-remote --tags https://github.com/bootc-dev/bootc.git' '"refs/tags/${version}^{}"'; do
+  if grep -Fq -- "${cicd_needle}" "${CICD_DOC}" && grep -Fq -- "${cicd_needle}" <<<"${cicd_bootc_job}"; then
+    pass "the page and the bootc-pin job both ask upstream with: ${cicd_needle}"
+  else
+    fail "the page and the bootc-pin job both ask upstream with: ${cicd_needle}" \
+      "missing from the page or from the job"
+  fi
+done
+
+# --- Pruning old package versions ---------------------------------------------------
+cicd_cleanup="$(cicd_job "${BUILD_WORKFLOW}" cleanup_packages | grep -Ev '^[[:space:]]*#')"
+cicd_keep="$(sed -n 's/.*--min-versions-to-keep \([0-9][0-9]*\).*/\1/p' <<<"${cicd_cleanup}" | head -n 1)"
+assert_equal "the page's retention count is the one cleanup_packages passes" \
+  "$(grep -oE 'keeps the [0-9]+ most recently created' <<<"${cicd_flat}" | grep -oE '[0-9]+')" "${cicd_keep:-<none>}"
+cicd_prune_flavors="$(sed -n 's/^[[:space:]]*flavor: \[\(.*\)\]$/\1/p' <<<"${cicd_cleanup}" | tr -d ' ' | tr ',' ' ')"
+# shellcheck disable=SC2016 # literal backticks
+cicd_doc_packages="$(grep -oE '\(`arch-bootc-[a-z]+`(, `-[a-z]+`)*\)' <<<"${cicd_flat}" | grep -oE '`[^`]+`' | tr -d '`' | sed -E 's/^(arch-bootc)?-//' | tr '\n' ' ' | sed 's/ $//')"
+assert_equal "the packages the page says need the Admin grant are the flavors cleanup_packages prunes" \
+  "${cicd_doc_packages}" "${cicd_prune_flavors}"
+# "Every publish pushes `latest`, `latest.YYYYMMDD` and `YYYYMMDD`": the raw
+# tags metadata-action generates, with DEFAULT_TAG and the date filled in.
+cicd_default_tag="$(sed -n 's/^  DEFAULT_TAG: "\(.*\)"$/\1/p' "${BUILD_WORKFLOW}")"
+# shellcheck disable=SC2016 # literal GitHub expressions
+cicd_tags="$(sed -n 's/^[[:space:]]*type=raw,value=//p' "${BUILD_WORKFLOW}" |
+  sed -e "s/\${{ env\.DEFAULT_TAG }}/${cicd_default_tag}/" -e "s/{{date 'YYYYMMDD'}}/YYYYMMDD/" | tr '\n' ' ' | sed 's/ $//')"
+# shellcheck disable=SC2016 # literal backticks
+assert_equal "the tags the page says every publish pushes are the ones metadata-action generates" \
+  "$(grep -oE 'Every publish pushes `[^`]+`, `[^`]+` and `[^`]+`' <<<"${cicd_flat}" | grep -oE '`[^`]+`' | tr -d '`' | tr '\n' ' ' | sed 's/ $//')" \
+  "${cicd_tags}"
 
 fi
 

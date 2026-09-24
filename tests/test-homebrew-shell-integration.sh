@@ -1036,7 +1036,7 @@ test_the_namespace_step_relaxes_the_sysctl_exactly_where_the_knob_exists() {
   # this test can arrange: /proc is the body's own input and cannot be
   # substituted without privileges the suite refuses to take. So both branches
   # are asserted, and the host decides which one is exercised -- the write on
-  # the AppArmor kernels CI runs on (ubuntu-24.04 ships this knob), the
+  # the AppArmor kernels CI runs on (ubuntu-26.04 ships this knob), the
   # explanation everywhere else.
   if [[ -e "${APPARMOR_PATH}" ]]; then
     assert_equals "the step clears the AppArmor restriction under sudo" \
