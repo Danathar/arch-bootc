@@ -227,7 +227,8 @@ must be described as such.
   (`>cosign.pub git diff HEAD` is the same command). The hook refuses it
   whatever the target and wherever it is written, on the same ground as
   `--output`. Descriptor forms (`2>&1`, `>&2`, `>&-`),
-  input redirections, and a redirection on another command of the same string
+  input redirections from a file the read test below allows, and a
+  redirection on another command of the same string
   (`echo x >out; git diff HEAD`, `git diff HEAD | jq . > out`) are not
   affected.
 
@@ -484,6 +485,18 @@ must be described as such.
   `<<<` carry a delimiter or content rather than a path; `<&` and `<>` are
   decided by the redirection rules already. Same fix as
   [atomic-image-builder#423](https://github.com/Danathar/atomic-image-builder/pull/423).
+
+  Git reads standard input too. Under `--stdin`, `git log`, `git show` and
+  `git diff` take revisions from it, one per line, and the first line that is
+  not a revision ends the run with `fatal: bad revision` quoting that line, so
+  `git log --stdin <.env` printed the first line of the file while the hook
+  passed every input redirection on a git invocation
+  ([#351](https://github.com/Danathar/arch-bootc/issues/351)). The target of a
+  bare `<` on a command whose name may be `git` is held to the same test.
+  `</dev/null` and a revision list inside the checkout
+  (`git log --stdin <revs.txt`) stay allowed, and a `git` word that is not the
+  command's name (`grep git <notes.txt`) is not a git invocation. Same fix as
+  [atomic-image-builder#449](https://github.com/Danathar/atomic-image-builder/pull/449).
 
   `bash -n`, the other allowed linter, is not the same case for reads: it
   echoes at most the one line of a syntax error, and the key and `.env` shapes

@@ -2896,6 +2896,45 @@ if ((settings_readable)); then
     assert_hook_permits "an ordinary input redirection is still unprompted: ${stdin_command}" \
       "${stdin_command}"
   done
+  # Git reads standard input as well. Under --stdin, git log, git show and
+  # git diff take revisions from it and name the first line that is not one
+  # in their error, so `git log --stdin <.env` printed the first line of the
+  # file while the gate passed every input redirection on a git invocation.
+  # Shown first against a synthetic file, for the same reason as above.
+  git_stdin_dir="$(mktemp -d)"
+  printf 'SYNTHETIC_GIT_STDIN_SECRET=synthetic-value-5\nSECOND=2\n' \
+    >"${git_stdin_dir}/fake.env"
+  git_stdin_output="$(git log --stdin <"${git_stdin_dir}/fake.env" 2>&1 || true)"
+  if grep -q 'SYNTHETIC_GIT_STDIN_SECRET=synthetic-value-5' <<<"${git_stdin_output}"; then
+    pass "git log --stdin prints the first line of the file it is handed on standard input"
+  else
+    fail "git log --stdin prints the first line of the file it is handed on standard input" \
+      "the synthetic line did not appear; re-derive why the target of a < on git is checked"
+  fi
+  rm -rf "${git_stdin_dir}"
+  for stdin_command in \
+    'git log --stdin <.env' \
+    'git show --stdin < ./cosign.key' \
+    'git diff --stdin 0<.env.local' \
+    'git log --stdin < /etc/shadow' \
+    'git log --stdin < ~/.netrc' \
+    'git log --stdin < .en?' \
+    '<.env git log --stdin' \
+    'timeout 5 git log --stdin <.env' \
+    'git status; git log --stdin <.env'; do
+    assert_hook_refuses_naming "the hook refuses a git read through an input redirection: ${stdin_command}" \
+      "${stdin_command}" 'take revisions from standard input'
+  done
+  # A revision list inside the checkout is how --stdin is meant to be used,
+  # and a `git` word that is not the command's name is not a git invocation.
+  for stdin_command in \
+    'git log --stdin <revs.txt' \
+    'git log --stdin </dev/null' \
+    'grep git <.env' \
+    'git log -1 && cat <.env'; do
+    assert_hook_permits "an ordinary input redirection near git is still unprompted: ${stdin_command}" \
+      "${stdin_command}"
+  done
   # A quoted or escaped glob character is the literal word bash would pass,
   # and a `~` that does not lead the word is a character in a filename.
   for rewrite_command in \
@@ -3190,6 +3229,12 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row redirection refused 'shellcheck reads standard input' \
     'the same, written before the name, which bash attaches to the same simple command' \
     '< .env shellcheck -'
+  corpus_row redirection refused 'take revisions from standard input' \
+    'git log --stdin names the first line that is not a revision in its error, so the redirection target is read back' \
+    'git log --stdin <.env'
+  corpus_row redirection refused 'take revisions from standard input' \
+    'the same, written before the name, which bash attaches to the same simple command' \
+    '<./cosign.key git show --stdin'
   corpus_row redirection refused '--no-index mode' \
     "the stdin operand is how a file reaches git's plain-file mode; it counts as an operand" \
     'git diff /etc/shadow -'
@@ -3722,6 +3767,10 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     '((cmd_xargs && (cmd_gated || cmd_git_name))) && refuse "${XARGS_MSG}"' \
     '((cmd_xargs && (cmd_gated || cmd_git_name))) && true' \
     "printf '%s\n' /dev/null ./cosign.key | xargs git diff"
+  mutation_row 'the input-redirection refusal on a git invocation' \
+    '((cmd_git_name && cmd_read)) && refuse "${GIT_STDIN_MSG}"' \
+    '((cmd_git_name && cmd_read)) && true' \
+    'git log --stdin <.env'
   mutation_row 'noglob in the wrapper list' \
     'nohup | noglob | nice' \
     'nohup | nice' \

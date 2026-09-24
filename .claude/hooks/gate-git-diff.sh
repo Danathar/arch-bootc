@@ -174,6 +174,16 @@
 # See
 # `reading_target_refused` and `SHELLCHECK_STDIN_MSG`.
 #
+# Git reads standard input too. `git log --stdin`, `git show --stdin` and
+# `git diff --stdin` take revisions from it, one per line, and the first line
+# that is not one ends the run with `fatal: bad revision '<that line>'`, so
+# `git log --stdin <.env` printed the first line of the file past
+# `Read(./.env)` while this gate, which passed every input redirection on a
+# git invocation, exited 0 (issue #351). The same target test is applied to a
+# bare `<` on a command whose name may be `git`: a file inside the checkout
+# that none of the deny shapes match (`git log --stdin <revs.txt`) and
+# `</dev/null` are unaffected. See `GIT_STDIN_MSG`.
+#
 # The write primitive is not git's alone, either. Six other allow rows in
 # `.claude/settings.json` end in `*` -- "this command with any arguments" --
 # and a shell output redirection is part of the string that rule matches, so
@@ -262,6 +272,9 @@ SHELLCHECK_STDIN_MSG='blocked: shellcheck reads standard input when its operand 
 
 # shellcheck disable=SC2016 # the backticks quote command spellings for the reader
 DIFFTOOL_MSG='blocked: `git difftool` runs a program of the caller'"'"'s choosing once per changed path -- `git difftool --no-prompt --extcmd=/tmp/evil HEAD~1 HEAD`, and `-x PROG` is the same option one letter long -- and the allow row `Bash(git diff*)` matches it on that prefix, so nothing prompts. It is a third spelling of the primitive this gate already refuses as `GIT_EXTERNAL_DIFF=` and as `-c diff.external=`, and the only one that needs neither an environment nor a config option: the program is an ordinary argument of an allow-listed command. Leaving out --extcmd is no better, since the program is then whatever diff.tool names in a config file this gate cannot see. So the difftool and mergetool subcommands are refused outright. git diff, git log and git show print to stdout; read that instead. Only the subcommand is refused, so --grep=difftool and a path of that name are unaffected.'
+
+# shellcheck disable=SC2016 # the message quotes shell spellings as literal text
+GIT_STDIN_MSG='blocked: git log, git show and git diff take revisions from standard input under --stdin, one per line, and the first line that is not a revision ends the run with fatal: bad revision followed by that line, so `git log --stdin <.env` prints the first line of the file back past the Read(...) deny rules in .claude/settings.json. The target of a bare < on a git invocation is therefore checked the way a shellcheck one is: it must resolve inside the working tree, it must not be one of the secret-shaped names those rules list (cosign.key, .env, .env.*, *.pem, *.p12, id_rsa, id_ed25519), and it must be spelled out -- no brace, no leading ~, no glob. Put the revisions in a file inside the checkout, or name them on the command line. </dev/null is unaffected, and so are <<, <<< and <&.'
 
 # shellcheck disable=SC2016 # the backticks quote command spellings for the reader
 XARGS_MSG='blocked: xargs adds the words it reads from standard input (or from the file -a/--arg-file names) to the command it runs, so the operands git or the linter receive are not in this string and none of the operand tests here can check them: `printf "%s\n" /dev/null ./cosign.key | xargs git diff` hands git both operands of the plain-file read and prints the key with nothing after `git diff` for this gate to count, and `xargs shellcheck <list.txt` lints, and prints back, whatever list.txt names. The allow rules do not stop it either: Claude Code matches `xargs <prefix>` against an allow row ending in * as readily as `<prefix>` itself, so nothing prompts. xargs is therefore refused in front of git or an allow-listed command (shellcheck, bash -n, podman images, podman ps, findmnt, df -T), wherever it stands among the wrappers (`timeout 5 xargs git diff`, `nice xargs shellcheck`). Name the operands in the command itself instead. xargs in front of a command no allow rule covers (`git diff --name-only | xargs echo`) is unaffected: that string matches no allow row and prompts on its own.'
@@ -1289,6 +1302,12 @@ check_gated_command() {
   # (`shellcheck f <"$(printf x >cosign.pub)"`) is refused for the command it
   # runs, which is the message to act on first.
   ((cmd_gated && cmd_read)) && [[ "${cmd_prefix}" == shellcheck* ]] && refuse "${SHELLCHECK_STDIN_MSG}"
+  # Git's half of the same read: `--stdin` on log, show and diff takes
+  # revisions from standard input and names the first line that is not one in
+  # its error, so `git log --stdin <.env` prints that line back. Decided on a
+  # `git` word that stands where the name may be (`cmd_git_name`), the way the
+  # xargs test is, so `grep git <notes.txt` is not read as a git invocation.
+  ((cmd_git_name && cmd_read)) && refuse "${GIT_STDIN_MSG}"
   ((cmd_gated && cmd_heredoc)) && refuse "${GATED_HEREDOC_MSG}"
   # A `SHELLCHECK_OPTS=` assignment has a refusal of its own, which names what
   # the linter reads out of it; that one is left to say it.
