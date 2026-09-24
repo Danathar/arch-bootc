@@ -907,6 +907,160 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Workflow token permissions (.github/policies/workflow-permissions.json: what each job's GITHUB_TOKEN may do)"
+
+# docs/security/SECURITY-AI.md: "Workflow permissions are declared explicitly
+# and minimally per job." The only record of what each job was meant to hold
+# was the job itself, so widening a token was a one-line edit inside a file a
+# reviewer may be reading for the step that changed. The policy file is a
+# second copy, kept on purpose: every job's block has to match it exactly, in
+# both directions, so a new scope needs two edits in the same pull request.
+# The policy file is T3 in docs/risk-tiers.md.
+
+WORKFLOW_POLICY=".github/policies/workflow-permissions.json"
+
+# Every permissions block in a workflow, one line per scope:
+#   J <tab> job                        -- each job under the top-level jobs: key
+#   P <tab> owner <tab> scope <tab> level
+# owner is `-` for the top-level block, otherwise the job id. An inline value
+# (`read-all`, `{}`) is printed with scope `*`, and a block with no entries as
+# `* <empty>`, so neither can pass as "nothing declared".
+#
+# A quoted key is unquoted first: YAML and Actions read `"permissions":` as
+# `permissions:`, and missing that spelling would let a job gain a block this
+# parser never sees. The job step is read off the file rather than assumed, so
+# a workflow indented by four spaces is read as well as one indented by two.
+# Only a key at exactly the job-key indent counts: a step input named
+# `permissions` sits deeper and is not a token block.
+wp_declared() {
+  sed -E "s/^([[:space:]]*)[\"']([A-Za-z0-9_-]+)[\"']:/\1\2:/" "$@" | awk '
+    function flush() {
+      if (owner != "" && !entries) printf "P\t%s\t*\t<empty>\n", owner
+      owner = ""
+    }
+    /^[[:space:]]*(#|$)/ { next }
+    {
+      match($0, /^ */)
+      ind = RLENGTH
+      key = ""
+      value = ""
+      if (match($0, /^ *[A-Za-z0-9_-]+:/)) {
+        key = substr($0, ind + 1, RLENGTH - ind - 1)
+        value = substr($0, RLENGTH + 1)
+        sub(/^[[:space:]]+/, "", value)
+        sub(/[[:space:]]*#.*$/, "", value)
+        sub(/[[:space:]]+$/, "", value)
+      }
+    }
+    owner != "" && ind > block_ind {
+      if (key != "") { printf "P\t%s\t%s\t%s\n", owner, key, value; entries++ }
+      next
+    }
+    owner != "" { flush() }
+    ind == 0 {
+      in_jobs = (key == "jobs")
+      if (key == "permissions") {
+        if (value != "") printf "P\t-\t*\t%s\n", value
+        else { owner = "-"; block_ind = 0; entries = 0 }
+      }
+      next
+    }
+    !in_jobs || key == "" { next }
+    !step { step = ind }
+    ind == step && value == "" { job = key; printf "J\t%s\n", job; next }
+    ind == 2 * step && key == "permissions" {
+      if (value != "") printf "P\t%s\t*\t%s\n", job, value
+      else { owner = job; block_ind = ind; entries = 0 }
+    }
+    END { flush() }
+  '
+}
+
+# The same shape, read out of the policy for one workflow.
+wp_allowed() {
+  jq -r --arg wf "$1" '
+    def rows($owner):
+      if . == null then empty
+      elif type == "string" then "P\t\($owner)\t*\t\(.)"
+      else to_entries[] | "P\t\($owner)\t\(.key)\t\(.value)" end;
+    .workflows[$wf] | ((.workflow | rows("-")), (.jobs | to_entries[] | .key as $job | .value | rows($job)))
+  ' "${WORKFLOW_POLICY}"
+}
+
+# The parser is checked against the shapes it has to read before anything is
+# compared with it. A parser that stopped seeing blocks would read every
+# workflow as "nothing declared" and a policy that says the same would agree.
+wp_fixture_check() {
+  local description="$1" text="$2" expected="$3"
+  assert_equal "the permissions parser reads ${description}" \
+    "$(wp_declared <<<"${text}" | grep '^P' | LC_ALL=C sort)" "$(LC_ALL=C sort <<<"${expected}")"
+}
+wp_fixture_check "a top-level block with a trailing comment" \
+  $'permissions:\n  contents: read\n  issues: write  # why\n\njobs:\n  a:\n    runs-on: x\n' \
+  $'P\t-\tcontents\tread\nP\t-\tissues\twrite'
+wp_fixture_check "an inline top-level value and a job block" \
+  $'permissions: read-all\njobs:\n  a:\n    permissions:\n      contents: write\n    steps: []\n' \
+  $'P\t-\t*\tread-all\nP\ta\tcontents\twrite'
+wp_fixture_check "an empty job block, and a job without one" \
+  $'on: push\njobs:\n  a:\n    permissions: {}\n  b:\n    runs-on: x\n' \
+  $'P\ta\t*\t{}'
+wp_fixture_check "a step input named permissions as no block at all" \
+  $'jobs:\n  a:\n    steps:\n      - with:\n          permissions: write\n' \
+  ""
+wp_fixture_check "a quoted key as the same key" \
+  $'jobs:\n  a:\n    "permissions":\n      \'contents\': write\n' \
+  $'P\ta\tcontents\twrite'
+wp_fixture_check "comments and blank lines inside a block, and a four-space workflow" \
+  $'jobs:\n    a:\n        permissions:\n            # why\n            contents: read\n\n            packages: write\n        steps: []\n' \
+  $'P\ta\tcontents\tread\nP\ta\tpackages\twrite'
+wp_fixture_check "a key with nothing under it as an empty block" \
+  $'jobs:\n  a:\n    permissions:\n    steps: []\n' \
+  $'P\ta\t*\t<empty>'
+
+if ! jq -e '.workflows | type == "object"' "${WORKFLOW_POLICY}" >/dev/null 2>&1; then
+  fail "the workflow permissions policy is readable" "${WORKFLOW_POLICY} is missing, is not JSON, or has no .workflows object"
+else
+  pass "the workflow permissions policy is readable"
+
+  wp_present="$(for workflow in "${workflows[@]}"; do printf '%s\n' "${workflow##*/}"; done | LC_ALL=C sort)"
+  assert_equal "every workflow is in the policy, and every workflow the policy names exists" \
+    "$(jq -r '.workflows | keys[]' "${WORKFLOW_POLICY}" | LC_ALL=C sort)" "${wp_present}"
+
+  for workflow in "${workflows[@]}"; do
+    wp_name="${workflow##*/}"
+    jq -e --arg wf "${wp_name}" '.workflows | has($wf)' "${WORKFLOW_POLICY}" >/dev/null || continue
+    wp_found="$(wp_declared "${workflow}")"
+    assert_equal "${wp_name}: the policy lists exactly the workflow's jobs" \
+      "$(jq -r --arg wf "${wp_name}" '.workflows[$wf].jobs | keys[]' "${WORKFLOW_POLICY}" | LC_ALL=C sort)" \
+      "$(sed -n 's/^J\t//p' <<<"${wp_found}" | LC_ALL=C sort)"
+    assert_equal "${wp_name}: every permissions block is exactly what ${WORKFLOW_POLICY} allows (change both, or neither)" \
+      "$(grep '^P' <<<"${wp_found}" | LC_ALL=C sort)" \
+      "$(wp_allowed "${wp_name}" | LC_ALL=C sort)"
+  done
+
+  # "declared explicitly ... per job": a job the policy maps to nothing would
+  # run with the repository's default token, and a top-level block would hand
+  # every job the same scopes "for convenience".
+  assert_equal "the policy gives every job its own block and no workflow a top-level one" \
+    "$(jq -r '.workflows | to_entries[] | .key as $wf | .value |
+      (select(.workflow != null) | "\($wf): top-level block"),
+      (.jobs | to_entries[] | select(.value == null or .value == {}) | "\($wf)/\(.key): no block")' "${WORKFLOW_POLICY}")" ""
+
+  # Actions ignores a misspelt scope without complaint, so the policy is
+  # refused one here instead.
+  assert_equal "the policy names only real token scopes and levels" \
+    "$(jq -r '
+      ["actions", "attestations", "checks", "contents", "deployments", "discussions",
+       "id-token", "issues", "models", "packages", "pages", "pull-requests",
+       "repository-projects", "security-events", "statuses"] as $scopes
+      | .workflows | to_entries[] | .key as $wf | .value
+      | ((.workflow | select(. != null)), (.jobs[]))
+      | if type == "string" then select(IN("read-all", "write-all", "{}") | not) | "\($wf): \(.)"
+        else to_entries[] | select((.key | IN($scopes[]) | not) or (.value | IN("read", "write", "none") | not))
+          | "\($wf): \(.key): \(.value)" end' "${WORKFLOW_POLICY}")" ""
+fi
+
+# ---------------------------------------------------------------------------
 group "Lint manifests (docs/quality.md: 'the two lists are maintained by hand')"
 
 # run-tests.sh globs for test files (and checks the glob against
