@@ -91,7 +91,7 @@ At L5 all agents may file issues and open pull requests. Every pull request an a
 - an **architect** that writes RFCs and opens pull requests for structural changes;
 - a **strategist** that coordinates the other agents.
 
-The telemetry and operations agents ship paused. Every change is still reviewed and merged by a human maintainer.
+The telemetry and operations agents ship paused. Every change a Hive agent proposes is still reviewed and merged by a human maintainer. Renovate's dependency updates are separate: most of them merge on their own once the build is green ([Renovate](docs/renovate.md)).
 
 In this repository an agent's pull request passes the same gates as anyone else's. The ruleset on `main` only accepts changes through a pull request that passed `Shell tests and coverage` ([branch protection](docs/branch-protection.md)), and a T3 change — boot, security model, provenance or published artifacts — never merges on a green check alone ([risk tiers](docs/risk-tiers.md)).
 
