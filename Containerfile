@@ -62,19 +62,21 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
 # and take the ^{} row, not the bare tag row.
 ARG BOOTC_VERSION=v1.16.14
 ARG BOOTC_COMMIT=c87b62fb805a69793fa0cba671bbed10a2132423
-# bootc >= v1.16.12 links libselinux through the `selinux` crate
-# (bootc-dev/bootc#2445, "lsm: Use libselinux for process availability"), and
-# its `selinux-sys` build script needs libselinux's headers and shared library.
-# Arch's official repositories do not ship libselinux (only the AUR does), so
-# it is built here from the SELinux userspace release tarball, pinned by
-# version and verified against LIBSELINUX_SHA256 before anything is compiled --
-# the same pin-and-verify stance as BOOTC_COMMIT above. Only the library and
-# headers are built (src/ and include/), so libsepol is not needed; pcre2 is
-# already in the image. libselinux.so.1 stays in the image because the bootc
-# binary links it dynamically. Take the checksum from the release asset:
-#   curl -fsSL https://github.com/SELinuxProject/selinux/releases/download/X.Y/libselinux-X.Y.tar.gz | sha256sum
+# bootc >= v1.16.11 links libselinux through the `selinux` crate
+# (bootc-dev/bootc#2431), and its `selinux-sys` build script needs
+# libselinux's headers and shared library. Arch's official repositories do
+# not ship libselinux (only the AUR does), so it is built here from the
+# SELinux userspace repository, pinned exactly like bootc above: the release
+# tag in LIBSELINUX_VERSION and the peeled commit it resolved to in
+# LIBSELINUX_COMMIT, checked after the clone. Resolve it with:
+#   git ls-remote --tags https://github.com/SELinuxProject/selinux.git 'X.Y*'
+# and take the ^{} row. Both values are tracked together by the
+# "Track SELinuxProject/selinux release + pinned commit" customManager in
+# renovate.json. Only libselinux's src/ and include/ are built, so libsepol
+# is not needed; pcre2 is already in the image. libselinux.so.1 stays in the
+# image because the bootc binary links it dynamically.
 ARG LIBSELINUX_VERSION=3.11
-ARG LIBSELINUX_SHA256=73d419c6e20e874adaa4019372cbd097eecf4d276e13f27ec5e67d35c0bd203c
+ARG LIBSELINUX_COMMIT=2233a23a4d4f1bf29054037babec13f30d038e65
 # base-devel is deliberately NOT installed here (or in packages-base.txt).
 # The `rust` package already hard-depends on gcc/lld/llvm-libs/compiler-rt,
 # which is all the C toolchain `cargo build` needs for linking. The only
@@ -95,12 +97,15 @@ ARG LIBSELINUX_SHA256=73d419c6e20e874adaa4019372cbd097eecf4d276e13f27ec5e67d35c0
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     pacman -S --needed --asdeps --noconfirm rust make go-md2man elfutils && \
     pacman -S --needed --noconfirm pcre2 && \
-    curl -fsSLo /tmp/libselinux.tar.gz \
-        "https://github.com/SELinuxProject/selinux/releases/download/${LIBSELINUX_VERSION}/libselinux-${LIBSELINUX_VERSION}.tar.gz" && \
-    printf '%s  %s\n' "${LIBSELINUX_SHA256}" /tmp/libselinux.tar.gz | sha256sum -c - && \
-    tar -xzf /tmp/libselinux.tar.gz -C /tmp && \
-    make -C "/tmp/libselinux-${LIBSELINUX_VERSION}/include" install PREFIX=/usr && \
-    make -C "/tmp/libselinux-${LIBSELINUX_VERSION}/src" install \
+    git clone --branch "${LIBSELINUX_VERSION}" --depth 1 "https://github.com/SELinuxProject/selinux.git" /tmp/selinux && \
+    selinux_head="$(git -C /tmp/selinux rev-parse HEAD)" && \
+    if [ "${selinux_head}" != "${LIBSELINUX_COMMIT}" ]; then \
+        printf 'selinux tag %s resolved to %s, expected %s -- refusing to build a re-pointed tag\n' \
+            "${LIBSELINUX_VERSION}" "${selinux_head}" "${LIBSELINUX_COMMIT}" >&2; \
+        exit 1; \
+    fi && \
+    make -C /tmp/selinux/libselinux/include install PREFIX=/usr && \
+    make -C /tmp/selinux/libselinux/src install \
         PREFIX=/usr LIBDIR=/usr/lib SHLIBDIR=/usr/lib DISABLE_RPM=y CFLAGS="-O2 -pipe" \
         PCRE_MODULE=libpcre2-8 PCRE_CFLAGS="-DUSE_PCRE2 -DPCRE2_CODE_UNIT_WIDTH=8" PCRE_LDLIBS=-lpcre2-8 && \
     git clone --branch "${BOOTC_VERSION}" --depth 1 "https://github.com/bootc-dev/bootc.git" /tmp/bootc && \

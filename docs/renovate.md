@@ -22,6 +22,7 @@ skips forks by default; without that line nothing would run at all.
 | Dependency | Pinned as | Where | How Renovate finds it |
 | --- | --- | --- | --- |
 | `bootc-dev/bootc` | git tag **and** commit SHA, built from source | `Containerfile` `ARG BOOTC_VERSION` + `ARG BOOTC_COMMIT` | custom regex manager (`github-tags`, with digest) |
+| `SELinuxProject/selinux` (libselinux) | git tag **and** commit SHA, built from source | `Containerfile` `ARG LIBSELINUX_VERSION` + `ARG LIBSELINUX_COMMIT` | custom regex manager (`github-tags`, with digest) |
 | Arch base image | `docker.io/archlinux/archlinux:latest@sha256:…` | `Containerfile` `FROM` | `dockerfile` manager |
 | `ublue-os/brew` | `ghcr.io/ublue-os/brew:latest@sha256:…` | `Containerfile` `FROM … AS brew` | `dockerfile` manager |
 | `actions/checkout` | commit SHA | `build.yml` | `github-actions` manager |
@@ -36,7 +37,7 @@ skips forks by default; without that line nothing would run at all.
 | zizmor | `ZIZMOR_VERSION: X.Y.Z` | `zizmor.yaml` env | custom regex manager (`pypi`) |
 | runner image | `ubuntu-26.04` | `build.yml` `runs-on` | `github-actions` manager |
 
-Three of these need explanation.
+Four of these need explanation.
 
 **bootc** is not a container image reference — it is an `ARG` consumed by
 `git clone --branch "${BOOTC_VERSION}"`, and it is pinned twice: by tag, and by the commit
@@ -74,6 +75,18 @@ bumped without its commit is a guaranteed failed build.
 If that manager's `matchStrings` ever stop matching — a reformatted `ARG` line, a tag that is
 not `vX.Y.Z` — bootc silently freezes at whatever version it is on. Nothing will fail; updates
 just stop arriving.
+
+**libselinux** is pinned the same way, for the same reason. bootc links libselinux through the
+`selinux` crate (since bootc v1.16.11), and Arch's official repositories do not ship it, so the
+`Containerfile` clones `SELinuxProject/selinux` at `LIBSELINUX_VERSION`, checks `HEAD` against
+`LIBSELINUX_COMMIT`, and builds only `libselinux/src` and `libselinux/include` in the same step
+that builds bootc. Its tags have no `v` prefix (`3.11`), and release candidates (`3.11-rc1`) are
+prereleases that Renovate skips. One custom regex manager captures both lines, exactly like
+bootc's; the peeled commit comes from the `^{}` row of:
+
+```bash
+git ls-remote --tags https://github.com/SELinuxProject/selinux.git 'X.Y*'
+```
 
 **chunkah and shellcheck** are pinned by tag only. A `packageRule` explicitly disables
 `digest`/`pin`/`pinDigest` updates for both, so Renovate offers new tagged releases but never
