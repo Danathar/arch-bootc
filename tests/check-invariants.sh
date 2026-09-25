@@ -10976,6 +10976,48 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Agent permission boundary (docs/risk-tiers.md T3, docs/security/SECURITY-AI.md invariants: .claude/settings.json, the PreToolUse gate, skills)"
+
+# docs/risk-tiers.md maps paths to tiers and says to take the highest one any
+# file in the diff matches. Before these paths were named there, the permission
+# table and the gate matched no tier at all and a skill's SKILL.md matched T0's
+# `*.md`, so the page routed a new allow row or a relaxed refusal -- which the
+# next agent executes with no prompt -- as documentation or as nothing. The T3
+# section and the SECURITY-AI.md invariant list are where a reader looks, so
+# both are held to naming each path.
+boundary_t3="$(awk '/^## T3 — /{ inside = 1; next } inside && /^## /{ exit } inside' docs/risk-tiers.md)"
+boundary_invariants="$(awk '/^## Invariants that may not be weakened/{ inside = 1; next } inside && /^## /{ exit } inside' docs/security/SECURITY-AI.md)"
+for boundary_path in .claude/settings.json '.claude/hooks/**' '.claude/skills/**'; do
+  if grep -Fq "\`${boundary_path}\`" <<<"${boundary_t3}"; then
+    pass "docs/risk-tiers.md tiers ${boundary_path} as T3"
+  else
+    fail "docs/risk-tiers.md tiers ${boundary_path} as T3" "no \`${boundary_path}\` in its T3 section"
+  fi
+done
+for boundary_path in .claude/settings.json .claude/hooks/gate-git-diff.sh '.claude/skills/**'; do
+  if grep -Fq "\`${boundary_path}\`" <<<"${boundary_invariants}"; then
+    pass "docs/security/SECURITY-AI.md lists ${boundary_path} among the invariants"
+  else
+    fail "docs/security/SECURITY-AI.md lists ${boundary_path} among the invariants" \
+      "no \`${boundary_path}\` under '## Invariants that may not be weakened'"
+  fi
+done
+# The paths must still be the ones that exist, or the two documents name a
+# boundary that moved.
+for boundary_path in .claude/settings.json .claude/hooks/gate-git-diff.sh; do
+  if [[ -f "${boundary_path}" ]]; then
+    pass "${boundary_path} exists where the tier table says"
+  else
+    fail "${boundary_path} exists where the tier table says" "file is missing"
+  fi
+done
+if [[ -n "$(git ls-files -- .claude/skills)" ]]; then
+  pass ".claude/skills/ exists where the tier table says"
+else
+  fail ".claude/skills/ exists where the tier table says" "no tracked file under .claude/skills/"
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then
   printf 'invariants: %d of %d check(s) failed\n' "${failures}" "${checks_run}" >&2
