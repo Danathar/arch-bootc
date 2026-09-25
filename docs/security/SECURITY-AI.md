@@ -122,6 +122,14 @@ must be described as such.
   repositories changed underneath it. The rebuild cascade is an accepted cost.
 - **No third-party package sources.** Do not add a pacman repository or signing
   key to the image.
+- **The agent permission boundary.** `.claude/settings.json` (the `deny`,
+  `ask` and `allow` lists and the `hooks` block),
+  `.claude/hooks/gate-git-diff.sh` (the refusals described under Secrets
+  below) and `.claude/skills/**` (whose frontmatter can grant tools) are what
+  an agent works inside. Adding an allow row, dropping a deny row, relaxing a
+  refusal, or giving a skill `allowed-tools` widens what the next agent runs
+  without a prompt, and is T3 under [risk-tiers.md](../risk-tiers.md) even
+  though none of it ships in the image.
 - **Workflow hygiene.** Every `actions/checkout` sets `persist-credentials:
   false`, and `${{ ... }}` values reach `run:` blocks through `env:` rather than
   being pasted in as raw text. Both are enforced by zizmor and both are easy to

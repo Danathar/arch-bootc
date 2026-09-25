@@ -172,6 +172,22 @@ the diff is:
   workflow job's `GITHUB_TOKEN` may do. A change to a job's `permissions:`
   block has to change this file too, so widening a token is never a T1 edit
   that happens to sit in a workflow.
+- **The agent permission boundary** — `.claude/settings.json`,
+  `.claude/hooks/**` and `.claude/skills/**`. The settings file is the
+  permission table: its `deny` list keeps a tool call off `cosign.key`,
+  `git push --force` and the `podman`/`virsh` removal set, its `allow` list is
+  what runs with no prompt, and its `hooks` block is what registers
+  `.claude/hooks/gate-git-diff.sh` at all. The gate is what keeps the
+  allow-listed commands from reading or writing past those rules — see
+  [SECURITY-AI.md](security/SECURITY-AI.md). A skill's `SKILL.md` looks like
+  documentation and matches `*.md`, but its frontmatter can grant tools
+  (`allowed-tools`) and register hooks of its own. None of these reach a
+  machine running the image. They are T3 because a widened allow row, a
+  dropped `deny` row or a relaxed refusal is executed, unprompted, by the next
+  agent that works here — including the one that proposed it — so the change
+  cannot be reviewed by its own result. Narrowing the boundary (a new refusal,
+  a removed allow row) is still T3 by path; say in the pull request which
+  direction it goes.
 
 Evidence: everything T2 requires, plus evidence that exercises **the path this
 change touches**. That is not one thing, because T3 covers two kinds of change
