@@ -2041,6 +2041,13 @@ if ((settings_readable)); then
     'git diff --src-prefix="x&" /dev/null ./cosign.key' 'plain files'
   assert_hook_refuses_naming "the hook refuses the plain-file read behind a backslash-escaped operator" \
     'git diff --src-prefix=x\| /dev/null ./cosign.key' 'plain files'
+  # Inside double quotes a backslash escapes the quote after it, so `"x\"|"`
+  # is one word whose `|` is still quoted, and bash hands git the two operands
+  # after it. A scan that closed the quotes at `\"` cut the command at that
+  # `|` and never counted them: the same read as #316, spelled so that none
+  # of the rows above reaches the escape.
+  assert_hook_refuses_naming "the hook refuses the plain-file read behind an escaped quote and an operator inside double quotes" \
+    'git diff --src-prefix="x\"|" /dev/null ./cosign.key' 'plain files'
   assert_hook_refuses_naming "the hook refuses --output after a quoted pipe in an earlier flag" \
     "git log --grep='a|b' --output=cosign.pub -1" '--output=FILE'
   # The unquoted spelling of the same string is two commands to bash -- `git
@@ -3605,6 +3612,9 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     "a brace with no comma or .. inside it is a literal to bash, and this is git's revision syntax" \
     'git diff HEAD@{1}'
   corpus_row rewriting allowed '' \
+    'a backslash inside double quotes escapes the quote after it, so the * is still quoted and a literal to bash' \
+    'shellcheck "tests/run-tests\"*.sh"'
+  corpus_row rewriting allowed '' \
     "the rewriting rules are scoped to the words of a git invocation; this program is awk's" \
     'git diff HEAD | awk '"'"'{print $1}'"'"''
   corpus_row rewriting allowed '' \
@@ -3777,6 +3787,18 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' allowed '' \
     "an xargs option's attached value is part of the option word" \
     'git ls-files | xargs -n1 rg shellcheck'
+  corpus_row 'command name' allowed '' \
+    'a cluster of xargs flags that take no value is read letter by letter, and rg is the command after it' \
+    'git ls-files -z | xargs -0r rg shellcheck'
+  corpus_row 'command name' allowed '' \
+    'a long xargs flag that takes no value is stepped over, and rg is the command after it' \
+    'git ls-files -z | xargs --null rg shellcheck'
+  corpus_row 'command name' allowed '' \
+    "-e's end-of-file string attached to the flag is read the same way by both implementations" \
+    'git ls-files | xargs -eEOF grep -l git'
+  corpus_row 'command name' refused 'xargs adds the words' \
+    'GNU findutils and uutils read a bare -e differently, so every later word may be the name' \
+    'git ls-files | xargs -e grep -l git'
 
   # --- 5. an option that loads or writes -----------------------------------
   corpus_row options refused 'git global option' \
