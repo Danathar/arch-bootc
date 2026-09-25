@@ -1619,6 +1619,111 @@ done
 assert_equal "every load-bearing path is still tiered by name" "" "${unnamed_paths}"
 assert_equal "every load-bearing path is still committed" "" "${absent_paths}"
 
+# And the converse of both checks above, which is the question the page is
+# for. It tells a contributor to "take the **highest** tier matched by any
+# file in the diff", so a committed file that no tier names is a diff the page
+# cannot classify at all: the rule returns nothing, and "round up" has nothing
+# to round. The checks above ask whether every path the page names exists and
+# whether a hand-picked list is still named; neither sees a file the page never
+# mentioned. That is how `.claude/settings.json` sat untiered until #368, and
+# the same computation over today's tree finds more.
+#
+# The tier globs are derived, not listed, from the paragraphs that assign
+# paths: each section's first paragraph, a paragraph opening with "Plus" (T1's
+# issue forms), and a bulleted paragraph opening with a bold name (T3's
+# load-bearing set). The rest of a section is prose that mentions paths
+# without tiering them -- T0's carve-out says the issue forms "match neither
+# `**/*.md` nor `docs/**`", and reading that as T0 assigning `**/*.md` would
+# keep every Markdown file tiered after the real assignment was deleted. Of
+# those paragraphs, every backticked token that could be a repository path
+# counts -- no space, not an in-image absolute path. A token without a `/` is a root-level name, as a path filter
+# reads it (`Containerfile`, `cosign.pub`), except where the page qualifies it
+# as "`<token>` anywhere", which is how T0 tiers `*.md`. Prose tokens that are
+# not paths (`BOOTC_VERSION`, `deny`) become globs matching nothing tracked,
+# which is harmless here: an extra glob can only classify more.
+tier_assignments="$(awk '
+  /^## T[0-9] — / { inside = 1; paragraph = 0; blank = 1; next }
+  inside && /^## / { inside = 0 }
+  !inside { next }
+  /^[[:space:]]*$/ { blank = 1; next }
+  blank {
+    blank = 0
+    paragraph++
+    keep = (paragraph == 1 || /^Plus / || /^- \*\*/)
+  }
+  keep
+' "${RISK_TIERS_DOC}")"
+assert_extracted "the tier sections still have path-assigning paragraphs" \
+  "${tier_assignments}"
+# shellcheck disable=SC2016
+assert_absent "the T0 carve-out's negative mention is not read as an assignment" \
+  "${tier_assignments}" 'match neither `**/*.md`'
+tier_globs=""
+# shellcheck disable=SC2016
+while IFS= read -r token; do
+  [[ -z "${token}" ]] && continue
+  [[ "${token}" == /* || "${token}" == *" "* ]] && continue
+  if [[ "${token}" != */* && "${tier_assignments}" == *"\`${token}\` anywhere"* ]]; then
+    tier_globs+="**/${token}"$'\n'
+  else
+    tier_globs+="$(as_path_glob "${token}")"$'\n'
+  fi
+done < <(printf '%s\n' "${tier_assignments}" | grep -oE '`[^`]+`' | tr -d '`' | sort -u)
+assert_extracted "the tier sections yield path globs" "${tier_globs}"
+
+path_is_tiered() { # path
+  local glob
+  while IFS= read -r glob; do
+    [[ -z "${glob}" ]] && continue
+    glob_matches "${glob}" "$1" && return 0
+  done <<<"${tier_globs}"
+  return 1
+}
+
+# Committed files the page does not tier today, each with what it does. This
+# is a record of the gap, not a decision about it: picking a tier for a file
+# is a policy change to the page and belongs to a reviewed edit of it. The
+# ledger is checked in both directions, so it can only shrink -- a new
+# untiered file fails until it is tiered or recorded here, and an entry fails
+# as soon as the page tiers it, so the record cannot outlive the gap.
+declare -A UNTIERED_PATHS=(
+  [.cursor/rules/arch-bootc-safety.mdc]="always-on agent rule; T3 tiers .claude/skills/** for the same reason and does not name it"
+  [.github/auto-qa-tuning.json]="the policy tests/tune-coverage.sh enforces over .coverage-thresholds.json, which is T1"
+  [.gitignore]="repository hygiene"
+  [.memory/corrections.jsonl]="agent memory"
+  [.prettierrc.json]="formatter config"
+  [LICENSE]="license"
+  [LICENSE.APACHE-2.0]="license"
+  [brew-payload.manifest]="the Containerfile fails the build unless the brew payload copied into / after the root-login controls matches it"
+  [scripts/pr-review-state.sh]="run by ai-fix.yml with a repository token"
+  [scripts/prune-package-versions.sh]="the package-retention logic whose job T3 names, but not the file"
+  [scripts/quickstart.sh]="installer that runs bootc install to-disk on the disk it is given"
+)
+
+untiered_unrecorded=""
+tracked_checked=0
+while IFS= read -r tracked_path; do
+  [[ -z "${tracked_path}" ]] && continue
+  tracked_checked=$((tracked_checked + 1))
+  path_is_tiered "${tracked_path}" && continue
+  [[ -v "UNTIERED_PATHS[${tracked_path}]" ]] || untiered_unrecorded+="${tracked_path} "
+done <<<"${TRACKED_PATHS}"
+check "the tracked file set is non-empty" "$((tracked_checked > 0 ? 0 : 1))" \
+  "git ls-files returned nothing, so no file was classified"
+assert_equal "every committed file is tiered by docs/risk-tiers.md or recorded as untiered" \
+  "" "${untiered_unrecorded}"
+
+stale_untiered=""
+for untiered_path in "${!UNTIERED_PATHS[@]}"; do
+  if ! grep -qxF -- "${untiered_path}" <<<"${TRACKED_PATHS}"; then
+    stale_untiered+="${untiered_path} (not committed) "
+  elif path_is_tiered "${untiered_path}"; then
+    stale_untiered+="${untiered_path} (tiered now) "
+  fi
+done
+assert_equal "every path recorded as untiered is committed and still matches no tier" \
+  "" "${stale_untiered}"
+
 # T3's security controls are quoted as literal strings, and all six live in the
 # Containerfile. The page's claim about them -- that the four root-login
 # controls "are only safe together" -- is unreadable if the strings drift, and
