@@ -62,6 +62,19 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
 # and take the ^{} row, not the bare tag row.
 ARG BOOTC_VERSION=v1.16.14
 ARG BOOTC_COMMIT=c87b62fb805a69793fa0cba671bbed10a2132423
+# bootc >= v1.16.12 links libselinux through the `selinux` crate
+# (bootc-dev/bootc#2445, "lsm: Use libselinux for process availability"), and
+# its `selinux-sys` build script needs libselinux's headers and shared library.
+# Arch's official repositories do not ship libselinux (only the AUR does), so
+# it is built here from the SELinux userspace release tarball, pinned by
+# version and verified against LIBSELINUX_SHA256 before anything is compiled --
+# the same pin-and-verify stance as BOOTC_COMMIT above. Only the library and
+# headers are built (src/ and include/), so libsepol is not needed; pcre2 is
+# already in the image. libselinux.so.1 stays in the image because the bootc
+# binary links it dynamically. Take the checksum from the release asset:
+#   curl -fsSL https://github.com/SELinuxProject/selinux/releases/download/X.Y/libselinux-X.Y.tar.gz | sha256sum
+ARG LIBSELINUX_VERSION=3.11
+ARG LIBSELINUX_SHA256=73d419c6e20e874adaa4019372cbd097eecf4d276e13f27ec5e67d35c0bd203c
 # base-devel is deliberately NOT installed here (or in packages-base.txt).
 # The `rust` package already hard-depends on gcc/lld/llvm-libs/compiler-rt,
 # which is all the C toolchain `cargo build` needs for linking. The only
@@ -81,6 +94,15 @@ ARG BOOTC_COMMIT=c87b62fb805a69793fa0cba671bbed10a2132423
 # a full build toolchain in the shipped image forever.
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     pacman -S --needed --asdeps --noconfirm rust make go-md2man elfutils && \
+    pacman -S --needed --noconfirm pcre2 && \
+    curl -fsSLo /tmp/libselinux.tar.gz \
+        "https://github.com/SELinuxProject/selinux/releases/download/${LIBSELINUX_VERSION}/libselinux-${LIBSELINUX_VERSION}.tar.gz" && \
+    printf '%s  %s\n' "${LIBSELINUX_SHA256}" /tmp/libselinux.tar.gz | sha256sum -c - && \
+    tar -xzf /tmp/libselinux.tar.gz -C /tmp && \
+    make -C "/tmp/libselinux-${LIBSELINUX_VERSION}/include" install PREFIX=/usr && \
+    make -C "/tmp/libselinux-${LIBSELINUX_VERSION}/src" install \
+        PREFIX=/usr LIBDIR=/usr/lib SHLIBDIR=/usr/lib DISABLE_RPM=y CFLAGS="-O2 -pipe" \
+        PCRE_MODULE=libpcre2-8 PCRE_CFLAGS="-DUSE_PCRE2 -DPCRE2_CODE_UNIT_WIDTH=8" PCRE_LDLIBS=-lpcre2-8 && \
     git clone --branch "${BOOTC_VERSION}" --depth 1 "https://github.com/bootc-dev/bootc.git" /tmp/bootc && \
     bootc_head="$(git -C /tmp/bootc rev-parse HEAD)" && \
     if [ "${bootc_head}" != "${BOOTC_COMMIT}" ]; then \
