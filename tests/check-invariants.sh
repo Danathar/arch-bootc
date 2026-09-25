@@ -853,6 +853,84 @@ while IFS= read -r dropin_dir; do
   fi
 done < <(find "${UNIT_SRC_DIR}" -mindepth 1 -maxdepth 1 -type d -name '*.d' | sort)
 
+# AGENTS.md ("Service enablement policy"): each flavor re-runs a
+# dangling-symlink check, `systemd-analyze verify`, and `bootc container lint`.
+# A build target only runs its own stage chain, so those checks are hand copies
+# of one RUN -- base-core's, and one in every `FROM base-core AS <flavor>`
+# stage -- and the rechunk tagging RUN is a hand copy in each flavor too. The
+# assertion above is satisfied by any one copy, so a copy edited on its own, or
+# dropped from one flavor, passed. These read each stage separately.
+
+# The instructions of one stage, one per line: whole-line comments and blank
+# lines dropped, `\`-continued lines folded into their instruction, runs of
+# whitespace collapsed, so two copies compare equal whatever their indentation.
+stage_instructions() {
+  local stage="$1"
+  awk -v stage="${stage}" '
+    /^FROM / { inside = ($NF == stage) ; next }
+    !inside || /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    {
+      line = $0
+      gsub(/[[:space:]]+/, " ", line)
+      sub(/^ /, "", line)
+      if (line ~ / ?\\$/) { sub(/ ?\\$/, " ", line); held = held line; next }
+      print held line
+      held = ""
+    }
+  ' "${CONTAINERFILE}"
+}
+
+flavor_verify="$(stage_instructions base-core | grep -F 'systemd-analyze verify')"
+flavor_chunk_tag="$(stage_instructions base | grep -F 'CHUNK_TAG')"
+assert_equal "base-core has exactly one unit-verify RUN to compare the flavors against" \
+  "$(grep -c . <<<"${flavor_verify}")" "1"
+assert_equal "the base flavor has exactly one rechunk tagging step to compare the others against" \
+  "$(grep -c . <<<"${flavor_chunk_tag}")" "2"
+
+while IFS= read -r flavor; do
+  [[ -n "${flavor}" ]] || continue
+  mapfile -t flavor_steps < <(stage_instructions "${flavor}")
+  last_link=-1
+  last_install=-1
+  verify_at=-1
+  chunk_tag_at=-1
+  for i in "${!flavor_steps[@]}"; do
+    step="${flavor_steps[i]}"
+    [[ "${step}" == *"ln -s"* ]] && last_link="${i}"
+    [[ "${step}" =~ pacman\ -S[a-z]*\ .*--noconfirm\ [^-] ]] && last_install="${i}"
+    [[ "${step}" == "${flavor_verify}" ]] && verify_at="${i}"
+    [[ "${step}" == "RUN if [ \"\${CHUNK_TAG}\" = \"1\" ]"* ]] && chunk_tag_at="${i}"
+  done
+
+  if ((verify_at >= 0)); then
+    pass "the ${flavor} stage re-runs base-core's unit-verify RUN, unchanged"
+  else
+    fail "the ${flavor} stage re-runs base-core's unit-verify RUN, unchanged" \
+      "no instruction in the ${flavor} stage is identical to base-core's systemd-analyze verify RUN"
+  fi
+  if ((verify_at < 0)); then
+    : # reported just above; there is no step to place
+  elif ((verify_at > last_link)); then
+    pass "the ${flavor} stage verifies units after its last enablement symlink"
+  else
+    fail "the ${flavor} stage verifies units after its last enablement symlink" \
+      "instruction $((last_link + 1)) creates a symlink the check at instruction $((verify_at + 1)) never sees"
+  fi
+  assert_equal "the ${flavor} stage ends with bootc container lint" \
+    "${flavor_steps[-1]:-}" "RUN bootc container lint"
+
+  assert_equal "the ${flavor} stage tags files for rechunking the same way the base flavor does" \
+    "$(grep -F 'CHUNK_TAG' < <(printf '%s\n' "${flavor_steps[@]}"))" "${flavor_chunk_tag}"
+  if ((chunk_tag_at < 0)); then
+    : # reported just above; there is no step to place
+  elif ((chunk_tag_at > last_install)); then
+    pass "the ${flavor} stage tags files for rechunking after its last package install"
+  else
+    fail "the ${flavor} stage tags files for rechunking after its last package install" \
+      "instruction $((last_install + 1)) installs packages the tagging at instruction $((chunk_tag_at + 1)) never sees"
+  fi
+done < <(grep -oE '^FROM base-core AS [a-z][a-z0-9-]*' "${CONTAINERFILE}" | awk '{print $NF}')
+
 # ---------------------------------------------------------------------------
 group "Workflow hygiene (docs/quality.md: zizmor findings that are easy to reintroduce)"
 
