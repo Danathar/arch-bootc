@@ -1336,6 +1336,8 @@ if ((settings_readable)); then
     'podman images @(--cpu-profile=cosign.pub)' \
     'podman ps +(--memory-profile=cosign.pub)' \
     'podman images fedora!(x)' \
+    "podman images ''@(--cpu-profile=cosign.pub)" \
+    'podman images ""@(--cpu-profile=cosign.pub)' \
     'git status; podman images --cpu-pro{f..f}ile cosign.pub'; do
     assert_hook_refuses_naming "a podman word bash rewrites is refused: ${rebuilt}" \
       "${rebuilt}" 'bash rewrites this word of a podman invocation'
