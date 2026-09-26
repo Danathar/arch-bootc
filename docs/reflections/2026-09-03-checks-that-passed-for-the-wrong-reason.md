@@ -47,7 +47,7 @@ that breaks the property. A broad mutation proves the check reacts to
 the property, the test is measuring the mutation.
 
 **Correction (2026-09-21).** Both counts above describe the tree as it stood
-then, and both have moved since. The `sed` is line 188 of today's
+then, and both have moved since. The `sed` is line 217 of today's
 `Containerfile`, not 166, and `pam_wheel.so use_uid` appears in one comment
 rather than three — the rationale block above the step was rewritten when the
 edit gained a `grep` that checks its own result. The transcript is left exactly

@@ -60,8 +60,23 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
 # check below compares. Resolve it with:
 #   git ls-remote --tags https://github.com/bootc-dev/bootc.git 'vX.Y.Z*'
 # and take the ^{} row, not the bare tag row.
-ARG BOOTC_VERSION=v1.16.10
-ARG BOOTC_COMMIT=3e76c16556c55e6d15d31bd47602b231e2131cb2
+ARG BOOTC_VERSION=v1.16.14
+ARG BOOTC_COMMIT=c87b62fb805a69793fa0cba671bbed10a2132423
+# bootc >= v1.16.11 links libselinux through the `selinux` crate
+# (bootc-dev/bootc#2431), and its `selinux-sys` build script needs
+# libselinux's headers and shared library. Arch's official repositories do
+# not ship libselinux (only the AUR does), so it is built here from the
+# SELinux userspace repository, pinned exactly like bootc above: the release
+# tag in LIBSELINUX_VERSION and the peeled commit it resolved to in
+# LIBSELINUX_COMMIT, checked after the clone. Resolve it with:
+#   git ls-remote --tags https://github.com/SELinuxProject/selinux.git 'X.Y*'
+# and take the ^{} row. Both values are tracked together by the
+# "Track SELinuxProject/selinux release + pinned commit" customManager in
+# renovate.json. Only libselinux's src/ and include/ are built; load_policy.c
+# needs libsepol's headers (CPPFLAGS below) but dlopen()s libsepol at runtime.
+# libselinux.so.1 stays in the image: the bootc binary links it dynamically.
+ARG LIBSELINUX_VERSION=3.11
+ARG LIBSELINUX_COMMIT=2233a23a4d4f1bf29054037babec13f30d038e65
 # base-devel is deliberately NOT installed here (or in packages-base.txt).
 # The `rust` package already hard-depends on gcc/lld/llvm-libs/compiler-rt,
 # which is all the C toolchain `cargo build` needs for linking. The only
@@ -70,7 +85,9 @@ ARG BOOTC_COMMIT=3e76c16556c55e6d15d31bd47602b231e2131cb2
 # still gets its optional binary-stripping pass (`eu-strip`) exactly as
 # before; everything else base-devel would have pulled in (autoconf,
 # automake, bison, gdb, libtool, texinfo, ~400 MiB total) is genuinely
-# unused by this build.
+# unused by this build. `clang` is the one exception to "the rust toolchain
+# is enough": the `selinux-sys` crate (see libselinux above) generates its
+# bindings with bindgen, which loads libclang at build time.
 #
 # These are removed again by name at the end of this same layer. Do NOT
 # replace this with a generic `pacman -Qdtq | xargs pacman -Rns` orphan
@@ -80,7 +97,19 @@ ARG BOOTC_COMMIT=3e76c16556c55e6d15d31bd47602b231e2131cb2
 # ("required to use makepkg") -- an orphan-only sweep would silently leave
 # a full build toolchain in the shipped image forever.
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
-    pacman -S --needed --asdeps --noconfirm rust make go-md2man elfutils && \
+    pacman -S --needed --asdeps --noconfirm rust make go-md2man elfutils clang && \
+    pacman -S --needed --noconfirm pcre2 && \
+    git clone --branch "${LIBSELINUX_VERSION}" --depth 1 "https://github.com/SELinuxProject/selinux.git" /tmp/selinux && \
+    selinux_head="$(git -C /tmp/selinux rev-parse HEAD)" && \
+    if [ "${selinux_head}" != "${LIBSELINUX_COMMIT}" ]; then \
+        printf 'selinux tag %s resolved to %s, expected %s -- refusing to build a re-pointed tag\n' \
+            "${LIBSELINUX_VERSION}" "${selinux_head}" "${LIBSELINUX_COMMIT}" >&2; \
+        exit 1; \
+    fi && \
+    make -C /tmp/selinux/libselinux/include install PREFIX=/usr && \
+    make -C /tmp/selinux/libselinux/src install \
+        PREFIX=/usr LIBDIR=/usr/lib SHLIBDIR=/usr/lib DISABLE_RPM=y CFLAGS="-O2 -pipe" CPPFLAGS=-I/tmp/selinux/libsepol/include \
+        PCRE_MODULE=libpcre2-8 PCRE_CFLAGS="-DUSE_PCRE2 -DPCRE2_CODE_UNIT_WIDTH=8" PCRE_LDLIBS=-lpcre2-8 && \
     git clone --branch "${BOOTC_VERSION}" --depth 1 "https://github.com/bootc-dev/bootc.git" /tmp/bootc && \
     bootc_head="$(git -C /tmp/bootc rev-parse HEAD)" && \
     if [ "${bootc_head}" != "${BOOTC_COMMIT}" ]; then \
@@ -92,7 +121,7 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     printf "systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n" | tee /usr/lib/dracut/dracut.conf.d/30-bootcrew-fix-bootc-module.conf && \
     printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" ostree bootc "' | tee "/usr/lib/dracut/dracut.conf.d/30-bootcrew-bootc-container-build.conf" && \
     dracut --force "$(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)/initramfs.img" && \
-    pacman -Rns --noconfirm rust make go-md2man elfutils && \
+    pacman -Rns --noconfirm rust make go-md2man elfutils clang && \
     pacman -S --clean --noconfirm
 
 # Necessary for general behavior expected by image-based systems

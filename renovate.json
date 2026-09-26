@@ -78,6 +78,19 @@
       "depNameTemplate": "bootc-dev/bootc",
       "datasourceTemplate": "github-tags",
       "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "Track SELinuxProject/selinux release + pinned commit. libselinux is built from this repository because bootc links it and Arch's official repositories do not ship it. Same shape as the bootc manager: github-tags, so LIBSELINUX_COMMIT is resolved as the tag's digest and moves with LIBSELINUX_VERSION.",
+      "managerFilePatterns": [
+        "/^Containerfile$/"
+      ],
+      "matchStrings": [
+        "ARG LIBSELINUX_VERSION=(?<currentValue>\\d+\\.\\d+(?:\\.\\d+)?)\\nARG LIBSELINUX_COMMIT=(?<currentDigest>[0-9a-f]{40})"
+      ],
+      "depNameTemplate": "SELinuxProject/selinux",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver-coerced"
     }
   ],
 
