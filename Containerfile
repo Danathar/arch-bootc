@@ -85,7 +85,9 @@ ARG LIBSELINUX_COMMIT=2233a23a4d4f1bf29054037babec13f30d038e65
 # still gets its optional binary-stripping pass (`eu-strip`) exactly as
 # before; everything else base-devel would have pulled in (autoconf,
 # automake, bison, gdb, libtool, texinfo, ~400 MiB total) is genuinely
-# unused by this build.
+# unused by this build. `clang` is the one exception to "the rust toolchain
+# is enough": the `selinux-sys` crate (see libselinux above) generates its
+# bindings with bindgen, which loads libclang at build time.
 #
 # These are removed again by name at the end of this same layer. Do NOT
 # replace this with a generic `pacman -Qdtq | xargs pacman -Rns` orphan
