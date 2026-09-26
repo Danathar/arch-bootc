@@ -276,6 +276,9 @@ SHELLCHECK_EXPAND_MSG='blocked: bash rewrites this word before shellcheck sees i
 # shellcheck disable=SC2016 # the message quotes shell spellings as literal text
 SHELLCHECK_STDIN_MSG='blocked: shellcheck reads standard input when its operand is -, and it prints the source line above every diagnostic it reports, so `shellcheck - < .env` prints the file back exactly as `shellcheck ./.env` does. The operand scan never sees that path, because it sits behind the redirection operator, so the target of a bare < on a shellcheck invocation is checked the way an operand is: it must resolve inside the working tree, it must not be one of the secret-shaped names the Read(...) deny rules in .claude/settings.json list (cosign.key, .env, .env.*, *.pem, *.p12, id_rsa, id_ed25519), and it must be spelled out -- no brace, no leading ~, no glob, since a glob naming exactly one denied file is not the ambiguous redirect bash refuses on its own. Redirect from a script inside the checkout instead, spelled out in full. </dev/null is unaffected, and so are <<, <<< and <&, which carry a delimiter, content or a descriptor rather than a path.'
 
+# shellcheck disable=SC2016 # the literal option spellings are what the reader has to see
+SHELLCHECK_SOURCED_MSG='blocked: shellcheck --check-sourced (-a) reports the diagnostics it finds in a file pulled in by a `source` or `.` directive of the script it lints, and it prints the source line above every diagnostic, so a script inside the checkout whose body is `. ./.env` -- linted with `shellcheck -x -a script.sh` -- prints every NAME=value line of the .env back past the Read(...) deny rules in .claude/settings.json, though .env is never named on the command line and the operand scan sees only script.sh. -x on its own follows a source directive to resolve names and reports nothing from the file it follows into, so it is unaffected, and this repository lints with -x and never with -a. A short cluster carries a as its own option letter (`-xa` is `-x -a`) until one of the value-taking shorts (-i -e -f -o -P -s -S -W) consumes the rest, and the rc-file external-sources setting reaches the same follow that -x does, so --check-sourced (-a) is refused rather than the flag that only enables following. Lint the sourced script directly if its own diagnostics are wanted, and drop --check-sourced.'
+
 # shellcheck disable=SC2016 # the backticks quote command spellings for the reader
 DIFFTOOL_MSG='blocked: `git difftool` runs a program of the caller'"'"'s choosing once per changed path -- `git difftool --no-prompt --extcmd=/tmp/evil HEAD~1 HEAD`, and `-x PROG` is the same option one letter long -- and the allow row `Bash(git diff*)` matches it on that prefix, so nothing prompts. It is a third spelling of the primitive this gate already refuses as `GIT_EXTERNAL_DIFF=` and as `-c diff.external=`, and the only one that needs neither an environment nor a config option: the program is an ordinary argument of an allow-listed command. Leaving out --extcmd is no better, since the program is then whatever diff.tool names in a config file this gate cannot see. So the difftool and mergetool subcommands are refused outright. git diff, git log and git show print to stdout; read that instead. Only the subcommand is refused, so --grep=difftool and a path of that name are unaffected.'
 
@@ -1946,9 +1949,31 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
       skip_shellcheck_option_value=1
       continue
       ;;
+    # --check-sourced (-a) turns shellcheck's follow-the-source -- enabled by
+    # -x on the command line, or by external-sources in an rc file -- from name
+    # resolution into reporting: it prints the diagnostics, and the source line
+    # above each, for a file a `. FILE` or `source FILE` directive in the
+    # linted script pulls in. That file is never named on the command line, so
+    # the operand scan below never sees it; a script of `. ./.env` linted with
+    # `-x -a` prints the .env back. The repository lints with -x alone and
+    # never with -a, so refusing it costs nothing. A short cluster carries `a`
+    # as its own option letter (`-xa` is `-x -a`) until one of the value-taking
+    # shorts (-i -e -f -o -P -s -S -W) consumes the rest of the cluster as its
+    # value, so `-sa` is `-s a` and is left alone.
+    --check-sourced) refuse "${SHELLCHECK_SOURCED_MSG}" ;;
+    --*) continue ;;
     # Stdin, not a file on disk.
     -) continue ;;
-    -*) continue ;;
+    -?*)
+      sc_cluster="${word#-}"
+      for ((sc_i = 0; sc_i < ${#sc_cluster}; sc_i++)); do
+        case "${sc_cluster:sc_i:1}" in
+        a) refuse "${SHELLCHECK_SOURCED_MSG}" ;;
+        i | e | f | o | P | s | S | W) break ;;
+        esac
+      done
+      continue
+      ;;
     *) ;;
     esac
     if ! path_inside_worktree "${word}" || denied_read_shape "${word}"; then

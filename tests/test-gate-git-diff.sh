@@ -2040,6 +2040,66 @@ if ((settings_readable)); then
       "${rewrite_command}" 'SHELLCHECK_OPTS='
   done
 
+  # --check-sourced (-a) makes shellcheck report the diagnostics it finds in a
+  # file a `source`/`.` directive of the linted script pulls in, and it prints
+  # the source line above each, so a script of `. ./.env` linted with
+  # `shellcheck -x -a script.sh` prints every NAME=value line of the .env back
+  # while the operand scan sees only script.sh. -x on its own follows a source
+  # only to resolve names and reports nothing from the file, so the leak needs
+  # -a; the repository lints with -x and never with -a. Shown first against a
+  # synthetic fixture, for the same reason as the exposures above.
+  sourced_dir="$(mktemp -d)"
+  printf 'SYNTHETIC_SOURCED_SECRET=synthetic-value-6\n' >"${sourced_dir}/fake.env"
+  printf '#!/bin/bash\n. ./fake.env\n' >"${sourced_dir}/lint-me.sh"
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    fail "shellcheck --check-sourced prints the contents of a sourced file" \
+      "shellcheck is not on PATH, so the exposure the refusals below exist for could not be reproduced"
+  else
+    sourced_output="$(cd "${sourced_dir}" && shellcheck -x -a lint-me.sh 2>&1 || true)"
+    if grep -q '^SYNTHETIC_SOURCED_SECRET=synthetic-value-6$' <<<"${sourced_output}"; then
+      pass "shellcheck --check-sourced prints the contents of a sourced file"
+    else
+      fail "shellcheck --check-sourced prints the contents of a sourced file" \
+        "the synthetic line did not appear; re-derive why --check-sourced is refused"
+    fi
+    # -x on its own -- the spelling the gate keeps unprompted -- must not.
+    unsourced_output="$(cd "${sourced_dir}" && shellcheck -x lint-me.sh 2>&1 || true)"
+    if grep -q '^SYNTHETIC_SOURCED_SECRET=synthetic-value-6$' <<<"${unsourced_output}"; then
+      fail "shellcheck -x without --check-sourced prints nothing from the sourced file" \
+        "the synthetic line appeared under -x alone; -x can no longer be permitted"
+    else
+      pass "shellcheck -x without --check-sourced prints nothing from the sourced file"
+    fi
+  fi
+  rm -rf "${sourced_dir}"
+  # Every spelling of --check-sourced (-a) is refused: the long option, the
+  # bare short, both orders of the -x -a cluster, and behind a wrapper or a
+  # `;`. The denied file is inside the script, never on the command line, so
+  # there is no operand for the scan to catch -- the reporting flag is.
+  for sourced_command in \
+    'shellcheck -x -a lint-me.sh' \
+    'shellcheck --check-sourced -x lint-me.sh' \
+    'shellcheck -a lint-me.sh' \
+    'shellcheck -xa system_files/etc/profile.d/homebrew.sh' \
+    'shellcheck -ax lint-me.sh' \
+    'shellcheck -x -a -P SCRIPTDIR scripts/quickstart.sh' \
+    'timeout 5 shellcheck -x -a lint-me.sh' \
+    'git status; shellcheck -x -a lint-me.sh'; do
+    assert_hook_refuses_naming "the hook refuses a shellcheck --check-sourced run: ${sourced_command}" \
+      "${sourced_command}" 'check-sourced'
+  done
+  # -x on its own stays unprompted -- the repository needs it and it leaks
+  # nothing -- and a short whose value happens to be `a` (`-s a`, spelled
+  # `-sa`) is that value, not the option.
+  for sourced_command in \
+    'shellcheck -x tests/run-tests.sh' \
+    'shellcheck -x -P SCRIPTDIR scripts/quickstart.sh' \
+    'shellcheck -sa scripts/quickstart.sh' \
+    'shellcheck -S style scripts/quickstart.sh'; do
+    assert_hook_permits "a shellcheck run without --check-sourced is still unprompted: ${sourced_command}" \
+      "${sourced_command}"
+  done
+
   # The operand scan reads the words after `shellcheck`, and an input
   # redirection puts the path somewhere it never looks. ShellCheck reads
   # standard input when its operand is `-`, so `shellcheck - < .env` prints the
