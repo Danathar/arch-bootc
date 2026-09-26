@@ -2062,6 +2062,15 @@ if ((settings_readable)); then
       fail "shellcheck --check-sourced prints the contents of a sourced file" \
         "the synthetic line did not appear; re-derive why --check-sourced is refused"
     fi
+    # The linter takes any unambiguous prefix of a long option, and `--ch`
+    # already is one, so the shortened spelling reaches the same report.
+    prefix_output="$(cd "${sourced_dir}" && shellcheck -x --ch lint-me.sh 2>&1 || true)"
+    if grep -q '^SYNTHETIC_SOURCED_SECRET=synthetic-value-6$' <<<"${prefix_output}"; then
+      pass "shellcheck --ch (a prefix of --check-sourced) prints the contents of a sourced file"
+    else
+      fail "shellcheck --ch (a prefix of --check-sourced) prints the contents of a sourced file" \
+        "the synthetic line did not appear; re-derive why every --ch prefix is refused"
+    fi
     # -x on its own -- the spelling the gate keeps unprompted -- must not.
     unsourced_output="$(cd "${sourced_dir}" && shellcheck -x lint-me.sh 2>&1 || true)"
     if grep -q '^SYNTHETIC_SOURCED_SECRET=synthetic-value-6$' <<<"${unsourced_output}"; then
@@ -2079,6 +2088,9 @@ if ((settings_readable)); then
   for sourced_command in \
     'shellcheck -x -a lint-me.sh' \
     'shellcheck --check-sourced -x lint-me.sh' \
+    'shellcheck --check -x lint-me.sh' \
+    'shellcheck --ch -x lint-me.sh' \
+    "shellcheck -s bash -x --check - <<< 'source ./.env'" \
     'shellcheck -a lint-me.sh' \
     'shellcheck -xa system_files/etc/profile.d/homebrew.sh' \
     'shellcheck -ax lint-me.sh' \
@@ -2095,7 +2107,8 @@ if ((settings_readable)); then
     'shellcheck -x tests/run-tests.sh' \
     'shellcheck -x -P SCRIPTDIR scripts/quickstart.sh' \
     'shellcheck -sa scripts/quickstart.sh' \
-    'shellcheck -S style scripts/quickstart.sh'; do
+    'shellcheck -S style scripts/quickstart.sh' \
+    'shellcheck --color=always scripts/quickstart.sh'; do
     assert_hook_permits "a shellcheck run without --check-sourced is still unprompted: ${sourced_command}" \
       "${sourced_command}"
   done
