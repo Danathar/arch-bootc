@@ -605,7 +605,7 @@ by reviewed pull request rather than silently:
 | --- | --- | --- |
 | GitHub Actions | Commit SHA, with the version in a trailing comment | Renovate |
 | Base image (`archlinux`) and Homebrew payload (`brew`) | Digest | Renovate |
-| `bootc` | Release tag **and** peeled commit, verified at build time | Renovate custom manager |
+| `bootc`, `selinux` (the libselinux that bootc links) | Release tag **and** peeled commit, verified at build time | Renovate custom managers |
 | chunkah, ShellCheck containers | Version tag | Renovate custom manager |
 | cosign CLI, zizmor | Version string | Renovate custom managers |
 
