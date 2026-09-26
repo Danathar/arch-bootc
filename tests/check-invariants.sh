@@ -1180,6 +1180,7 @@ lintable=(
   system_files/usr/bin/*
   system_files/usr/libexec/*
   system_files/etc/profile.d/*.sh
+  .claude/hooks/*.sh
 )
 shopt -u nullglob
 
