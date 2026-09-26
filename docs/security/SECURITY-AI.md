@@ -243,7 +243,7 @@ must be described as such.
   `(shellcheck -) <cosign.key`) is not charged to the command inside, here or
   in the rules for the other allow-listed commands below: Claude Code asks
   before it runs any command that contains a subshell or a brace group,
-  whatever the allow rows say, and `tests/check-invariants.sh` fails if an
+  whatever the allow rows say, and `tests/test-gate-git-diff.sh` fails if an
   allow row that could reach one is added.
 
   The read half has a shell spelling of its own as well. An unquoted leading
@@ -407,7 +407,7 @@ must be described as such.
   the right spelling — `git diff -- '*.md'` is git's own glob, matched against
   repository content rather than against the filesystem.
 
-  `tests/check-invariants.sh` holds all of this as a table rather than as
+  `tests/test-gate-git-diff.sh` holds all of this as a table rather than as
   prose: each shape of the corpus is one row of `corpus_row` calls carrying a
   command and the decision the hook must make about it — refused with the
   message that must name it, or allowed with the reason it reaches nothing —
@@ -426,10 +426,17 @@ must be described as such.
   asserted against every allow row ending in `*`, derived from
   `.claude/settings.json`, so a row added there is covered behind both.
 
-  `tests/check-invariants.sh` extracts the hook with `jq` and **runs** it — on
+  `tests/test-gate-git-diff.sh` extracts the hook with `jq` and **runs** it — on
   the flag orderings a prefix rule would miss, on the flagless, requoted, and
   behind-`--` forms, on `--output` across `git diff`, `git log` and `git show`,
   with `jq` off `PATH`, and on the ordinary diffs that must stay unprompted.
+  It runs under `tests/run-tests.sh`, so the hook's lines are traced by the
+  coverage gate and have a floor in `.coverage-thresholds.json`.
+  `tests/check-invariants.sh` keeps only the static half: that
+  `.claude/settings.json` still allows `Bash(git diff*)`, `Bash(git log*)` and
+  `Bash(git show*)`, still denies `Read(./cosign.key)` and `Read(./.env)`,
+  carries no prefix rule pretending to gate `--no-index` or `--output`, and
+  registers a hook that exists and is executable.
   Synthetic files inside the checkout demonstrate Git printing contents for
   climb-out-and-back-in spellings, both against another file and against stdin.
   The tests also check the conservative symlink containment rule in both
@@ -479,7 +486,7 @@ must be described as such.
   word here and the file to Bash). `SHELLCHECK_OPTS=` is refused wherever it
   is assigned, because ShellCheck reads file operands out of it too. Linting
   this repository's
-  own scripts is unaffected, which `tests/check-invariants.sh` asserts by
+  own scripts is unaffected, which `tests/test-gate-git-diff.sh` asserts by
   running the hook against the `Justfile` lint recipe's own invocations rather
   than against a restated copy of them — and it demonstrates the exposure
   first, by running ShellCheck at a synthetic file and finding the file's line
@@ -541,7 +548,7 @@ must be described as such.
   `-O` name was run under `-n` against a marker file and printed none of
   it. Every operand, and the target of a bare `<` on the invocation, is held
   to the ShellCheck operand test. `bash -n tests/run-tests.sh` is unchanged.
-  `tests/check-invariants.sh` runs each spelling through real Bash in a
+  `tests/test-gate-git-diff.sh` runs each spelling through real Bash in a
   throwaway checkout and HOME as well as through the hook, and fails if one
   that prints is allowed.
 - **The write primitive is not git's alone either.** Six allow rows end in
@@ -561,7 +568,7 @@ must be described as such.
   refused with the rest, because the rule is the operator rather than a list
   of harmless targets. Pipes, descriptor forms and input redirections are
   untouched, and a command no allow rule covers is left alone, since that one
-  prompts on its own. `tests/check-invariants.sh` derives the gated list from
+  prompts on its own. `tests/test-gate-git-diff.sh` derives the gated list from
   `.claude/settings.json`, so a row added there with a trailing `*` fails
   until the hook lists it, and shows both exposures in a temporary directory
   before asserting the refusals. Same fix as

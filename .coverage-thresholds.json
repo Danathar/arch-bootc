@@ -1,4 +1,5 @@
 {
+  ".claude/hooks/gate-git-diff.sh": 595,
   "scripts/pr-review-state.sh": 81,
   "scripts/prune-package-versions.sh": 110,
   "scripts/quickstart.sh": 276,

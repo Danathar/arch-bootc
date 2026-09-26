@@ -179,14 +179,23 @@ enablement layout, SHA-pinned actions with `persist-credentials: false` and
 `timeout-minutes`, each job's token permissions matching
 `.github/policies/workflow-permissions.json`, and — the one that had already
 gone wrong — that every shell file appears in **both** hand-maintained
-ShellCheck lists. It also *runs* the
-`PreToolUse` hook in `.claude/settings.json` that keeps an allow-listed
-`git diff` from reading, as a plain file, what the `Read(...)` deny rules name —
-and from *writing*, via `--output=FILE`, over any path this uid can reach,
-which is the same command family's other half and reaches `git log` and
-`git show` too; the hook is extracted with `jq` and executed rather than
-grepped for, since a hook asserted by grep is a hook asserted by its own
-comment.
+ShellCheck lists. It also pins the `.claude/settings.json` entries the
+`PreToolUse` hook is built on — `Bash(git diff*)`, `Bash(git log*)` and
+`Bash(git show*)` allowed, `Read(./cosign.key)` and `Read(./.env)` denied, no
+prefix rule pretending to gate `--no-index` or `--output` — and that
+`.claude/hooks/gate-git-diff.sh` exists and is executable. Running the hook is
+not static work, so it happens in
+`tests/test-gate-git-diff.sh` instead, under `run-tests.sh`: the hook is
+extracted with `jq` and executed rather than grepped for, since a hook asserted
+by grep is a hook asserted by its own comment. That file checks that the gate
+keeps an allow-listed `git diff` from reading, as a plain file, what the
+`Read(...)` deny rules name — and from *writing*, via `--output=FILE`, over any
+path this uid can reach, which is the same command family's other half and
+reaches `git log` and `git show` too. Each refusal is asserted against a
+demonstrated exposure in a throwaway fixture, and each rule of the hook is
+mutation-tested: disabled in a temporary copy, and a corpus row shown to stop
+being refused. Because it runs under `run-tests.sh`, the hook's lines are
+traced by the coverage gate and have a floor in `.coverage-thresholds.json`.
 
 It exists because a build proves the image *builds*, and an image that has
 quietly lost `pam_wheel.so use_uid` builds perfectly well. It runs in the build

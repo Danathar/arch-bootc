@@ -268,6 +268,22 @@ cloud-init boundaries. This tests orchestration without building an image,
 writing a disk, or touching libvirt. It is not evidence that an image boots; the
 authorized VM procedure in `CLAUDE.md` remains the runtime test for that.
 
+`tests/test-gate-git-diff.sh` runs `.claude/hooks/gate-git-diff.sh`, the
+`PreToolUse` hook on Bash that `.claude/settings.json` registers, against the
+corpus of commands it exists to refuse and the ordinary commands it has to
+leave unprompted. The hook is extracted from `settings.json` with `jq` and
+executed, not grepped for. Each exposure is demonstrated first in a temporary
+directory — git printing a plain file, git writing a file through
+`--output=FILE`, bash rebuilding both out of a brace — and each rule of the
+hook is mutation-tested: one line rewritten into a temporary copy, and a corpus
+row that then stops being refused. It writes one fixture directory into the
+checkout, `tests/.git-diff-paths.*`, because the hook's containment rule is
+about paths inside the working tree, and removes it before it exits. It is the
+longest file in the suite by a wide margin, about two minutes, which is why it
+is here and not in `tests/check-invariants.sh`, whose other groups read the
+tree in a few seconds. See [SECURITY-AI.md](security/SECURITY-AI.md) for what
+the hook refuses and why.
+
 `just lint` shellchecks the test scripts too, so they are held to the same bar as
 the scripts they cover.
 
