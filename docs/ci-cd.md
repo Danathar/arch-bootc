@@ -646,6 +646,24 @@ the job passes is 30. A dropped `,,` or a changed floor is not a loud failure in
 production — the first prunes a package that 404s, the second succeeds while
 deleting versions nobody asked to delete — so both are asserted here.
 
+## Per-package rechunking (`CHUNK_TAG`)
+
+Each Containerfile stage that installs packages has a matching `RUN` guarded by
+`ARG CHUNK_TAG=0`: when set to `1` it tags every package-owned file with a
+`user.component` xattr naming the pacman package that owns it
+(`setfattr -n user.component -v "pkg:$pkg"`). That tagging is what lets the
+`Rechunk image with chunkah` step (see [Renovate](renovate.md)) split the
+published OCI image into per-package layers instead of one monolithic layer,
+which is what lets `bootc upgrade` on an installed system re-download only the
+layers that actually changed.
+
+`build.yml` sets `CHUNK_TAG=1` only for the same non-PR, default-branch builds
+that get rechunked, signed and published; every other build — including every
+local `just build-*` — leaves it at its `0` default and skips the tagging pass
+entirely. That is deliberate: the xattrs cost build time for no benefit on an
+image nobody re-downloads incrementally, so a locally built image is expected
+to differ from the published one in this one respect.
+
 ## Keeping pinned versions up to date
 
 `bootc`, the base images, the GitHub Actions and the cosign/chunkah/zizmor versions are all
