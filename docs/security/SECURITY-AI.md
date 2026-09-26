@@ -597,7 +597,7 @@ by reviewed pull request rather than silently:
 | Dependency | Pinned by | Tracked by |
 | --- | --- | --- |
 | GitHub Actions | Commit SHA, with the version in a trailing comment | Renovate |
-| Base image | Digest | Renovate |
+| Base image (`archlinux`) and Homebrew payload (`brew`) | Digest | Renovate |
 | `bootc` | Release tag **and** peeled commit, verified at build time | Renovate custom manager |
 | chunkah, ShellCheck containers | Version tag | Renovate custom manager |
 | cosign CLI, zizmor | Version string | Renovate custom managers |

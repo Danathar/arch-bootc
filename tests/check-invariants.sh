@@ -11096,6 +11096,196 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Supply chain (docs/security/SECURITY-AI.md: every dependency is pinned, and the pins are tracked)"
+
+# The "Supply chain" section is a table of dependency KINDS -- what pins each
+# one, and what moves the pin -- plus the one exception, Arch packages, and the
+# one automerge carve-out. Other groups check the pins themselves (every
+# action on a SHA, the FROM digests, renovate.json's regexes against the
+# workflows). Nothing read this table, so it could name a kind the tree
+# stopped having, or miss one it gained, and the page an agent is told to read
+# before touching the trust model would still pass.
+#
+# Every row is joined to the tree in both directions:
+#
+#   - The `Digest` row names every image the Containerfile builds FROM by the
+#     last component of its repository. It said "Base image" while two FROMs
+#     are digest-pinned, and the `brew` payload is the one it left out.
+#   - The custom-manager rows name exactly the dependencies renovate.json has a
+#     custom manager for, and each row's "Pinned by" is what that manager
+#     reads: a commit when the regex captures `currentDigest`, a tag when the
+#     datasource is `docker`, a version string otherwise.
+#   - The Actions row's "version in a trailing comment" is held on every
+#     `uses:` line; the SHA check elsewhere accepts a pin without one, and
+#     Renovate needs the comment to say which release the SHA is.
+SUPPLY_DOC="docs/security/SECURITY-AI.md"
+supply_section="$(awk '/^## Supply chain$/{ inside = 1; next } inside && /^## /{ exit } inside' "${SUPPLY_DOC}")"
+supply_flat="$(tr '\n' ' ' <<<"${supply_section}" | tr -s '[:space:]' ' ')"
+# Table body rows: `| a | b | c |`, minus the header and the `| --- |` rule.
+supply_rows="$(grep -E '^\|' <<<"${supply_section}" | tail -n +3)"
+
+# cell ROW N -> the Nth cell, trimmed.
+supply_cell() {
+  awk -F'|' -v n="$2" '{ c = $(n + 1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", c); print c }' <<<"$1"
+}
+# Dependency cell -> one lowercase name per line: the first word of each
+# comma-separated entry, backticks and parentheses stripped.
+supply_names() {
+  tr ',' '\n' <<<"$1" | sed -E 's/^[[:space:]]+//; s/[`()]//g; s/[[:space:]].*//' | tr '[:upper:]' '[:lower:]' | grep -v '^$'
+}
+
+if [[ -z "${supply_rows}" ]]; then
+  fail "${SUPPLY_DOC} still has its supply-chain table" "no table rows under '## Supply chain'"
+else
+  pass "${SUPPLY_DOC} still has its supply-chain table"
+fi
+
+# The Digest row against the Containerfile's external FROMs. A FROM naming an
+# earlier stage (`FROM base-core AS kde`) consumes nothing new; one naming a
+# registry path does.
+supply_digest_row="$(while IFS= read -r row; do
+  [[ "$(supply_cell "${row}" 2)" == "Digest" ]] && printf '%s\n' "${row}"
+done <<<"${supply_rows}")"
+# The parenthesised names are the images; the words around them are prose.
+# shellcheck disable=SC2016 # backticks are the doc's literal markup
+supply_digest_names="$(supply_cell "${supply_digest_row}" 1 | grep -oE '\(`[^`]+`\)' | tr -d '()`' | sort -u | tr '\n' ' ')"
+supply_from_images="$(grep -E '^FROM [^[:space:]]+/' "${CONTAINERFILE}" | awk '{print $2}')"
+supply_from_names="$(sed -E 's/[@:].*//; s#.*/##' <<<"${supply_from_images}" | sort -u | tr '\n' ' ')"
+assert_equal "${SUPPLY_DOC}'s Digest row names every image the Containerfile builds FROM, and no other" \
+  "${supply_digest_names}" "${supply_from_names}"
+supply_unpinned="$(grep -vE '@sha256:[0-9a-f]{64}$' <<<"${supply_from_images}" | tr '\n' ' ')"
+if [[ -n "${supply_from_images}" && -z "${supply_unpinned}" ]]; then
+  pass "every image the Containerfile builds FROM is pinned by digest, as the Digest row says"
+else
+  fail "every image the Containerfile builds FROM is pinned by digest, as the Digest row says" \
+    "not digest-pinned: ${supply_unpinned:-no external FROM found}"
+fi
+
+# The custom-manager rows against renovate.json's customManagers.
+supply_doc_managed=""
+supply_doc_pinned=""
+while IFS= read -r row; do
+  [[ "$(supply_cell "${row}" 3)" == *"custom manager"* ]] || continue
+  row_pinned="$(supply_cell "${row}" 2)"
+  while IFS= read -r name; do
+    supply_doc_managed+="${name}"$'\n'
+    supply_doc_pinned+="${name}=${row_pinned}"$'\n'
+  done < <(supply_names "$(supply_cell "${row}" 1)")
+done <<<"${supply_rows}"
+supply_tree_managed="$(jq -r '.customManagers[].depNameTemplate | split("/") | last | ascii_downcase' "${RENOVATE}" | sort -u)"
+assert_equal "${SUPPLY_DOC}'s custom-manager rows name every dependency renovate.json has a custom manager for, and no other" \
+  "$(sort -u <<<"${supply_doc_managed}" | grep -v '^$' | tr '\n' ' ')" "$(tr '\n' ' ' <<<"${supply_tree_managed}")"
+
+supply_wrong_pin=""
+while IFS=$'\t' read -r name datasource digest; do
+  [[ -n "${name}" ]] || continue
+  if [[ "${digest}" == "true" ]]; then
+    expected="commit"
+  elif [[ "${datasource}" == "docker" ]]; then
+    expected="Version tag"
+  else
+    expected="Version string"
+  fi
+  stated="$(grep -m1 "^${name}=" <<<"${supply_doc_pinned}")"
+  stated="${stated#*=}"
+  [[ "${stated}" == *"${expected}"* ]] ||
+    supply_wrong_pin+="${name}: renovate.json reads a ${expected}, the row says '${stated}' | "
+done < <(jq -r '.customManagers[] |
+  [(.depNameTemplate | split("/") | last | ascii_downcase), .datasourceTemplate,
+   (.matchStrings | join(" ") | test("\\?<currentDigest>"))] | @tsv' "${RENOVATE}")
+if [[ -z "${supply_wrong_pin}" ]]; then
+  pass "each custom-manager row's 'Pinned by' is what renovate.json's manager for it reads"
+else
+  fail "each custom-manager row's 'Pinned by' is what renovate.json's manager for it reads" "${supply_wrong_pin}"
+fi
+
+# The Actions row: a SHA, with the version in a trailing comment.
+supply_actions_row="$(grep -E '^\| GitHub Actions \|' <<<"${supply_rows}")"
+if [[ "$(supply_cell "${supply_actions_row}" 2)" == "Commit SHA, with the version in a trailing comment" ]]; then
+  pass "${SUPPLY_DOC} says actions are pinned by commit SHA with the version in a trailing comment"
+else
+  fail "${SUPPLY_DOC} says actions are pinned by commit SHA with the version in a trailing comment" \
+    "row is '${supply_actions_row}'"
+fi
+supply_uncommented=""
+while IFS= read -r uses_line; do
+  supply_uncommented+="${uses_line} | "
+done < <(grep -HE '^[[:space:]]*-?[[:space:]]*uses:' .github/workflows/*.y*ml |
+  grep -vE 'uses:[[:space:]]*[^@[:space:]]+@[0-9a-f]{40} # v[0-9][^[:space:]]*[[:space:]]*$')
+if [[ -z "${supply_uncommented}" ]]; then
+  pass "every workflow action pin carries its version in a trailing comment"
+else
+  fail "every workflow action pin carries its version in a trailing comment" "${supply_uncommented}"
+fi
+
+# The Arch exception: the lists it names are the lists there are, they carry
+# no version constraint, no Renovate manager reads them, the build takes
+# whatever pacman -Syu gives it, and PACMAN_CACHE_BUST exists.
+# shellcheck disable=SC2016 # backticks are the doc's literal markup
+supply_doc_lists="$(grep -oE '`packages-[a-z]+\.txt`' <<<"${supply_section}" | tr -d '`' | sort -u | tr '\n' ' ')"
+supply_tree_lists="$(git ls-files -- 'packages-*.txt' | sort -u | tr '\n' ' ')"
+assert_equal "${SUPPLY_DOC}'s Arch-package exception names every package list, and no other" \
+  "${supply_doc_lists}" "${supply_tree_lists}"
+supply_constrained=""
+for list in ${supply_tree_lists}; do
+  while IFS= read -r hit; do
+    supply_constrained+="${list}: ${hit} | "
+  done < <(grep -vE '^[[:space:]]*(#|$)' "${list}" | grep -E '[<>=]')
+done
+if [[ -z "${supply_constrained}" ]]; then
+  pass "the package lists carry no version constraints, as ${SUPPLY_DOC} says"
+else
+  fail "the package lists carry no version constraints, as ${SUPPLY_DOC} says" "${supply_constrained}"
+fi
+supply_tracked_lists=""
+while IFS= read -r pattern; do
+  pattern="${pattern#/}"
+  pattern="${pattern%/}"
+  for list in ${supply_tree_lists}; do
+    grep -qE -- "${pattern}" <<<"${list}" && supply_tracked_lists+="${list} by ${pattern} | "
+  done
+done < <(jq -r '.customManagers[].managerFilePatterns[]' "${RENOVATE}")
+if [[ -z "${supply_tracked_lists}" ]]; then
+  pass "no Renovate custom manager reads a package list, as ${SUPPLY_DOC} says"
+else
+  fail "no Renovate custom manager reads a package list, as ${SUPPLY_DOC} says" "${supply_tracked_lists}"
+fi
+# Per list: three stages each run their own -Syu, so one surviving line would
+# satisfy a whole-file match for all three.
+for list in ${supply_tree_lists}; do
+  assert_present "the build installs ${list} with pacman -Syu, as ${SUPPLY_DOC} says" \
+    "${CONTAINERFILE}" "^[[:space:]]*pacman -Syu .*/tmp/${list//./\\.}"
+done
+assert_present "PACMAN_CACHE_BUST, which ${SUPPLY_DOC} gives as the reason for the exception, still exists" \
+  "${CONTAINERFILE}" '^ARG PACMAN_CACHE_BUST='
+supply_t2="$(awk '/^## T2 — /{ inside = 1; next } inside && /^## /{ exit } inside' docs/risk-tiers.md)"
+# shellcheck disable=SC2016 # backticks are the doc's literal markup
+if [[ "${supply_flat}" == *"Adding a package name to one of those lists is a normal T2 change"* ]] &&
+  grep -Fq '`packages-*.txt`' <<<"${supply_t2}"; then
+  pass "adding a package is T2 in both ${SUPPLY_DOC} and docs/risk-tiers.md"
+else
+  fail "adding a package is T2 in both ${SUPPLY_DOC} and docs/risk-tiers.md" \
+    "the sentence is gone from ${SUPPLY_DOC}, or risk-tiers.md's T2 no longer names \`packages-*.txt\`"
+fi
+
+# "Renovate automerges most updates ... with one carve-out: major
+# `bootc-dev/bootc` bumps never automerge." The count is the claim: a second
+# `automerge: false` rule would make "one" false and go unmentioned here.
+supply_carveouts="$(jq '[.packageRules[] | select(.automerge == false)] | length' "${RENOVATE}")"
+supply_carveout_word="$(grep -oE 'accepted risk with [a-z]+ carve-out' <<<"${supply_flat}" | awk '{print $4}')"
+assert_equal "${SUPPLY_DOC} counts renovate.json's automerge carve-outs" \
+  "${supply_carveout_word}" "$(number_word "${supply_carveouts}")"
+supply_carveout_rule="$(jq -c '[.packageRules[] | select(.automerge == false) | {matchPackageNames, matchUpdateTypes}]' "${RENOVATE}")"
+# shellcheck disable=SC2016 # backticks are the doc's literal markup
+if [[ "${supply_flat}" == *'**major `bootc-dev/bootc` bumps never automerge**'* &&
+  "${supply_carveout_rule}" == '[{"matchPackageNames":["bootc-dev/bootc"],"matchUpdateTypes":["major"]}]' ]]; then
+  pass "${SUPPLY_DOC}'s carve-out is the one renovate.json has: major bootc-dev/bootc bumps"
+else
+  fail "${SUPPLY_DOC}'s carve-out is the one renovate.json has: major bootc-dev/bootc bumps" \
+    "renovate.json's automerge:false rules are ${supply_carveout_rule}"
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then
   printf 'invariants: %d of %d check(s) failed\n' "${failures}" "${checks_run}" >&2
