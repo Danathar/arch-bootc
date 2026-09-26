@@ -63,6 +63,7 @@ jobs:
             /mnt/tests/check-invariants.sh \
             /mnt/.claude/hooks/gate-git-diff.sh \
             /mnt/tests/tune-coverage.sh \
+            /mnt/tests/test-gate-git-diff.sh \
             /mnt/tests/test-prune-esp.sh \
             /mnt/tests/test-homebrew-profile.sh \
             /mnt/tests/test-homebrew-shell-integration.sh \

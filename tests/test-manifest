@@ -19,6 +19,7 @@
 # cannot become a command.
 
 e2e/test-quickstart-dry-run.sh
+test-gate-git-diff.sh
 test-homebrew-profile.sh
 test-homebrew-shell-integration.sh
 test-nightly-compliance.sh
