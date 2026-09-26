@@ -293,6 +293,12 @@ OUT_MSG='blocked: git --output=FILE (and the space form) writes this diff or log
 # shellcheck disable=SC2016 # the message quotes shell spellings as literal text
 GATED_REDIRECT_MSG='blocked: an output redirection (>, >>, >|, &>, &>>, N>, >&FILE, <>) inside an allow-listed command makes the shell open its target for writing before the command runs, and the allow rule matches a command prefix while the redirection is the rest of the string, so nothing prompts: `shellcheck tests/run-tests.sh >cosign.pub` truncates the trust anchor before a line is linted, and `podman images >.claude/settings.json` overwrites the file holding these rules. It is the same write .claude/hooks/gate-git-diff.sh already refuses for `git diff HEAD >cosign.pub`. These commands print to stdout; read that, or pipe it. Descriptor forms (2>&1, >&2, >&-) and input redirections (<, <<, <<<, <&) are not affected, and a command no allow rule covers is left alone -- that one prompts on its own.'
 
+# shellcheck disable=SC2016 # the option spellings are what the reader has to see
+PODMAN_PROFILE_MSG='blocked: podman --cpu-profile FILE and --memory-profile FILE (and their =FILE forms) are persistent global options podman accepts after the subcommand too, so `podman images --cpu-profile cosign.pub` matches the Bash(podman images*) and Bash(podman ps*) allow rows on their prefix while podman opens the path for writing and dumps a pprof profile into it -- it overwrites the trust anchor, .claude/settings.json, this hook or any file this uid can reach, with no Read(...) deny rule in its way. It is the write this gate already refuses for `git --output` and for a `>` redirection on these commands, spelled as a podman option instead. These allow-listed podman verbs only read state; drop the flag.'
+
+# shellcheck disable=SC2016 # the spellings are what the reader has to see
+PODMAN_EXPAND_MSG='blocked: bash rewrites this word of a podman invocation before podman sees it, and the profile-option check reads words as typed, so it cannot tell whether the result is --cpu-profile or --memory-profile: `podman images --cpu-pro{f..f}ile cosign.pub` is a brace bash expands to --cpu-profile with no file needed, and `podman images --cpu-profil*` becomes --cpu-profile=cosign.pub as soon as a file of that name exists in the working directory -- either way podman dumps a pprof profile over cosign.pub with no prompt. An expanding brace, an unquoted glob character (*, ? or a bracket) or an unquoted leading ~ in a word of a gated podman command is refused rather than expanded. Quote a pattern podman should see literally (`podman images '"'"'fedora*'"'"'`), or write the words out.'
+
 # shellcheck disable=SC2016 # the literal $(...) and <( are what the reader has to see
 GATED_SUBST_MSG='blocked: a substitution or an expansion -- `$(...)`, a backtick, `$VAR`, `<(...)` or `>(...)`, quoted or not, in a word or a redirection target -- in an allow-listed command runs a command or supplies a word as part of a string the allow rule approved on its prefix alone, and neither is held to any rule: `df -T >(cat >cosign.pub)` and `podman images $(printf x >cosign.pub)` truncate the trust anchor from inside the substitution while the command prints as usual. It is refused in these commands the way it is in a git or shellcheck invocation. Write the inner command as a command of its own.'
 
@@ -1161,10 +1167,58 @@ denied_read_shape() {
 # substitution. Quote state is tracked so that `'tests/*.sh'` is the literal
 # word bash would pass; a backslash escapes the next character.
 word_bash_would_rewrite() {
-  local raw="$1" quote='' escaped=0 i ch
+  local raw="$1"
   [[ "${raw}" == *'$'* || "${raw}" == *'`'* ]] && return 0
   [[ "${raw}" == '<(' || "${raw}" == '>(' ]] && return 0
   brace_would_expand "${raw}" && return 0
+  word_bash_would_glob "${raw}"
+}
+
+# Whether the word ends in an extglob operator (`@`, `+`, `!`, `?`, `*`) that
+# bash leaves unquoted, so a `(` right after it opens an extglob pattern. The
+# quote state is walked rather than read off the character before the
+# operator: an empty quoted prefix (`''@(...)`, `""@(...)`) quotes nothing,
+# and the `@` after it is live (Codex on #262/#391). Only content characters
+# count; the quote marks themselves are not the operator.
+word_ends_in_unquoted_extglob_op() {
+  local raw="$1" quote='' escaped=0 i ch last='' last_unquoted=0
+  for ((i = 0; i < ${#raw}; i++)); do
+    ch="${raw:i:1}"
+    if ((escaped)); then
+      escaped=0
+      last="${ch}"
+      last_unquoted=0
+      continue
+    fi
+    if [[ -n "${quote}" ]]; then
+      if [[ "${ch}" == "${quote}" ]]; then
+        quote=''
+      elif [[ "${quote}" == '"' && "${ch}" == $'\\' ]]; then
+        escaped=1
+      else
+        last="${ch}"
+        last_unquoted=0
+      fi
+      continue
+    fi
+    case "${ch}" in
+    $'\\') escaped=1 ;;
+    "'" | '"') quote="${ch}" ;;
+    *)
+      last="${ch}"
+      last_unquoted=1
+      ;;
+    esac
+  done
+  ((last_unquoted)) && [[ "${last}" == [@+!?*] ]]
+}
+
+# The pathname half of `word_bash_would_rewrite` on its own: an unquoted
+# leading `~` or an unquoted `*`, `?` or `[`. The podman check pairs it with
+# the quote-aware `word_brace_would_expand`, since the quote-blind brace test
+# above would refuse a `--format` Go template.
+word_bash_would_glob() {
+  local raw="$1" quote='' escaped=0 i ch
   for ((i = 0; i < ${#raw}; i++)); do
     ch="${raw:i:1}"
     if ((escaped)); then
@@ -1188,6 +1242,39 @@ word_bash_would_rewrite() {
     esac
   done
   return 1
+}
+
+# Whether bash would brace-expand this word as typed. `brace_would_expand`
+# reads the word with its quotes and refuses a fully quoted brace as its
+# price; podman cannot pay that price, because `--format` takes a Go template
+# that is nothing but braces and a comma-separated one (`'{{.Id}},{{.Name}}'`)
+# is an ordinary listing (review on #262). Bash expands a brace only when the
+# `{`, the `}` and a `,` or `..` between them are all unquoted, so this walks
+# the word with the quote state `word_bash_would_rewrite` tracks and looks
+# only at the unquoted characters. `${` is refused elsewhere as a `$`.
+word_brace_would_expand() {
+  local raw="$1" quote='' escaped=0 i ch unquoted_run=''
+  for ((i = 0; i < ${#raw}; i++)); do
+    ch="${raw:i:1}"
+    if ((escaped)); then
+      escaped=0
+      continue
+    fi
+    if [[ -n "${quote}" ]]; then
+      if [[ "${ch}" == "${quote}" ]]; then
+        quote=''
+      elif [[ "${quote}" == '"' && "${ch}" == $'\\' ]]; then
+        escaped=1
+      fi
+      continue
+    fi
+    case "${ch}" in
+    $'\\') escaped=1 ;;
+    "'" | '"') quote="${ch}" ;;
+    *) unquoted_run+="${ch}" ;;
+    esac
+  done
+  [[ "${unquoted_run}" == *'{'*','*'}'* || "${unquoted_run}" == *'{'*..*'}'* ]]
 }
 
 # Whether a `<` redirection would feed a shellcheck invocation a file the
@@ -1330,6 +1417,16 @@ check_gated_command() {
   # row, prompts on its own, and is left alone.
   ((cmd_xargs && (cmd_gated || cmd_git_name))) && refuse "${XARGS_MSG}"
   ((cmd_gated && cmd_writes)) && refuse "${GATED_REDIRECT_MSG}"
+  # podman's --cpu-profile/--memory-profile are the same write by an option
+  # rather than a redirection: persistent globals podman takes after the
+  # subcommand too, so `podman images --cpu-profile cosign.pub` matches the
+  # `podman images`/`ps` allow row on its prefix and dumps a profile over the
+  # path (aurora-zfs-simple#257, atomic-image-builder#474).
+  ((cmd_gated && cmd_podman_profile == 1)) && refuse "${PODMAN_PROFILE_MSG}"
+  # A word bash rewrites could become either option after this scan has read
+  # it: a brace (`--cpu-pro{f..f}ile`) with no precondition, a glob
+  # (`--cpu-profil*`) once a file of that name exists (aurora-zfs-simple#262).
+  ((cmd_gated && cmd_podman_profile == 2)) && refuse "${PODMAN_EXPAND_MSG}"
   # A shellcheck invocation has its own scan for this, with the message that
   # names the operand; that one is left to say it.
   ((cmd_gated && cmd_subst)) && { [[ "${cmd_prefix}" != shellcheck* ]] || ((cmd_subst == 2)); } && refuse "${GATED_SUBST_MSG}"
@@ -1371,6 +1468,7 @@ reset_command() {
   cmd_writes=0
   cmd_read=0
   cmd_subst=0
+  cmd_podman_profile=0
   cmd_heredoc=0
   cmd_assign=0
   cmd_assign_name=''
@@ -1418,6 +1516,7 @@ cmd_gated=0   # its leading words matched one of GATED_PREFIXES
 cmd_git=0     # a literal `git` word is one of its words
 cmd_git_name=0 # a literal `git` word stands where this command's name may be
 cmd_xargs=0   # `xargs` stands among its wrappers, so its operands are not all here
+cmd_podman_profile=0 # 1: a --cpu-profile/--memory-profile word in this podman command; 2: a word bash rewrites
 bash_options=0 # a gated bash is still reading option words, as bash itself does
 bash_optvals='' # one letter per -o/-O still waiting for its value, in order
 cmd_argv0=0   # an exec/env option before the name set bash's zeroth argument
@@ -1607,6 +1706,38 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   # is left alone: it matches no allow rule and prompts on its own, the same
   # line `GATED_REDIRECT_MSG` draws for a redirection on an unlisted command.
   ((cmd_git || cmd_gated)) && saw_gated=1
+  # podman's profile-writing globals, checked at each word rather than at the
+  # prefix because they stand after the subcommand the allow row matches.
+  # `cmd_prefix` holds only the matched prefix, so the flag word is read here.
+  if ((cmd_gated)) && [[ "${cmd_prefix}" == podman\ * ]]; then
+    case "${words[idx]}" in
+    --cpu-profile | --cpu-profile=* | --memory-profile | --memory-profile=*)
+      cmd_podman_profile=1
+      ;;
+    *) ;;
+    esac
+    # The literal comparison reads the word as typed; a word bash rebuilds
+    # before podman runs can turn into either option afterwards.
+    # A `$` or a backtick is a substitution, which GATED_SUBST_MSG names
+    # better; it is left to that check.
+    if ((cmd_podman_profile == 0)) && [[ "${raw_words[idx]}" != *'$'* && "${raw_words[idx]}" != *'`'* ]] &&
+      { word_brace_would_expand "${raw_words[idx]}" || word_bash_would_glob "${raw_words[idx]}"; }; then
+      cmd_podman_profile=2
+    fi
+    # An extglob pattern, `@(...)`, `+(...)`, `!(...)`, `?(...)` or `*(...)`,
+    # is one word to a bash with `shopt -s extglob` on (Fedora's
+    # bash-completion turns it on) and it matches files the way `*` does, so
+    # `podman images @(--cpu-profile=cosign.pub)` reaches podman as that
+    # option beside a file of that name. The split above ends the command at
+    # the unquoted `(`, so the pattern is read here as the word before it: a
+    # word ending in one of those five characters, unquoted, followed by a
+    # `(` separator (aurora-zfs-simple#262).
+    if ((cmd_podman_profile == 0)) && ((idx + 1 < ${#words[@]})) &&
+      [[ "${kinds[idx + 1]}" == sep && "${words[idx + 1]}" == '(' ]] &&
+      word_ends_in_unquoted_extglob_op "${raw_words[idx]}"; then
+      cmd_podman_profile=2
+    fi
+  fi
   # A substitution or an expansion quoted into a word (`df -T "$(printf x
   # >cosign.pub)"`, `podman images $X`) is one the split above never opened,
   # and bash performs it all the same (review on arch-bootc#322).
