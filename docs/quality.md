@@ -335,6 +335,21 @@ Stated plainly so nobody mistakes silence for coverage:
   is the `DRY_RUN=0` half of the seed step — discovering partition 3, mounting
   it, and writing the NoCloud seed into the fresh deployment — which needs a
   real installed disk and root.
+- **`verify_published_image` is never executed by any test.** It is the
+  signature check `scripts/quickstart.sh` makes before a published image is
+  handed to `podman run --privileged` with `/dev` bound in: it refuses when
+  `cosign` is missing, when `cosign.pub` is unreadable, when the pulled image
+  reports no manifest digest, and when `cosign verify` fails, and on success it
+  repins `IMAGE` from the tag to the digest that verified. Every test that
+  reaches the published-image path drives it with `--dry-run`, where
+  `prepare_image` prints what a real run would verify and never calls the
+  function. `tests/e2e/test-quickstart-dry-run.sh` asserts that the step is
+  announced, names `cosign.pub`, and promises the digest rather than the tag;
+  none of the four refusals and neither the digest read-back nor the repin is
+  executed. The nightly signature job verifies the published image against
+  `cosign.pub` independently, so a broken signature would still be noticed
+  there, but a regression in this function — a refusal that stopped refusing,
+  or an install that went back to the tag — would not fail anything.
 - **`make_seed_iso`'s `DRY_RUN=0` half is covered without a real install.**
   Everything else that drives `quickstart.sh` runs it with `--dry-run`, where
   that function prints one sentence and creates nothing, so the half that
