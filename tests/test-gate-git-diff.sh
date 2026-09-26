@@ -1301,6 +1301,67 @@ if ((settings_readable)); then
     assert_hook_permits "reading the output of an allow-listed command is unprompted: ${redirect_command}" \
       "${redirect_command}"
   done
+  # podman's --cpu-profile/--memory-profile write the same way a `>` on a
+  # gated command does, but by an option: persistent globals podman accepts
+  # after the subcommand the `podman images*`/`podman ps*` row matches, so
+  # `podman images --cpu-profile cosign.pub` dumps a pprof profile over the
+  # trust anchor with the allow row seeing only its prefix
+  # (aurora-zfs-simple#257, atomic-image-builder#474). Both flags, both
+  # spellings, behind a wrapper and after a `;`.
+  for profiled in \
+    'podman images --cpu-profile cosign.pub' \
+    'podman images --cpu-profile=cosign.pub' \
+    'podman ps --cpu-profile .claude/settings.json' \
+    'podman ps -a --memory-profile cosign.pub' \
+    'podman images --memory-profile=.claude/hooks/gate-git-diff.sh' \
+    'timeout 5 podman images --cpu-profile cosign.pub' \
+    'git status; podman images --cpu-profile cosign.pub'; do
+    assert_hook_refuses_naming "a podman profile flag that writes a file is refused: ${profiled}" \
+      "${profiled}" 'profile'
+  done
+  # A word bash rebuilds before podman runs can become either option after the
+  # literal comparison has read it: a brace with no precondition, and a glob
+  # once a file named like the option exists in the working directory, so
+  # `--cpu-profil*` beside a file `--cpu-profile=cosign.pub` overwrote
+  # cosign.pub with a profile when run for real (aurora-zfs-simple#262).
+  for rebuilt in \
+    'podman images --cpu-pro{f..f}ile cosign.pub' \
+    'podman images --{cpu,memory}-profile cosign.pub' \
+    'podman ps --cpu-profile{,}=cosign.pub' \
+    'podman images --cpu-profil*' \
+    'podman ps [-]-memory-profile=cosign.pub' \
+    'podman images ?-cpu-profile=cosign.pub' \
+    'podman images *' \
+    'podman images ~/x' \
+    'podman images @(--cpu-profile=cosign.pub)' \
+    'podman ps +(--memory-profile=cosign.pub)' \
+    'podman images fedora!(x)' \
+    'git status; podman images --cpu-pro{f..f}ile cosign.pub'; do
+    assert_hook_refuses_naming "a podman word bash rewrites is refused: ${rebuilt}" \
+      "${rebuilt}" 'bash rewrites this word of a podman invocation'
+  done
+  # A literal flag ahead of a rewritten word is refused for the flag: the
+  # message names the write, not the rewrite.
+  assert_hook_refuses_naming "a literal profile flag beside a glob is refused for the flag" \
+    'podman images --cpu-profile cosign.pub *' 'podman --cpu-profile FILE'
+  # The same podman verbs without the flag, a quoted pattern, a Go template
+  # brace, and the flag words outside a podman command stay unprompted.
+  for ok in \
+    'podman ps' \
+    'podman images --format json' \
+    'podman images --format {{.Id}}' \
+    'podman ps -a --no-trunc' \
+    "podman images 'fedora*'" \
+    "podman inspect --format '{{.Id}},{{.Name}}' foo" \
+    'podman inspect --format "{{.Id}},{{.Name}}" foo' \
+    'podman images --cpu-pro"{f..f}"ile x' \
+    'podman images \{a,b\}' \
+    "podman images '@'(x)" \
+    'echo podman images --cpu-profile x' \
+    'git log --grep=cpu-profile -1'; do
+    assert_hook_permits "a podman verb with no profile flag, or the flag outside a podman command, is left alone: ${ok}" \
+      "${ok}"
+  done
   # The hook re-gates what the permission rules wave through. A command no
   # allow rule covers prompts on its own, and a redirection on another
   # command of the same string is that command's own. The brace group and
