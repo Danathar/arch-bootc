@@ -95,7 +95,7 @@ ARG LIBSELINUX_COMMIT=2233a23a4d4f1bf29054037babec13f30d038e65
 # ("required to use makepkg") -- an orphan-only sweep would silently leave
 # a full build toolchain in the shipped image forever.
 RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
-    pacman -S --needed --asdeps --noconfirm rust make go-md2man elfutils && \
+    pacman -S --needed --asdeps --noconfirm rust make go-md2man elfutils clang && \
     pacman -S --needed --noconfirm pcre2 && \
     git clone --branch "${LIBSELINUX_VERSION}" --depth 1 "https://github.com/SELinuxProject/selinux.git" /tmp/selinux && \
     selinux_head="$(git -C /tmp/selinux rev-parse HEAD)" && \
@@ -119,7 +119,7 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     printf "systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n" | tee /usr/lib/dracut/dracut.conf.d/30-bootcrew-fix-bootc-module.conf && \
     printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" ostree bootc "' | tee "/usr/lib/dracut/dracut.conf.d/30-bootcrew-bootc-container-build.conf" && \
     dracut --force "$(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)/initramfs.img" && \
-    pacman -Rns --noconfirm rust make go-md2man elfutils && \
+    pacman -Rns --noconfirm rust make go-md2man elfutils clang && \
     pacman -S --clean --noconfirm
 
 # Necessary for general behavior expected by image-based systems
