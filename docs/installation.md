@@ -67,7 +67,11 @@ actually happening — the quickstart just runs them for you.
 
 - Linux host with `podman`, `qemu-img`, `virt-install`, `virsh`, `git`, `just`, `gh`
 - A running libvirt setup (`qemu:///session` or `qemu:///system`)
-- Optional for image signing: `cosign`
+- `cosign`, to verify the published image's signature before it runs as
+  privileged root. `just quickstart` refuses to install a published image
+  without it (`verify_published_image` in `scripts/quickstart.sh`), and the
+  manual Path A and bare-metal steps below run the same check. It is not needed
+  when you install an image you built locally: there is no signature to check.
 
 > **Note:** This project uses `just` as a command runner. You can inspect the `Justfile` to see the underlying `podman` and `qemu` commands being executed.
 
@@ -88,22 +92,41 @@ No `config.toml`, no external image builder needed — install the published
 image directly to a raw disk file with `bootc install to-disk`. First boot
 puts you at a graphical login; bootstrap your first admin user via the
 console (`root` / `changeme`, see [First Boot](first-boot.md)) or the
-[QEMU guest agent](vm-workflow.md#running-commands-in-the-vm-from-the-host-qemu-guest-agent):
+[QEMU guest agent](vm-workflow.md#running-commands-in-the-vm-from-the-host-qemu-guest-agent).
+
+<a id="verify-published-image"></a>
+First pull the image and verify its signature. The install below runs it with
+`--privileged` as root, and `latest` is a mutable tag, so this is the same check
+`just quickstart` makes before it installs anything. Run it from a clone of this
+repository, which carries `cosign.pub`:
+
+```bash
+IMAGE=ghcr.io/danathar/arch-bootc-kde:latest
+sudo podman pull "${IMAGE}"
+DIGEST="$(sudo podman image inspect --format '{{.Digest}}' "${IMAGE}")"
+cosign verify --key cosign.pub "${IMAGE%:*}@${DIGEST}"
+IMAGE="${IMAGE%:*}@${DIGEST}"
+```
+
+If `cosign verify` fails, stop: the image is not signed by this repository's
+key. The last line pins `IMAGE` to the digest that verified, and the install
+uses `--pull=never`, so it runs exactly the bytes that were checked and the tag
+cannot move in between:
 
 ```bash
 mkdir -p output
 truncate -s 100G output/bootable.img
-sudo podman run --rm -it --privileged --pid=host --pull=newer \
+sudo podman run --rm -it --privileged --pid=host --pull=never \
   --security-opt label=type:unconfined_t \
   -v /dev:/dev \
   -v "$(pwd)/output:/data" \
-  ghcr.io/danathar/arch-bootc-kde:latest \
+  "${IMAGE}" \
   bootc install to-disk --composefs-backend --via-loopback /data/bootable.img \
     --filesystem ext4 --wipe --bootloader systemd
 ```
 *(Note: Replace `danathar/arch-bootc-kde` with `<your-user>/arch-bootc-kde` if
-you are using your own fork's image, or with `arch-bootc-xfce` for the Xfce
-flavor).*
+you are using your own fork's image, and verify it with your fork's
+`cosign.pub`. Use `arch-bootc-xfce` for the Xfce flavor.)*
 
 ### 2. Convert to QCOW2
 ```bash
@@ -244,14 +267,18 @@ sudo lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL
    > ⚠️ **This wipes the target device.** Confirm it's your intended install
    > disk and is **not mounted** before continuing.
 
-2. Install directly to the disk (example target `/dev/nvme0n1`; point at the
-   published GHCR image — swap `-kde` for `-xfce` for the Xfce flavor — or a
-   local `localhost/arch-bootc:latest` after `just build-containerfile`):
+2. Choose the image. For the published GHCR image, pull it and verify its
+   signature exactly as in [Path A](#verify-published-image), which leaves
+   `IMAGE` pinned to the verified digest (swap `-kde` for `-xfce` for the Xfce
+   flavor). For a local build, there is nothing to verify: after
+   `just build-containerfile`, set `IMAGE=localhost/arch-bootc:latest`.
+
+3. Install directly to the disk (example target `/dev/nvme0n1`):
 ```bash
-sudo podman run --rm -it --privileged --pid=host --pull=newer \
+sudo podman run --rm -it --privileged --pid=host --pull=never \
   --security-opt label=type:unconfined_t \
   -v /dev:/dev \
-  ghcr.io/danathar/arch-bootc-kde:latest \
+  "${IMAGE}" \
   bootc install to-disk --composefs-backend /dev/nvme0n1 \
     --filesystem ext4 --wipe --bootloader systemd
 ```
@@ -259,7 +286,7 @@ sudo podman run --rm -it --privileged --pid=host --pull=newer \
    grow the root filesystem afterward if your disk is larger than the
    install's default sizing.)*
 
-3. Reboot and boot from that disk.
+4. Reboot and boot from that disk.
    - The image defaults to UTC, so first boot goes straight to the graphical
      login (change the timezone afterward with `timedatectl set-timezone`).
    - Root cannot use the graphical login, but a normal console login prompt
