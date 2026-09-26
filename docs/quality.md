@@ -180,10 +180,11 @@ enablement layout, SHA-pinned actions with `persist-credentials: false` and
 `.github/policies/workflow-permissions.json`, and — the one that had already
 gone wrong — that every shell file appears in **both** hand-maintained
 ShellCheck lists. It also pins the `.claude/settings.json` entries the
-`PreToolUse` hook is built on — `Bash(git diff*)` allowed, `Read(./cosign.key)`
-and `Read(./.env)` denied, no prefix rule pretending to gate `--no-index` or
-`--output` — and that `.claude/hooks/gate-git-diff.sh` exists and is
-executable. Running the hook is not static work, so it happens in
+`PreToolUse` hook is built on — `Bash(git diff*)`, `Bash(git log*)` and
+`Bash(git show*)` allowed, `Read(./cosign.key)` and `Read(./.env)` denied, no
+prefix rule pretending to gate `--no-index` or `--output` — and that
+`.claude/hooks/gate-git-diff.sh` exists and is executable. Running the hook is
+not static work, so it happens in
 `tests/test-gate-git-diff.sh` instead, under `run-tests.sh`: the hook is
 extracted with `jq` and executed rather than grepped for, since a hook asserted
 by grep is a hook asserted by its own comment. That file checks that the gate

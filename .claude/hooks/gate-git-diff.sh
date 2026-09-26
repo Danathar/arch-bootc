@@ -1259,9 +1259,9 @@ reading_target_refused() {
 # output redirection in every git invocation, `git status` and `git ls-files`
 # included. The exact rows (`just test`, `./tests/run-tests.sh`, the virsh
 # inventories) carry no `*`, so a redirection makes the string match no row
-# and Claude Code prompts. tests/check-invariants.sh derives this list from
+# and Claude Code prompts. tests/test-gate-git-diff.sh derives this list from
 # the settings file rather than restating it, so a rule added there fails
-# that test until it is listed here.
+# that suite until it is listed here.
 GATED_PREFIXES=(
   'shellcheck *'
   'bash -n *'

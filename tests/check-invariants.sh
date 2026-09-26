@@ -1370,10 +1370,11 @@ if ((settings_readable)); then
       "a prefix rule matches one flag ordering and reads as coverage: ${output_deny}"
   fi
 
-  # The hook is a file in the repository, so the settings entry pointing at a
-  # path that does not exist, or at one nothing can execute, is a way for
-  # every row of tests/test-gate-git-diff.sh to keep passing against a gate
-  # that never runs.
+  # The hook is a file in the repository, so the settings entry can point at a
+  # path that does not exist, or at one nothing can execute. The suite in
+  # tests/test-gate-git-diff.sh would notice -- it runs the hook through
+  # `bash -c` and every refusal would come back 126 or 127 instead of 2 --
+  # but as a page of identical failures. This row names the cause directly.
   bash_hook_count="$(jq -r '[.hooks.PreToolUse[]? | select(.matcher == "Bash") | .hooks[]? | select(.type == "command")] | length' "${CLAUDE_SETTINGS}")"
   if ((bash_hook_count > 0)); then
     pass "${CLAUDE_SETTINGS} declares a PreToolUse command hook on Bash"
