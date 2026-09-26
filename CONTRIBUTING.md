@@ -84,7 +84,8 @@ These are load-bearing, and each has a rationale recorded in place.
 - **The root-login model.** The image ships a known default root password. That
   is safe only because every remote, graphical, and local-escalation path to
   root is closed at the same time: `PermitRootLogin prohibit-password`,
-  `pam_wheel.so use_uid` in `/etc/pam.d/su`, display managers that refuse root,
+  `pam_wheel.so use_uid` in `/etc/pam.d/su` and `/etc/pam.d/su-l` (the service
+  `su -` uses), display managers that refuse root,
   and `passwd --expire`. Loosening any one of them invalidates the reasoning
   behind the others. Treat it as a security change and say so.
 - **The signature policy.** `system_files/etc/containers/policy.json` requires a
