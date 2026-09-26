@@ -35,7 +35,8 @@ just quickstart
 ```
 
 The dry run asks the same questions and performs the same read-only safety
-checks, but only prints the commands that would change storage or libvirt. See
+checks, but only prints the commands that would change storage or libvirt. Run
+`just quickstart --help` for the full flag summary. See
 [Installation](docs/installation.md) for the enforced guardrails, required
 tools, and manual alternatives.
 
