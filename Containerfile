@@ -72,9 +72,9 @@ ARG BOOTC_COMMIT=c87b62fb805a69793fa0cba671bbed10a2132423
 #   git ls-remote --tags https://github.com/SELinuxProject/selinux.git 'X.Y*'
 # and take the ^{} row. Both values are tracked together by the
 # "Track SELinuxProject/selinux release + pinned commit" customManager in
-# renovate.json. Only libselinux's src/ and include/ are built, so libsepol
-# is not needed; pcre2 is already in the image. libselinux.so.1 stays in the
-# image because the bootc binary links it dynamically.
+# renovate.json. Only libselinux's src/ and include/ are built; load_policy.c
+# needs libsepol's headers (CPPFLAGS below) but dlopen()s libsepol at runtime.
+# libselinux.so.1 stays in the image: the bootc binary links it dynamically.
 ARG LIBSELINUX_VERSION=3.11
 ARG LIBSELINUX_COMMIT=2233a23a4d4f1bf29054037babec13f30d038e65
 # base-devel is deliberately NOT installed here (or in packages-base.txt).
@@ -106,7 +106,7 @@ RUN --mount=type=tmpfs,dst=/tmp --mount=type=tmpfs,dst=/root \
     fi && \
     make -C /tmp/selinux/libselinux/include install PREFIX=/usr && \
     make -C /tmp/selinux/libselinux/src install \
-        PREFIX=/usr LIBDIR=/usr/lib SHLIBDIR=/usr/lib DISABLE_RPM=y CFLAGS="-O2 -pipe" \
+        PREFIX=/usr LIBDIR=/usr/lib SHLIBDIR=/usr/lib DISABLE_RPM=y CFLAGS="-O2 -pipe" CPPFLAGS=-I/tmp/selinux/libsepol/include \
         PCRE_MODULE=libpcre2-8 PCRE_CFLAGS="-DUSE_PCRE2 -DPCRE2_CODE_UNIT_WIDTH=8" PCRE_LDLIBS=-lpcre2-8 && \
     git clone --branch "${BOOTC_VERSION}" --depth 1 "https://github.com/bootc-dev/bootc.git" /tmp/bootc && \
     bootc_head="$(git -C /tmp/bootc rev-parse HEAD)" && \
