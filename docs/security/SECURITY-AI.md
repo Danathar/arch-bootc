@@ -492,6 +492,23 @@ must be described as such.
   first, by running ShellCheck at a synthetic file and finding the file's line
   in its output.
 
+  `--check-sourced` (`-a`) is another way the same command prints a file the
+  operand scan never named. It reports the diagnostics it finds inside a file
+  a `source`/`.` directive of the linted script pulls in, with the source
+  line printed above each — so a script whose body is `. ./.env`, linted with
+  `shellcheck -x -a script.sh`, prints every `NAME=value` line of `.env` back,
+  though only `script.sh` is named on the command line. `-x` on its own
+  follows the directive only to resolve names and reports nothing from the
+  file it follows into; this repository lints with `-x` and never with `-a`,
+  so refusing `--check-sourced` costs nothing. `-a` is refused everywhere it
+  can spell it — the short form (a short cluster carries `-a` as its own
+  option letter until one of the value-taking shorts consumes the rest, so
+  `-xa` is refused and `-sa` is left alone), the long form, and every prefix
+  ShellCheck accepts for it (`--check`, `--ch`, down to the shortest
+  unambiguous `--ch`, since `--color` is the only other long option starting
+  `--c`) — including through a `-<<<` here-string or a redirected `-`
+  operand, not only a named file.
+
   That scan reads the words after `shellcheck`, and an input redirection puts
   the path somewhere it never looks. ShellCheck reads standard input when its
   operand is `-`, so `shellcheck - < .env` printed the file back exactly as
@@ -573,6 +590,30 @@ must be described as such.
   until the hook lists it, and shows both exposures in a temporary directory
   before asserting the refusals. Same fix as
   [zfs-kinoite-complex#224](https://github.com/Danathar/zfs-kinoite-complex/pull/224).
+- **The write does not have to be a redirection either.** `podman
+  --cpu-profile FILE` and `--memory-profile FILE` (and their `=FILE` forms)
+  are persistent global options podman accepts after the subcommand too, so
+  `podman images --cpu-profile cosign.pub` matches `Bash(podman images*)` on
+  its prefix while podman opens the path for writing and dumps a pprof
+  profile into it — the same write this gate already refuses as a `>`
+  redirection on these commands, spelled as an option instead; run for real,
+  `podman images --cpu-profile FILE` overwrote a 9-byte file with a
+  7432-byte profile. Both flags are refused, either spelling, anywhere in a
+  gated podman command, along with a word bash rewrites before podman sees
+  it: an expanding brace read with quote state (`podman images
+  --cpu-pro{f..f}ile cosign.pub` needs no file to become `--cpu-profile`), an
+  unquoted glob or leading `~` (`podman images --cpu-profil*` becomes
+  `--cpu-profile=cosign.pub` once a file of that name exists), and an
+  extglob pattern (`@(...)`, `+(...)`, `!(...)`, `?(...)`, `*(...)`) under
+  `shopt -s extglob`, which the walk tracks through quote state rather than
+  looking only at the character before the operator — an empty quoted prefix
+  (`podman images ''@(--cpu-profile=cosign.pub)`) still opens the pattern
+  under bash even though nothing unquoted sits before the `@`. Ports the rule
+  from
+  [aurora-zfs-simple#257](https://github.com/Danathar/aurora-zfs-simple/pull/257)/[#262](https://github.com/Danathar/aurora-zfs-simple/pull/262)
+  and
+  [atomic-image-builder#477](https://github.com/Danathar/atomic-image-builder/pull/477)/[#481](https://github.com/Danathar/atomic-image-builder/pull/481),
+  so all five Hive hooks stay in step.
 - **Neither primitive needs an argument.** An assignment written before an
   allow-listed command (`NAME=value cmd ...`) is an environment that command
   runs under, and the allow rule matches the command prefix that follows it.
