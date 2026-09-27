@@ -146,16 +146,20 @@ new_esp() {
   printf '%s\n' "${esp}"
 }
 
-# Write a BLS entry referencing a deployment directory.
+# Write a BLS entry referencing a deployment directory. ENTRIES_DIR names the
+# directory under loader/ the entry goes in: `entries` for finalized
+# deployments, `entries.staged` for one bootc has staged but not yet finalized.
 write_bls_entry() {
   local esp="$1" entry="$2" deployment="$3" line_ending="${4:-lf}"
+  local entries_dir="${ENTRIES_DIR:-entries}"
   local suffix=""
   [[ "${line_ending}" == "crlf" ]] && suffix=$'\r'
+  mkdir -p "${esp}/loader/${entries_dir}"
   {
     printf 'title Arch Linux\n'
     printf 'linux /EFI/Linux/%s/vmlinuz%s\n' "${deployment}" "${suffix}"
     printf 'initrd /EFI/Linux/%s/initrd%s\n' "${deployment}" "${suffix}"
-  } >"${esp}/loader/entries/${entry}.conf"
+  } >"${esp}/loader/${entries_dir}/${entry}.conf"
 }
 
 # Run the script against an ESP fixture, capturing stdout+stderr in RUN_OUTPUT
@@ -352,6 +356,30 @@ test_keeps_every_referenced_deployment() {
   assert_dir_exists "first referenced deployment kept" "${esp}/EFI/Linux/current"
   assert_dir_exists "second referenced deployment kept" "${esp}/EFI/Linux/rollback"
   assert_dir_absent "unreferenced deployment pruned" "${esp}/EFI/Linux/stale"
+}
+
+# bootc's composefs backend writes a staged deployment's kernel/initrd into
+# EFI/Linux/<id>/ when `bootc upgrade` stages it, but its BLS entry goes into
+# loader/entries.staged/ and only moves to loader/entries/ when the deployment
+# is finalized at shutdown. Until then that entry is the only reference to the
+# kernel the next boot will load, so the timer or the pre-upgrade run must not
+# treat the directory as unreferenced.
+test_keeps_deployment_referenced_only_by_a_staged_entry() {
+  local esp output
+  esp="$(new_esp staged-esp current staged stale)"
+  write_bls_entry "${esp}" "current" "current"
+  ENTRIES_DIR=entries.staged write_bls_entry "${esp}" "staged" "staged"
+  ENTRIES_DIR=entries.staged write_bls_entry "${esp}" "current" "current"
+  run_prune "${esp}"
+  output="${RUN_OUTPUT}"
+  assert_eq "staged-entry run exits 0" "0" "${RUN_STATUS}"
+  assert_dir_exists "deployment referenced only by a staged entry is kept" \
+    "${esp}/EFI/Linux/staged"
+  assert_dir_exists "finalized deployment is still kept alongside a staged one" \
+    "${esp}/EFI/Linux/current"
+  assert_dir_absent "staged entries do not stop an unreferenced deployment being pruned" \
+    "${esp}/EFI/Linux/stale"
+  assert_contains "keeping the staged deployment is logged" "${output}" "keeping EFI/Linux/staged"
 }
 
 test_refuses_to_prune_with_no_references() {
@@ -967,6 +995,7 @@ main() {
     test_nonexistent_path_is_not_a_candidate \
     test_prunes_unreferenced_keeps_referenced \
     test_keeps_every_referenced_deployment \
+    test_keeps_deployment_referenced_only_by_a_staged_entry \
     test_refuses_to_prune_with_no_references \
     test_entry_without_efi_linux_paths_is_not_a_reference \
     test_crlf_entry_is_parsed \

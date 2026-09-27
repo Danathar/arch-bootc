@@ -8,6 +8,15 @@ set -euo pipefail
 # active deployments are referenced by /loader/entries/*.conf.  If an upgrade
 # is interrupted or cleanup misses old artifacts, a small ESP can fill up and
 # make future upgrades fail while writing BLS/initrd files.
+#
+# A deployment that is staged but not yet finalized is referenced from
+# /loader/entries.staged/*.conf instead: the composefs backend writes its new
+# kernel/initrd into /EFI/Linux/<id>/ at `bootc upgrade`/`bootc switch` time
+# and only moves the staged entries into loader/entries at shutdown. Both
+# directories are read below, or the kernel the next boot needs is deleted in
+# the window between staging and reboot. Which directories bootc references
+# its artifacts from is part of the contract pinned by BOOTC_VERSION in the
+# Containerfile; re-check this list when bumping it.
 
 usage() {
   cat <<'USAGE'
@@ -121,7 +130,7 @@ prune_esp() {
 
   shopt -s nullglob
 
-  for entry in "$esp"/loader/entries/*.conf; do
+  for entry in "$esp"/loader/entries/*.conf "$esp"/loader/entries.staged/*.conf; do
     while read -r key path rest || [[ -n "${key:-}" ]]; do
       # BLS entries use absolute ESP-relative paths like:
       #   linux /EFI/Linux/<id>/vmlinuz
