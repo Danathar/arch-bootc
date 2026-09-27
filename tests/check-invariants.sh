@@ -8266,6 +8266,152 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Per-package rechunking (docs/ci-cd.md: build.yml's CHUNK_TAG build-arg, the publish gate, and the stages that read it)"
+# The Containerfile half of this is checked above: every `FROM base-core AS`
+# stage carries base's tagging RUN, after its last package install. The half
+# in build.yml was checked by nothing. The build-arg could be set to '0' and
+# the published images would lose every `user.component` xattr. chunkah still
+# succeeds on such an image, and it would be pushed and signed as one layer,
+# so every `bootc upgrade` would download the whole image again. Set to '1',
+# every PR build would pay for the tagging pass. Dropped from `Populate build
+# cache` alone, that step builds with a different ARG than `Build Image` did,
+# misses the local layer cache, and pushes a cache the next run cannot use.
+# That is the failure PACMAN_CACHE_BUST's "both buildah steps" check exists for.
+CHUNK_DOC="docs/ci-cd.md"
+CHUNK_GATED_STEPS=("Rechunk image with chunkah" "Push To GHCR" "Sign container image")
+
+# One CHUNK_TAG line per buildah step, reported as "<step><TAB><line or none>".
+# Not `|`: the expression itself contains `||`.
+chunk_step_args="$(awk '
+  function flush() { if (buildah) print step "\t" (arg == "" ? "<none>" : arg) }
+  /^      - name: / { flush(); step = substr($0, 15); buildah = 0; arg = ""; next }
+  /^        uses: redhat-actions\/buildah-build@/ { buildah = 1 }
+  /^[[:space:]]+CHUNK_TAG=/ { line = $0; sub(/^[[:space:]]+/, "", line); arg = line }
+  END { flush() }
+' "${BUILD_WORKFLOW}")"
+assert_equal "every buildah build in ${BUILD_WORKFLOW} is a step this group reads" \
+  "$(grep -c . <<<"${chunk_step_args}")" "$(grep -c '^        uses: redhat-actions/buildah-build@' "${BUILD_WORKFLOW}")"
+while IFS=$'\t' read -r chunk_step chunk_arg; do
+  [[ -n "${chunk_step}" ]] || continue
+  if [[ "${chunk_arg}" != "<none>" ]]; then
+    pass "the ${chunk_step} step passes CHUNK_TAG"
+  else
+    fail "the ${chunk_step} step passes CHUNK_TAG" \
+      "without it this build runs with ARG CHUNK_TAG=0, unlike the other buildah step"
+  fi
+done <<<"${chunk_step_args}"
+assert_equal "every buildah step passes CHUNK_TAG spelled the same way" \
+  "$(cut -f2 <<<"${chunk_step_args}" | sort -u | grep -c .)" "1"
+
+# "`build.yml` sets `CHUNK_TAG=1` only for the same non-PR, default-branch
+# builds that get rechunked, signed and published". The build-arg's condition
+# and each publishing step's `if:` are compared exactly. Checking only that both
+# mention `pull_request` would pass a condition with one branch dropped.
+# shellcheck disable=SC2016 # a literal GitHub expression
+chunk_prefix='CHUNK_TAG=${{ ('
+chunk_suffix=") && '1' || '0' }}"
+chunk_arg="$(cut -f2 <<<"${chunk_step_args}" | head -n 1)"
+if [[ "${chunk_arg}" == "${chunk_prefix}"*"${chunk_suffix}" ]]; then
+  chunk_cond="${chunk_arg#"${chunk_prefix}"}"
+  chunk_cond="${chunk_cond%"${chunk_suffix}"}"
+  pass "CHUNK_TAG is '1' under one condition and '0' otherwise"
+else
+  chunk_cond="<unparsed>"
+  fail "CHUNK_TAG is '1' under one condition and '0' otherwise" \
+    "found '${chunk_arg}'; the shape is \${{ (<condition>) && '1' || '0' }}"
+fi
+for chunk_gated in "${CHUNK_GATED_STEPS[@]}"; do
+  assert_equal "CHUNK_TAG is 1 exactly when the ${chunk_gated} step runs" \
+    "${chunk_cond}" "$(awk -v want="${chunk_gated}" '
+      /^      - name: / { step = substr($0, 15); next }
+      step == want && /^        if: / { print substr($0, 13); exit }
+    ' "${BUILD_WORKFLOW}")"
+done
+
+# "every other build -- including every local `just build-*` -- leaves it at
+# its `0` default". That holds only while the default is 0 and nothing local
+# overrides it.
+chunk_stages=""
+while IFS= read -r chunk_stage; do
+  [[ -n "${chunk_stage}" ]] || continue
+  chunk_stage_steps="$(stage_instructions "${chunk_stage}")"
+  if grep -qF 'CHUNK_TAG' <<<"${chunk_stage_steps}"; then
+    chunk_stages+="${chunk_stage} "
+    assert_equal "the ${chunk_stage} stage defaults CHUNK_TAG to 0" \
+      "$(grep -E '^ARG CHUNK_TAG(=|$)' <<<"${chunk_stage_steps}")" "ARG CHUNK_TAG=0"
+  fi
+done < <(grep -oE '^FROM [^ ]+ AS [a-z][a-z0-9-]*' "${CONTAINERFILE}" | awk '{print $NF}')
+chunk_stages="${chunk_stages% }"
+assert_absent_in "no Justfile recipe or script overrides CHUNK_TAG, so local builds keep the default" \
+  'CHUNK_TAG' "${JUSTFILE}" scripts/*
+
+# The stages that tag are the stages CI builds, both ways: a published flavor
+# without the pass ships one layer, and a stage nobody publishes gains nothing.
+chunk_matrix="$(sed -n 's/^[[:space:]]*flavor: \[\(.*\)\]$/\1/p' "${BUILD_WORKFLOW}" | tr -d ' ' | tr ',' '\n' | sort -u | tr '\n' ' ')"
+assert_equal "the stages that tag files for rechunking are the flavors build.yml builds" \
+  "$(tr ' ' '\n' <<<"${chunk_stages}" | sort -u | tr '\n' ' ')" "${chunk_matrix}"
+
+# The page, read as a subject rather than cited.
+if [[ ! -f "${CHUNK_DOC}" ]]; then
+  fail "${CHUNK_DOC} exists" "the rechunking section cannot be checked"
+else
+  chunk_section="$(awk '
+    /^## / { inside = ($0 ~ /^## Per-package rechunking/) ; if (!inside && done) exit ; if (inside) done = 1 }
+    inside
+  ' "${CHUNK_DOC}" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+  if [[ -n "${chunk_section}" ]]; then
+    pass "${CHUNK_DOC} has the per-package rechunking section"
+  else
+    fail "${CHUNK_DOC} has the per-package rechunking section" "no '## Per-package rechunking' heading"
+  fi
+  # "Each published target stage (`base`, `kde` and `xfce`: ...)". The #394
+  # wording said every stage that installs packages, which base-core does
+  # without a tagging RUN of its own.
+  # shellcheck disable=SC2016 # literal backticks
+  chunk_doc_stages="$(grep -oE 'Each published target stage \([^)]*\)' <<<"${chunk_section}" | grep -oE '`[a-z][a-z0-9-]*`' | tr -d '`' | sort -u | tr '\n' ' ')"
+  assert_equal "the stages ${CHUNK_DOC} says tag files are the stages that do" \
+    "${chunk_doc_stages}" "$(tr ' ' '\n' <<<"${chunk_stages}" | sort -u | tr '\n' ' ')"
+  # shellcheck disable=SC2016 # literal backticks
+  if ! grep -qF 'CHUNK_TAG' <<<"$(stage_instructions base-core)" && [[ "${chunk_section}" == *'`base-core` has none of its own'* ]]; then
+    pass "${CHUNK_DOC} says base-core has no tagging pass of its own, and it has none"
+  else
+    fail "${CHUNK_DOC} says base-core has no tagging pass of its own, and it has none" \
+      "either base-core gained a CHUNK_TAG step or the page stopped saying where the tagging lives"
+  fi
+  # shellcheck disable=SC2016 # literal backticks
+  chunk_doc_arg="$(grep -oE '`ARG CHUNK_TAG=[^`]*`' <<<"${chunk_section}" | head -n 1 | tr -d '`')"
+  assert_equal "the ARG default ${CHUNK_DOC} quotes is the Containerfile's" \
+    "${chunk_doc_arg}" "$(stage_instructions base | grep -E '^ARG CHUNK_TAG')"
+  # shellcheck disable=SC2016 # literal backticks
+  chunk_doc_setfattr="$(grep -oE '`setfattr [^`]*`' <<<"${chunk_section}" | head -n 1 | tr -d '`')"
+  chunk_base_tag="$(grep -F 'CHUNK_TAG' <<<"$(stage_instructions base)")"
+  if [[ -n "${chunk_doc_setfattr}" ]] && grep -qF -- "${chunk_doc_setfattr}" <<<"${chunk_base_tag}"; then
+    pass "the setfattr call ${CHUNK_DOC} quotes is the one the tagging RUN makes"
+  else
+    fail "the setfattr call ${CHUNK_DOC} quotes is the one the tagging RUN makes" \
+      "'${chunk_doc_setfattr:-<none>}' is not in base's CHUNK_TAG RUN"
+  fi
+  # shellcheck disable=SC2016 # literal backticks
+  chunk_doc_step="$(grep -oE '`[^`]+` step' <<<"${chunk_section}" | head -n 1 | sed -E 's/^`([^`]+)` step$/\1/')"
+  if [[ -n "${chunk_doc_step}" ]] && grep -qxF "      - name: ${chunk_doc_step}" "${BUILD_WORKFLOW}" &&
+    [[ " ${CHUNK_GATED_STEPS[*]} " == *" ${chunk_doc_step} "* ]]; then
+    pass "the rechunk step ${CHUNK_DOC} names is a gated step in ${BUILD_WORKFLOW}"
+  else
+    fail "the rechunk step ${CHUNK_DOC} names is a gated step in ${BUILD_WORKFLOW}" \
+      "'${chunk_doc_step:-<none>}' is not a step name in ${BUILD_WORKFLOW}"
+  fi
+  # The gate the page describes, in the page's words, so a rewrite that drops
+  # "only" or the default-branch half has to come past this check.
+  # shellcheck disable=SC2016 # literal backticks
+  if [[ "${chunk_section}" == *'`build.yml` sets `CHUNK_TAG=1` only for the same non-PR, default-branch builds that get rechunked, signed and published'* ]]; then
+    pass "${CHUNK_DOC} states the publish gate this group checks"
+  else
+    fail "${CHUNK_DOC} states the publish gate this group checks" \
+      "the sentence changed; re-check it against the CHUNK_TAG condition above"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then
   printf 'invariants: %d of %d check(s) failed\n' "${failures}" "${checks_run}" >&2
