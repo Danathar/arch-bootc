@@ -648,14 +648,16 @@ deleting versions nobody asked to delete — so both are asserted here.
 
 ## Per-package rechunking (`CHUNK_TAG`)
 
-Each Containerfile stage that installs packages has a matching `RUN` guarded by
-`ARG CHUNK_TAG=0`: when set to `1` it tags every package-owned file with a
-`user.component` xattr naming the pacman package that owns it
-(`setfattr -n user.component -v "pkg:$pkg"`). That tagging is what lets the
-`Rechunk image with chunkah` step (see [Renovate](renovate.md)) split the
-published OCI image into per-package layers instead of one monolithic layer,
-which is what lets `bootc upgrade` on an installed system re-download only the
-layers that actually changed.
+Each published target stage (`base`, `kde` and `xfce`: every `FROM base-core AS`
+stage) has a `RUN` guarded by `ARG CHUNK_TAG=0`, placed after the stage's last
+package install. `base-core` has none of its own; the targets' pass is what
+tags the packages `base-core` installed. When `CHUNK_TAG` is `1`, that `RUN`
+tags every package-owned file with a `user.component` xattr naming the pacman
+package that owns it (`setfattr -n user.component -v "pkg:$pkg"`). That tagging
+is what lets the `Rechunk image with chunkah` step (see [Renovate](renovate.md))
+split the published OCI image into per-package layers instead of one monolithic
+layer, which is what lets `bootc upgrade` on an installed system re-download
+only the layers that actually changed.
 
 `build.yml` sets `CHUNK_TAG=1` only for the same non-PR, default-branch builds
 that get rechunked, signed and published; every other build — including every
