@@ -140,6 +140,7 @@ possible.
 `tests/test-*.sh` and `tests/e2e/test-*.sh`, and fails if any of them does.
 `tests/test-prune-esp.sh` covers `arch-bootc-prune-esp`: argument
 handling, candidate discovery, the keep-set parsed out of BLS entries (including
+a deployment bootc has staged, whose entry is still under `loader/entries.staged/`,
 CRLF line endings and a final line with no newline), the refuse-to-prune guard
 when no entry references `/EFI/Linux/<id>/`, `--dry-run`, and the fail-closed
 rejections in `is_genuine_esp` — the check that stops the script from treating a
