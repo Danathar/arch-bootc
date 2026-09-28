@@ -993,6 +993,108 @@ done < <(grep -oE '^FROM .* AS [a-z][a-z0-9-]*$' "${CONTAINERFILE}" | awk '{prin
 assert_equal "every bootc container lint call was checked for the /var reset" \
   "${var_resets}" "$(grep -c '^RUN bootc container lint$' "${CONTAINERFILE}")"
 
+# The checks above pin the /var reset's TEXT: one copy, the same everywhere.
+# What the text does was never run, so a change to the find exclusions, the
+# covered-path lookup, the owner check or the final delete kept every copy
+# identical and passed. Run base-core's copy against a scratch /var instead.
+# Every "/var" in the RUN becomes the scratch tree's var/ and the tmpfiles.d
+# file it appends to becomes a scratch file; a PATH shim stands in for
+# systemd-tmpfiles --cat-config, and another for stat, so that one directory
+# can report an owner with no name without needing root to create it. The
+# copy is run by bash because /bin/sh is bash in the Arch image.
+var_work="$(mktemp -d)"
+var_work="$(cd -- "${var_work}" && pwd -P)"
+var_cmd="${var_reset#RUN }"
+assert_equal "the /var reset names /var exactly eight times, all of which the scratch run redirects" \
+  "$(grep -o '/var' <<<"${var_cmd}" | grep -c .)" "8"
+var_cmd="${var_cmd//\/var/${var_work}/var}"
+var_cmd="${var_cmd//\/usr\/lib\/tmpfiles.d\/arch-bootc-var.conf/${var_work}/arch-bootc-var.conf}"
+var_real_stat="$(command -v stat)"
+mkdir -p "${var_work}/bin"
+printf '#!/bin/sh\ncat "%s/tmpfiles.conf"\n' "${var_work}" >"${var_work}/bin/systemd-tmpfiles"
+{
+  printf "#!/bin/sh\nreal_stat='%s'\n" "${var_real_stat}"
+  cat <<'SHIM'
+for last; do :; done
+case "${last}" in
+  */orphan) printf 'd "%s" 755 UNKNOWN UNKNOWN -\n' "${last}" ;;
+  *) exec "${real_stat}" "$@" ;;
+esac
+SHIM
+} >"${var_work}/bin/stat"
+chmod +x "${var_work}/bin/systemd-tmpfiles" "${var_work}/bin/stat"
+var_user="$(id -un)"
+var_group="$(id -gn)"
+V="${var_work}/var"
+
+# Covered: a path named with a trailing slash, one whose line is commented out
+# (so it is NOT covered), and /var/tmp. Uncovered: a package directory with a
+# file in it, a nested spool, and the /var/tmp directory's own contents, which
+# are skipped. Home directories are skipped whole. A symlink is not a directory.
+cat >"${var_work}/tmpfiles.conf" <<CONF
+# /usr/lib/tmpfiles.d/var.conf
+d ${V}/lib 0755 - - -
+d ${V}/cache/fc/ 0755 - - -
+q ${V}/tmp 1777 root root 30d
+#d ${V}/spool 0755 - - -
+CONF
+mkdir -p "${V}/lib/pkgdir" "${V}/cache/fc" "${V}/spool/q/sub" "${V}/tmp/scratch" \
+  "${V}/home/someone/cache" "${V}/roothome/.config" "${var_work}/run"
+chmod 0755 "${V}/cache" "${V}/spool" "${V}/spool/q"
+chmod 0750 "${V}/lib/pkgdir"
+chmod 1770 "${V}/spool/q/sub"
+: >"${V}/lib/pkgdir/state.db"
+ln -s ../run "${V}/run"
+printf 'd /kept 0755 root root -\n' >"${var_work}/arch-bootc-var.conf"
+
+var_expected="$(printf 'd "%s" %s %s %s -\n' \
+  "${V}/cache" 755 "${var_user}" "${var_group}" \
+  "${V}/lib/pkgdir" 750 "${var_user}" "${var_group}" \
+  "${V}/spool" 755 "${var_user}" "${var_group}" \
+  "${V}/spool/q" 755 "${var_user}" "${var_group}" \
+  "${V}/spool/q/sub" 1770 "${var_user}" "${var_group}")"
+var_out="$(cd -- "${var_work}" && PATH="${var_work}/bin:${PATH}" bash -c "${var_cmd}" 2>&1)"
+var_status=$?
+assert_equal "the /var reset succeeds when every directory has a named owner" "${var_status}" "0"
+assert_equal "the /var reset writes a d line, with mode and owner, for exactly the uncovered directories, sorted" \
+  "$(sed '1d' "${var_work}/arch-bootc-var.conf")" "${var_expected}"
+assert_equal "the /var reset appends to the tmpfiles.d file instead of replacing it" \
+  "$(head -1 "${var_work}/arch-bootc-var.conf")" "d /kept 0755 root root -"
+assert_equal "the /var reset prints the lines it adds to the build log" \
+  "${var_out}" "${var_expected}"
+assert_equal "the /var reset leaves /var itself in place and empty" \
+  "$([[ -d "${V}" ]] && find "${V}" -mindepth 1 | grep -c .)" "0"
+
+# An owner or group with no name cannot be written as a tmpfiles.d line that
+# means the same thing on the booted system. The build must stop, before it
+# writes anything or deletes anything.
+rm -rf -- "${V}"
+mkdir -p "${V}/lib/orphan" "${V}/lib/pkgdir"
+printf 'd /kept 0755 root root -\n' >"${var_work}/arch-bootc-var.conf"
+var_err="$(cd -- "${var_work}" && PATH="${var_work}/bin:${PATH}" bash -c "${var_cmd}" 2>&1 >/dev/null)"
+var_status=$?
+assert_equal "the /var reset fails the build on a directory whose owner has no name" \
+  "$((var_status != 0))" "1"
+assert_equal "the /var reset names that directory in its error" \
+  "${var_err}" "$(printf '%s\n%s' "error: ${V} directory with an owner or group that has no name:" \
+    "d \"${V}/lib/orphan\" 755 UNKNOWN UNKNOWN -")"
+assert_equal "the /var reset writes no tmpfiles.d line when it fails" \
+  "$(cat "${var_work}/arch-bootc-var.conf")" "d /kept 0755 root root -"
+assert_equal "the /var reset deletes nothing when it fails" \
+  "$(cd -- "${V}" && find . -mindepth 1 | sort | tr '\n' ' ')" "./lib ./lib/orphan ./lib/pkgdir "
+
+# With nothing uncovered, a stage that installed no packages (base) must not
+# create the tmpfiles.d file.
+rm -rf -- "${V}" "${var_work}/arch-bootc-var.conf"
+mkdir -p "${V}/lib"
+var_out="$(cd -- "${var_work}" && PATH="${var_work}/bin:${PATH}" bash -c "${var_cmd}" 2>&1)"
+var_status=$?
+assert_equal "the /var reset succeeds with nothing to convert" "${var_status}" "0"
+assert_equal "the /var reset prints nothing with nothing to convert" "${var_out}" ""
+assert_equal "the /var reset creates no tmpfiles.d file with nothing to convert" \
+  "$([[ -e "${var_work}/arch-bootc-var.conf" ]] && echo present || echo absent)" "absent"
+rm -rf -- "${var_work}"
+
 # ---------------------------------------------------------------------------
 group "Workflow hygiene (docs/quality.md: zizmor findings that are easy to reintroduce)"
 
