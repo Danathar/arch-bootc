@@ -51,9 +51,13 @@ extra evidence column is what actually scales with risk.
 
 Plus `.gitignore`, `.prettierrc.json`, `LICENSE` and `LICENSE.APACHE-2.0`:
 repository hygiene and licensing, which reach nothing beyond the checkout.
-They are not Markdown, so the next paragraph does not hold for them: an edit
+They are not Markdown, so "What runs" below does not hold for them: an edit
 to one runs the full build workflow, and the pull request should say which
 checks ran.
+
+One `.gitignore` rule is load-bearing: the first one, which keeps the private
+`cosign.key` out of Git. It stays T0 because a check enforces it —
+`tests/check-invariants.sh` fails if `cosign.key` is no longer ignored.
 
 **What runs: the shell tests, and nothing else.** The build workflow sets
 `paths-ignore: ["**/*.md", "docs/**"]`, and the zizmor workflow only triggers on
@@ -130,11 +134,8 @@ Two T1-specific traps, both of which have already happened here:
 
 ## T2 — Image contents
 
-`packages-*.txt`, `system_files/`, the `Containerfile` steps that install or
-configure ordinary software, and `scripts/quickstart.sh`, the installer that
-runs `bootc install to-disk` on the disk it is given. A bug in the installer
-produces a bad install, not a broken security control, so it is T2 rather
-than T3.
+`packages-*.txt`, `system_files/`, and the `Containerfile` steps that install or
+configure ordinary software.
 
 The change reaches real machines, both as a fresh install and as a
 `bootc upgrade` on systems already running this image. Those are different
@@ -172,6 +173,11 @@ the diff is:
   is new surface on every machine, signed and published.
 - **Signature policy and keys** — `system_files/etc/containers/policy.json`,
   `cosign.pub`, the signing step, `system_files/etc/containers/registries.d/`.
+- **The quickstart installer** — `scripts/quickstart.sh`. On the published-image
+  path it checks the pulled digest against `cosign.pub` and then runs that
+  image as root with `--privileged --pid=host -v /dev:/dev` to install it, so
+  a regression in the check runs an unverified image as root on the installing
+  machine, not just a bad install.
 - **`bootc` provenance** — `BOOTC_VERSION`, `BOOTC_COMMIT`, the tag-to-commit
   verification in the build, or how `bootc` is obtained at all.
 - **Package freshness** — `PACMAN_CACHE_BUST` and the ordering of package
@@ -213,8 +219,8 @@ the diff is:
   direction it goes.
 
 Evidence: everything T2 requires, plus evidence that exercises **the path this
-change touches**. That is not one thing, because T3 covers two kinds of change
-and the usual answer is only right for one of them.
+change touches**. That is not one thing, because T3 covers different kinds of
+change and the usual answer is only right for one of them.
 
 *For anything a running system can demonstrate* — the root-login model, service
 enablement, the boot path, `bootc upgrade` behavior — a **VM boot test**
@@ -239,7 +245,13 @@ evidence that does reach it:
 - Expect the first real exercise to be the run on `main` after the merge, and
   say what you will check on it and what the rollback is.
 
-Either way, an explicit statement in the pull request that this is a security or
+*For `scripts/quickstart.sh`* — neither a VM boot of the image nor the build
+reaches the installer's signature check, and its `--dry-run` path skips
+verification. Run the published-image path both ways: a signed image passes
+`cosign verify` on the digest it installs, and an image that does not verify
+stops the script before anything runs as root.
+
+In every case, an explicit statement in the pull request that this is a security or
 boot change and what the intended new model is. A T3 change described as a
 cleanup is a review failure even if the code is correct.
 - For a security control: proof the test **discriminates**. Observe it failing
