@@ -1528,6 +1528,28 @@ check "the issue-form file set is non-empty" "$((issue_forms_checked > 0 ? 0 : 1
 assert_equal "no issue form is ignored by build.yml, as the carve-out says" \
   "" "${issue_form_matched}"
 
+# And T0's hygiene paragraph, the same inverted computation again: it says its
+# files are not Markdown, so an edit to one runs the full build. Every file it
+# names has to be committed and match neither ignore glob, or the sentence is
+# false and the pull request gets the build-free treatment it warns against.
+# The backticks below are Markdown code spans, not command substitution.
+# shellcheck disable=SC2016
+t0_hygiene_paths="$(printf '%s\n' "${T0_SECTION}" |
+  awk 'BEGIN { RS = "" } /^Plus / && /not Markdown/' |
+  grep -oE '`[^`]+`' | tr -d '`')"
+assert_extracted "the T0 section still names the files that are not Markdown" \
+  "${t0_hygiene_paths}"
+t0_hygiene_wrong=""
+while IFS= read -r named_path; do
+  [[ -z "${named_path}" ]] && continue
+  if ! git -C "${REPO_ROOT}" ls-files --error-unmatch -- "${named_path}" >/dev/null 2>&1 ||
+    matches_any_ignore_glob "${named_path}"; then
+    t0_hygiene_wrong+="${named_path} "
+  fi
+done <<<"${t0_hygiene_paths}"
+assert_equal "every file T0 calls not Markdown is committed and runs the build" \
+  "" "${t0_hygiene_wrong}"
+
 # The tier table and the four sections are two copies of the same four ids and
 # titles, and a rename lands in one of them.
 table_tiers="$(sed -nE 's/^\| \*\*(T[0-9])\*\* ([^|]*[^| ])[[:space:]]*\|.*/\1\t\2/p' \
@@ -1687,17 +1709,7 @@ path_is_tiered() { # path
 # untiered file fails until it is tiered or recorded here, and an entry fails
 # as soon as the page tiers it, so the record cannot outlive the gap.
 declare -A UNTIERED_PATHS=(
-  [.cursor/rules/arch-bootc-safety.mdc]="always-on agent rule; T3 tiers .claude/skills/** for the same reason and does not name it"
-  [.github/auto-qa-tuning.json]="the policy tests/tune-coverage.sh enforces over .coverage-thresholds.json, which is T1"
-  [.gitignore]="repository hygiene"
-  [.memory/corrections.jsonl]="agent memory"
-  [.prettierrc.json]="formatter config"
-  [LICENSE]="license"
-  [LICENSE.APACHE-2.0]="license"
-  [brew-payload.manifest]="the Containerfile fails the build unless the brew payload copied into / after the root-login controls matches it"
   [scripts/pr-review-state.sh]="run by ai-fix.yml with a repository token"
-  [scripts/prune-package-versions.sh]="the package-retention logic whose job T3 names, but not the file"
-  [scripts/quickstart.sh]="installer that runs bootc install to-disk on the disk it is given"
 )
 
 untiered_unrecorded=""

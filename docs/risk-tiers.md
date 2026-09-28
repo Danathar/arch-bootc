@@ -49,6 +49,16 @@ extra evidence column is what actually scales with risk.
 `*.md` anywhere, `docs/`, `.github/pull_request_template.md`,
 `.github/prompts/`.
 
+Plus `.gitignore`, `.prettierrc.json`, `LICENSE` and `LICENSE.APACHE-2.0`:
+repository hygiene and licensing, which reach nothing beyond the checkout.
+They are not Markdown, so "What runs" below does not hold for them: an edit
+to one runs the full build workflow, and the pull request should say which
+checks ran.
+
+One `.gitignore` rule is load-bearing: the first one, which keeps the private
+`cosign.key` out of Git. It stays T0 because a check enforces it —
+`tests/check-invariants.sh` fails if `cosign.key` is no longer ignored.
+
 **What runs: the shell tests, and nothing else.** The build workflow sets
 `paths-ignore: ["**/*.md", "docs/**"]`, and the zizmor workflow only triggers on
 `.github/workflows/**`, so a T0 pull request gets no build, no ShellCheck and no
@@ -80,10 +90,16 @@ expectations that come with the real tier still apply.
 
 ## T1 — Build and test harness
 
-`tests/`, `.coverage-thresholds.json`, `Justfile`, `.github/workflows/`,
-`.github/labeler.yml`, `.shellcheckrc`, `.editorconfig`, `renovate.json`.
+`tests/`, `.coverage-thresholds.json`, `.github/auto-qa-tuning.json` (the policy
+`tests/tune-coverage.sh` enforces over the floors), `Justfile`,
+`.github/workflows/`, `.github/labeler.yml`, `.shellcheckrc`, `.editorconfig`,
+`renovate.json`.
 
 Plus `.github/ISSUE_TEMPLATE/`, per the note above.
+
+Plus `.memory/corrections.jsonl`, the agents' correction log. It does not ship
+in the image, but it can shape what an agent does in a later session, so it
+sits with the harness rather than in T0.
 
 These change how the image is *judged*, not what it contains. A mistake here
 does not ship a bad image directly; it lets a bad image ship later by removing
@@ -151,17 +167,27 @@ the diff is:
   refuse root, `passwd --expire`. The image ships a known default root password;
   these four are only safe *together*, so touching one invalidates the reasoning
   behind the other three.
+- **The brew payload list** — `brew-payload.manifest`. The build fails unless
+  the brew payload matches it, and that payload is copied into `/` after the
+  root-login controls, so a file added to it wins over them. A new line here
+  is new surface on every machine, signed and published.
 - **Signature policy and keys** — `system_files/etc/containers/policy.json`,
   `cosign.pub`, the signing step, `system_files/etc/containers/registries.d/`.
+- **The quickstart installer** — `scripts/quickstart.sh`. On the published-image
+  path it checks the pulled digest against `cosign.pub` and then runs that
+  image as root with `--privileged --pid=host -v /dev:/dev` to install it, so
+  a regression in the check runs an unverified image as root on the installing
+  machine, not just a bad install.
 - **`bootc` provenance** — `BOOTC_VERSION`, `BOOTC_COMMIT`, the tag-to-commit
   verification in the build, or how `bootc` is obtained at all.
 - **Package freshness** — `PACMAN_CACHE_BUST` and the ordering of package
   installation relative to it.
 - **Boot path and service enablement** — the bootloader, initramfs/dracut,
   composefs backend, and the `/usr/lib/systemd/system/<target>.wants/` layout.
-- **Published artifacts** — the push, sign, and package-retention jobs. Deleting
-  package versions can orphan cosign signatures and break `bootc upgrade` on
-  installed systems.
+- **Published artifacts** — the push, sign, and package-retention jobs, and
+  `scripts/prune-package-versions.sh`, the retention logic those jobs run.
+  Deleting package versions can orphan cosign signatures and break
+  `bootc upgrade` on installed systems.
 - **Branch protection** — `.github/rulesets/**`, the ruleset that keeps `main`
   behind a pull request that passed `Shell tests and coverage`. A bypass actor,
   a dropped rule or a renamed required check reopens a direct push to what the
@@ -173,7 +199,8 @@ the diff is:
   block has to change this file too, so widening a token is never a T1 edit
   that happens to sit in a workflow.
 - **The agent permission boundary** — `.claude/settings.json`,
-  `.claude/hooks/**` and `.claude/skills/**`. The settings file is the
+  `.claude/hooks/**`, `.claude/skills/**` and
+  `.cursor/rules/arch-bootc-safety.mdc`. The settings file is the
   permission table: its `deny` list keeps a tool call off `cosign.key`,
   `git push --force` and the `podman`/`virsh` removal set, its `allow` list is
   what runs with no prompt, and its `hooks` block is what registers
@@ -181,7 +208,9 @@ the diff is:
   allow-listed commands from reading or writing past those rules — see
   [SECURITY-AI.md](security/SECURITY-AI.md). A skill's `SKILL.md` looks like
   documentation and matches `*.md`, but its frontmatter can grant tools
-  (`allowed-tools`) and register hooks of its own. None of these reach a
+  (`allowed-tools`) and register hooks of its own. The Cursor rule is
+  `alwaysApply: true`, so every Cursor session here reads it as policy, the
+  same way a skill is read. None of these reach a
   machine running the image. They are T3 because a widened allow row, a
   dropped `deny` row or a relaxed refusal is executed, unprompted, by the next
   agent that works here — including the one that proposed it — so the change
@@ -190,8 +219,8 @@ the diff is:
   direction it goes.
 
 Evidence: everything T2 requires, plus evidence that exercises **the path this
-change touches**. That is not one thing, because T3 covers two kinds of change
-and the usual answer is only right for one of them.
+change touches**. That is not one thing, because T3 covers different kinds of
+change and the usual answer is only right for one of them.
 
 *For anything a running system can demonstrate* — the root-login model, service
 enablement, the boot path, `bootc upgrade` behavior — a **VM boot test**
@@ -216,7 +245,13 @@ evidence that does reach it:
 - Expect the first real exercise to be the run on `main` after the merge, and
   say what you will check on it and what the rollback is.
 
-Either way, an explicit statement in the pull request that this is a security or
+*For `scripts/quickstart.sh`* — neither a VM boot of the image nor the build
+reaches the installer's signature check, and its `--dry-run` path skips
+verification. Run the published-image path both ways: a signed image passes
+`cosign verify` on the digest it installs, and an image that does not verify
+stops the script before anything runs as root.
+
+In every case, an explicit statement in the pull request that this is a security or
 boot change and what the intended new model is. A T3 change described as a
 cleanup is a review failure even if the code is correct.
 - For a security control: proof the test **discriminates**. Observe it failing

@@ -531,6 +531,17 @@ else
     "found: ${duplicated_keys//$'\n'/ | }"
 fi
 
+# The private half stays out of Git. The first rule in .gitignore is what keeps
+# a cosign.key generated at the repository root (docs/ci-cd.md) out of
+# `git status` and `git add -A`; drop or narrow it and the key is one routine
+# commit from being published. --no-index asks the ignore rules alone, so this
+# holds whether or not a key exists in the checkout.
+if git check-ignore -q --no-index -- cosign.key; then
+  pass "cosign.key is ignored by Git"
+else
+  fail "cosign.key is ignored by Git" "no .gitignore rule matches cosign.key"
+fi
+
 # The namespace that requires a signature and the namespace configured to
 # locate signatures have to be the same one.
 policy_namespace="$(sed -nE 's/.*"(ghcr\.io\/[a-z0-9._-]+)".*/\1/p' "${POLICY}" | head -1)"
