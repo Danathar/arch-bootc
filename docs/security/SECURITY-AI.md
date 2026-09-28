@@ -504,8 +504,8 @@ must be described as such.
   can spell it — the short form (a short cluster carries `-a` as its own
   option letter until one of the value-taking shorts consumes the rest, so
   `-xa` is refused and `-sa` is left alone), the long form, and every prefix
-  ShellCheck accepts for it (`--check`, `--ch`, down to the shortest
-  unambiguous `--ch`, since `--color` is the only other long option starting
+  ShellCheck accepts for it, from `--check` down to `--ch` (the shortest that
+  is not ambiguous, since `--color` is the only other long option starting
   `--c`) — including through a `-<<<` here-string or a redirected `-`
   operand, not only a named file.
 
