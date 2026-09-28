@@ -393,6 +393,22 @@ test_refuses_to_prune_with_no_references() {
   assert_dir_exists "no-reference run keeps second deployment" "${esp}/EFI/Linux/old"
 }
 
+# The guard is there for an ESP whose finalized entries this script cannot
+# read -- a bootc bump that changed how it writes them, say. A staged entry
+# must not pass it on its own: pruning on that would keep only the deployment
+# not yet booted and delete the one running now, and its rollback with it.
+test_refuses_to_prune_with_only_staged_references() {
+  local esp output
+  esp="$(new_esp staged-only-esp booted staged)"
+  ENTRIES_DIR=entries.staged write_bls_entry "${esp}" "staged" "staged"
+  run_prune "${esp}"
+  output="${RUN_OUTPUT}"
+  assert_eq "staged-only run exits 0" "0" "${RUN_STATUS}"
+  assert_contains "staged-only run refuses to prune" "${output}" "no referenced bootc EFI artifacts found; refusing to prune"
+  assert_dir_exists "staged-only run keeps the booted deployment" "${esp}/EFI/Linux/booted"
+  assert_dir_exists "staged-only run keeps the staged deployment" "${esp}/EFI/Linux/staged"
+}
+
 test_entry_without_efi_linux_paths_is_not_a_reference() {
   local esp output
   esp="$(new_esp foreign-paths-esp current)"
@@ -997,6 +1013,7 @@ main() {
     test_keeps_every_referenced_deployment \
     test_keeps_deployment_referenced_only_by_a_staged_entry \
     test_refuses_to_prune_with_no_references \
+    test_refuses_to_prune_with_only_staged_references \
     test_entry_without_efi_linux_paths_is_not_a_reference \
     test_crlf_entry_is_parsed \
     test_entry_without_trailing_newline_is_parsed \

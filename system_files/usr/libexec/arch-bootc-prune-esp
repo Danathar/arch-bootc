@@ -123,14 +123,12 @@ find_esps() {
   )
 }
 
-prune_esp() {
-  local esp="$1"
-  declare -A keep=()
-  local entry key path rest rel dir candidate
+# Add every /EFI/Linux/<id>/ directory the given BLS entries reference to
+# prune_esp()'s keep-set (bash dynamic scope: `keep` and `esp` are its locals).
+collect_references() {
+  local entry key path rest rel dir
 
-  shopt -s nullglob
-
-  for entry in "$esp"/loader/entries/*.conf "$esp"/loader/entries.staged/*.conf; do
+  for entry in "$@"; do
     while read -r key path rest || [[ -n "${key:-}" ]]; do
       # BLS entries use absolute ESP-relative paths like:
       #   linux /EFI/Linux/<id>/vmlinuz
@@ -147,11 +145,28 @@ prune_esp() {
       esac
     done < "$entry"
   done
+}
+
+prune_esp() {
+  local esp="$1"
+  declare -A keep=()
+  local candidate
+
+  shopt -s nullglob
+
+  # The guard counts finalized entries only. They are what the running system
+  # and its rollback boot from, so an ESP where none can be read is one this
+  # script does not understand, and it must not delete anything there. A
+  # staged entry alone does not pass the guard: pruning on it would keep only
+  # the not-yet-booted deployment and delete the booted one.
+  collect_references "$esp"/loader/entries/*.conf
 
   if (( ${#keep[@]} == 0 )); then
     log "arch-bootc-prune-esp: $esp: no referenced bootc EFI artifacts found; refusing to prune"
     return 0
   fi
+
+  collect_references "$esp"/loader/entries.staged/*.conf
 
   for candidate in "$esp"/EFI/Linux/*; do
     [[ -d "$candidate" ]] || continue
