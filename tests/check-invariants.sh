@@ -931,6 +931,29 @@ while IFS= read -r flavor; do
   fi
 done < <(grep -oE '^FROM base-core AS [a-z][a-z0-9-]*' "${CONTAINERFILE}" | awk '{print $NF}')
 
+# /run and /tmp are tmpfs on a booted system, and every stage refills them
+# during the build (pacman's systemd-tmpfiles hook, the unit-verify RUN), so
+# `bootc container lint` warned nonempty-run-tmp on all three flavors. The
+# reset is a hand copy in front of every lint call. A copy edited on its own,
+# dropped from one stage, or moved away from the lint so that a later RUN
+# writes to /run again after it would bring the warning back.
+run_tmp_reset="$(stage_instructions base-core | grep -F 'find /run /tmp')"
+assert_equal "base-core has exactly one /run and /tmp reset to compare the other stages against" \
+  "$(grep -c . <<<"${run_tmp_reset}")" "1"
+lint_calls=0
+while IFS= read -r stage; do
+  [[ -n "${stage}" ]] || continue
+  mapfile -t stage_steps < <(stage_instructions "${stage}")
+  for i in "${!stage_steps[@]}"; do
+    [[ "${stage_steps[i]}" == "RUN bootc container lint" ]] || continue
+    lint_calls=$((lint_calls + 1))
+    assert_equal "the ${stage} stage empties /run and /tmp, unchanged, straight before bootc container lint" \
+      "${stage_steps[i - 1]:-}" "${run_tmp_reset}"
+  done
+done < <(grep -oE '^FROM .* AS [a-z][a-z0-9-]*$' "${CONTAINERFILE}" | awk '{print $NF}')
+assert_equal "every bootc container lint call was checked for the /run and /tmp reset" \
+  "${lint_calls}" "$(grep -c '^RUN bootc container lint$' "${CONTAINERFILE}")"
+
 # ---------------------------------------------------------------------------
 group "Workflow hygiene (docs/quality.md: zizmor findings that are easy to reintroduce)"
 

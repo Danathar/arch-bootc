@@ -375,6 +375,18 @@ RUN --mount=type=bind,source=system_files/usr/lib/systemd/system,target=/tmp/shi
     units="$(find /tmp/shipped-units -maxdepth 1 -type f -printf '%f ')" && \
     systemd-analyze verify $(printf '/usr/lib/systemd/system/%s ' $units)
 
+# Empty /run and /tmp before the lint. Both are tmpfs on a booted system, so
+# anything the build leaves in them is hidden at boot and only adds weight to
+# the image; `bootc container lint` reports it as nonempty-run-tmp. The build
+# refills them in every stage: pacman's systemd-tmpfiles hook runs
+# `systemd-tmpfiles --create` on each package install, and the unit-verify RUN
+# above writes under /run/systemd. So this runs before every lint call, not
+# once. .containerenv is the build engine's own marker, mounted into each RUN
+# and never committed. `|| true` keeps a busy mount from failing the build; the
+# lint on the next line still reports anything this could not remove.
+RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
+      -exec rm -rf {} + || true
+
 RUN bootc container lint
 
 # Copy ublue-os/brew and enable its systemd services. `systemctl preset` has
@@ -553,6 +565,11 @@ RUN --mount=type=bind,source=system_files/usr/lib/systemd/system,target=/tmp/shi
     units="$(find /tmp/shipped-units -maxdepth 1 -type f -printf '%f ')" && \
     systemd-analyze verify $(printf '/usr/lib/systemd/system/%s ' $units)
 
+# Same /run and /tmp reset as base-core's, re-run here because this stage
+# installs packages or re-runs the unit check, and both write to /run again.
+RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
+      -exec rm -rf {} + || true
+
 RUN bootc container lint
 
 
@@ -644,6 +661,11 @@ RUN --mount=type=bind,source=system_files/usr/lib/systemd/system,target=/tmp/shi
     units="$(find /tmp/shipped-units -maxdepth 1 -type f -printf '%f ')" && \
     systemd-analyze verify $(printf '/usr/lib/systemd/system/%s ' $units)
 
+# Same /run and /tmp reset as base-core's, re-run here because this stage
+# installs packages or re-runs the unit check, and both write to /run again.
+RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
+      -exec rm -rf {} + || true
+
 RUN bootc container lint
 
 
@@ -703,5 +725,10 @@ RUN --mount=type=bind,source=system_files/usr/lib/systemd/system,target=/tmp/shi
     if [ -n "$dangling" ]; then echo "error: dangling systemd enablement symlink(s):" >&2; printf '%s\n' "$dangling" >&2; exit 1; fi && \
     units="$(find /tmp/shipped-units -maxdepth 1 -type f -printf '%f ')" && \
     systemd-analyze verify $(printf '/usr/lib/systemd/system/%s ' $units)
+
+# Same /run and /tmp reset as base-core's, re-run here because this stage
+# installs packages or re-runs the unit check, and both write to /run again.
+RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
+      -exec rm -rf {} + || true
 
 RUN bootc container lint
