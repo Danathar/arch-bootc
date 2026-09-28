@@ -49,6 +49,12 @@ extra evidence column is what actually scales with risk.
 `*.md` anywhere, `docs/`, `.github/pull_request_template.md`,
 `.github/prompts/`.
 
+Plus `.gitignore`, `.prettierrc.json`, `LICENSE` and `LICENSE.APACHE-2.0`:
+repository hygiene and licensing, which reach nothing beyond the checkout.
+They are not Markdown, so the next paragraph does not hold for them: an edit
+to one runs the full build workflow, and the pull request should say which
+checks ran.
+
 **What runs: the shell tests, and nothing else.** The build workflow sets
 `paths-ignore: ["**/*.md", "docs/**"]`, and the zizmor workflow only triggers on
 `.github/workflows/**`, so a T0 pull request gets no build, no ShellCheck and no
@@ -80,10 +86,16 @@ expectations that come with the real tier still apply.
 
 ## T1 — Build and test harness
 
-`tests/`, `.coverage-thresholds.json`, `Justfile`, `.github/workflows/`,
-`.github/labeler.yml`, `.shellcheckrc`, `.editorconfig`, `renovate.json`.
+`tests/`, `.coverage-thresholds.json`, `.github/auto-qa-tuning.json` (the policy
+`tests/tune-coverage.sh` enforces over the floors), `Justfile`,
+`.github/workflows/`, `.github/labeler.yml`, `.shellcheckrc`, `.editorconfig`,
+`renovate.json`.
 
 Plus `.github/ISSUE_TEMPLATE/`, per the note above.
+
+Plus `.memory/corrections.jsonl`, the agents' correction log. It does not ship
+in the image, but it can shape what an agent does in a later session, so it
+sits with the harness rather than in T0.
 
 These change how the image is *judged*, not what it contains. A mistake here
 does not ship a bad image directly; it lets a bad image ship later by removing
@@ -118,8 +130,11 @@ Two T1-specific traps, both of which have already happened here:
 
 ## T2 — Image contents
 
-`packages-*.txt`, `system_files/`, and the `Containerfile` steps that install or
-configure ordinary software.
+`packages-*.txt`, `system_files/`, the `Containerfile` steps that install or
+configure ordinary software, and `scripts/quickstart.sh`, the installer that
+runs `bootc install to-disk` on the disk it is given. A bug in the installer
+produces a bad install, not a broken security control, so it is T2 rather
+than T3.
 
 The change reaches real machines, both as a fresh install and as a
 `bootc upgrade` on systems already running this image. Those are different
@@ -151,6 +166,10 @@ the diff is:
   refuse root, `passwd --expire`. The image ships a known default root password;
   these four are only safe *together*, so touching one invalidates the reasoning
   behind the other three.
+- **The brew payload list** — `brew-payload.manifest`. The build fails unless
+  the brew payload matches it, and that payload is copied into `/` after the
+  root-login controls, so a file added to it wins over them. A new line here
+  is new surface on every machine, signed and published.
 - **Signature policy and keys** — `system_files/etc/containers/policy.json`,
   `cosign.pub`, the signing step, `system_files/etc/containers/registries.d/`.
 - **`bootc` provenance** — `BOOTC_VERSION`, `BOOTC_COMMIT`, the tag-to-commit
@@ -159,9 +178,10 @@ the diff is:
   installation relative to it.
 - **Boot path and service enablement** — the bootloader, initramfs/dracut,
   composefs backend, and the `/usr/lib/systemd/system/<target>.wants/` layout.
-- **Published artifacts** — the push, sign, and package-retention jobs. Deleting
-  package versions can orphan cosign signatures and break `bootc upgrade` on
-  installed systems.
+- **Published artifacts** — the push, sign, and package-retention jobs, and
+  `scripts/prune-package-versions.sh`, the retention logic those jobs run.
+  Deleting package versions can orphan cosign signatures and break
+  `bootc upgrade` on installed systems.
 - **Branch protection** — `.github/rulesets/**`, the ruleset that keeps `main`
   behind a pull request that passed `Shell tests and coverage`. A bypass actor,
   a dropped rule or a renamed required check reopens a direct push to what the
@@ -173,7 +193,8 @@ the diff is:
   block has to change this file too, so widening a token is never a T1 edit
   that happens to sit in a workflow.
 - **The agent permission boundary** — `.claude/settings.json`,
-  `.claude/hooks/**` and `.claude/skills/**`. The settings file is the
+  `.claude/hooks/**`, `.claude/skills/**` and
+  `.cursor/rules/arch-bootc-safety.mdc`. The settings file is the
   permission table: its `deny` list keeps a tool call off `cosign.key`,
   `git push --force` and the `podman`/`virsh` removal set, its `allow` list is
   what runs with no prompt, and its `hooks` block is what registers
@@ -181,7 +202,9 @@ the diff is:
   allow-listed commands from reading or writing past those rules — see
   [SECURITY-AI.md](security/SECURITY-AI.md). A skill's `SKILL.md` looks like
   documentation and matches `*.md`, but its frontmatter can grant tools
-  (`allowed-tools`) and register hooks of its own. None of these reach a
+  (`allowed-tools`) and register hooks of its own. The Cursor rule is
+  `alwaysApply: true`, so every Cursor session here reads it as policy, the
+  same way a skill is read. None of these reach a
   machine running the image. They are T3 because a widened allow row, a
   dropped `deny` row or a relaxed refusal is executed, unprompted, by the next
   agent that works here — including the one that proposed it — so the change

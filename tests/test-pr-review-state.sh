@@ -1687,17 +1687,7 @@ path_is_tiered() { # path
 # untiered file fails until it is tiered or recorded here, and an entry fails
 # as soon as the page tiers it, so the record cannot outlive the gap.
 declare -A UNTIERED_PATHS=(
-  [.cursor/rules/arch-bootc-safety.mdc]="always-on agent rule; T3 tiers .claude/skills/** for the same reason and does not name it"
-  [.github/auto-qa-tuning.json]="the policy tests/tune-coverage.sh enforces over .coverage-thresholds.json, which is T1"
-  [.gitignore]="repository hygiene"
-  [.memory/corrections.jsonl]="agent memory"
-  [.prettierrc.json]="formatter config"
-  [LICENSE]="license"
-  [LICENSE.APACHE-2.0]="license"
-  [brew-payload.manifest]="the Containerfile fails the build unless the brew payload copied into / after the root-login controls matches it"
   [scripts/pr-review-state.sh]="run by ai-fix.yml with a repository token"
-  [scripts/prune-package-versions.sh]="the package-retention logic whose job T3 names, but not the file"
-  [scripts/quickstart.sh]="installer that runs bootc install to-disk on the disk it is given"
 )
 
 untiered_unrecorded=""
