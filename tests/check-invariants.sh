@@ -954,6 +954,34 @@ done < <(grep -oE '^FROM .* AS [a-z][a-z0-9-]*$' "${CONTAINERFILE}" | awk '{prin
 assert_equal "every bootc container lint call was checked for the /run and /tmp reset" \
   "${lint_calls}" "$(grep -c '^RUN bootc container lint$' "${CONTAINERFILE}")"
 
+# bootc copies /var out of the image only at install, and every `pacman -S`
+# after base-core's `rm -rf /var` fills it again (package-owned directories,
+# the fontconfig/ldconfig/AppStream caches pacman's hooks write), so the kde
+# and xfce lint warned var-tmpfiles. The reset turns each directory no
+# tmpfiles.d line names into one, then empties /var. It is a hand copy in
+# front of every /run and /tmp reset, the same way that reset is a hand copy
+# in front of every lint call; a copy dropped from a stage, edited on its own,
+# or moved so that the /run and /tmp reset no longer follows it straight away
+# would bring the warning back, or ship an unconverted directory.
+var_reset="$(stage_instructions base-core | grep -F 'arch-bootc-var.conf')"
+assert_equal "base-core has exactly one /var reset to compare the other stages against" \
+  "$(grep -c . <<<"${var_reset}")" "1"
+assert_present "the /var reset writes a tmpfiles.d line for each directory it is about to delete" \
+  "${CONTAINERFILE}" "stat -c 'd \"%n\" %a %U %G -'"
+var_resets=0
+while IFS= read -r stage; do
+  [[ -n "${stage}" ]] || continue
+  mapfile -t stage_steps < <(stage_instructions "${stage}")
+  for i in "${!stage_steps[@]}"; do
+    [[ "${stage_steps[i]}" == "RUN bootc container lint" ]] || continue
+    var_resets=$((var_resets + 1))
+    assert_equal "the ${stage} stage empties /var, unchanged, straight before its /run and /tmp reset" \
+      "${stage_steps[i - 2]:-}" "${var_reset}"
+  done
+done < <(grep -oE '^FROM .* AS [a-z][a-z0-9-]*$' "${CONTAINERFILE}" | awk '{print $NF}')
+assert_equal "every bootc container lint call was checked for the /var reset" \
+  "${var_resets}" "$(grep -c '^RUN bootc container lint$' "${CONTAINERFILE}")"
+
 # ---------------------------------------------------------------------------
 group "Workflow hygiene (docs/quality.md: zizmor findings that are easy to reintroduce)"
 

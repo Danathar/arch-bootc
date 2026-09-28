@@ -375,6 +375,31 @@ RUN --mount=type=bind,source=system_files/usr/lib/systemd/system,target=/tmp/shi
     units="$(find /tmp/shipped-units -maxdepth 1 -type f -printf '%f ')" && \
     systemd-analyze verify $(printf '/usr/lib/systemd/system/%s ' $units)
 
+# Empty /var, turning each package-owned directory in it into a tmpfiles.d
+# line first. bootc copies /var out of the image once, at install, and never on
+# `bootc upgrade`, so anything a build leaves there is a snapshot from whichever
+# build a machine was installed from. base-core deletes /var outright after its
+# package install (above), but every later `pacman -S` fills it again: packages
+# own directories there (cups, AccountsService, udisks2, xkb) and pacman's hooks
+# write caches (fontconfig, ldconfig, AppStream). `bootc container lint` reports
+# what is left as var-tmpfiles. Deleting it all would lose the directories that
+# nothing recreates at boot, so each directory no tmpfiles.d line already names
+# becomes a `d` line with its build-time mode and owner, which
+# systemd-tmpfiles applies on every boot, on fresh installs and existing
+# machines alike. Files are dropped: the caches rebuild at runtime. Home
+# directories and /var/tmp's contents are never package state and are skipped.
+# The lines are printed to the build log. This runs before every lint call,
+# like the /run and /tmp reset below, because each flavor installs packages.
+RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 !~ /^#/ && NF >= 2 { print $2 }' | xargs -r -d '\n' realpath -m --)" && \
+    lines="$(find /var -mindepth 1 -type d \
+      ! -path /var/home ! -path '/var/home/*' ! -path /var/roothome ! -path '/var/roothome/*' ! -path '/var/tmp/*' \
+      | sort | while IFS= read -r dir; do \
+        printf '%s\n' "${covered}" | grep -qxF -- "${dir}" || stat -c 'd "%n" %a %U %G -' "${dir}"; \
+      done)" && \
+    if printf '%s\n' "${lines}" | grep -q ' UNKNOWN '; then echo "error: /var directory with an owner or group that has no name:" >&2; printf '%s\n' "${lines}" | grep ' UNKNOWN ' >&2; exit 1; fi && \
+    if [ -n "${lines}" ]; then printf '%s\n' "${lines}" | tee -a /usr/lib/tmpfiles.d/arch-bootc-var.conf; fi && \
+    find /var -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
 # Empty /run and /tmp before the lint. Both are tmpfs on a booted system, so
 # anything the build leaves in them is hidden at boot and only adds weight to
 # the image; `bootc container lint` reports it as nonempty-run-tmp. The build
@@ -565,6 +590,18 @@ RUN --mount=type=bind,source=system_files/usr/lib/systemd/system,target=/tmp/shi
     units="$(find /tmp/shipped-units -maxdepth 1 -type f -printf '%f ')" && \
     systemd-analyze verify $(printf '/usr/lib/systemd/system/%s ' $units)
 
+# Same /var reset as base-core's. This stage installs no packages, so it finds
+# /var empty today; it is repeated so that every lint call runs after it.
+RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 !~ /^#/ && NF >= 2 { print $2 }' | xargs -r -d '\n' realpath -m --)" && \
+    lines="$(find /var -mindepth 1 -type d \
+      ! -path /var/home ! -path '/var/home/*' ! -path /var/roothome ! -path '/var/roothome/*' ! -path '/var/tmp/*' \
+      | sort | while IFS= read -r dir; do \
+        printf '%s\n' "${covered}" | grep -qxF -- "${dir}" || stat -c 'd "%n" %a %U %G -' "${dir}"; \
+      done)" && \
+    if printf '%s\n' "${lines}" | grep -q ' UNKNOWN '; then echo "error: /var directory with an owner or group that has no name:" >&2; printf '%s\n' "${lines}" | grep ' UNKNOWN ' >&2; exit 1; fi && \
+    if [ -n "${lines}" ]; then printf '%s\n' "${lines}" | tee -a /usr/lib/tmpfiles.d/arch-bootc-var.conf; fi && \
+    find /var -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
 # Same /run and /tmp reset as base-core's, re-run here because this stage
 # installs packages or re-runs the unit check, and both write to /run again.
 RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
@@ -661,6 +698,18 @@ RUN --mount=type=bind,source=system_files/usr/lib/systemd/system,target=/tmp/shi
     units="$(find /tmp/shipped-units -maxdepth 1 -type f -printf '%f ')" && \
     systemd-analyze verify $(printf '/usr/lib/systemd/system/%s ' $units)
 
+# Same /var reset as base-core's, re-run here because this stage installs
+# packages, and pacman fills /var again.
+RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 !~ /^#/ && NF >= 2 { print $2 }' | xargs -r -d '\n' realpath -m --)" && \
+    lines="$(find /var -mindepth 1 -type d \
+      ! -path /var/home ! -path '/var/home/*' ! -path /var/roothome ! -path '/var/roothome/*' ! -path '/var/tmp/*' \
+      | sort | while IFS= read -r dir; do \
+        printf '%s\n' "${covered}" | grep -qxF -- "${dir}" || stat -c 'd "%n" %a %U %G -' "${dir}"; \
+      done)" && \
+    if printf '%s\n' "${lines}" | grep -q ' UNKNOWN '; then echo "error: /var directory with an owner or group that has no name:" >&2; printf '%s\n' "${lines}" | grep ' UNKNOWN ' >&2; exit 1; fi && \
+    if [ -n "${lines}" ]; then printf '%s\n' "${lines}" | tee -a /usr/lib/tmpfiles.d/arch-bootc-var.conf; fi && \
+    find /var -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
 # Same /run and /tmp reset as base-core's, re-run here because this stage
 # installs packages or re-runs the unit check, and both write to /run again.
 RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
@@ -725,6 +774,18 @@ RUN --mount=type=bind,source=system_files/usr/lib/systemd/system,target=/tmp/shi
     if [ -n "$dangling" ]; then echo "error: dangling systemd enablement symlink(s):" >&2; printf '%s\n' "$dangling" >&2; exit 1; fi && \
     units="$(find /tmp/shipped-units -maxdepth 1 -type f -printf '%f ')" && \
     systemd-analyze verify $(printf '/usr/lib/systemd/system/%s ' $units)
+
+# Same /var reset as base-core's, re-run here because this stage installs
+# packages, and pacman fills /var again.
+RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 !~ /^#/ && NF >= 2 { print $2 }' | xargs -r -d '\n' realpath -m --)" && \
+    lines="$(find /var -mindepth 1 -type d \
+      ! -path /var/home ! -path '/var/home/*' ! -path /var/roothome ! -path '/var/roothome/*' ! -path '/var/tmp/*' \
+      | sort | while IFS= read -r dir; do \
+        printf '%s\n' "${covered}" | grep -qxF -- "${dir}" || stat -c 'd "%n" %a %U %G -' "${dir}"; \
+      done)" && \
+    if printf '%s\n' "${lines}" | grep -q ' UNKNOWN '; then echo "error: /var directory with an owner or group that has no name:" >&2; printf '%s\n' "${lines}" | grep ' UNKNOWN ' >&2; exit 1; fi && \
+    if [ -n "${lines}" ]; then printf '%s\n' "${lines}" | tee -a /usr/lib/tmpfiles.d/arch-bootc-var.conf; fi && \
+    find /var -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 
 # Same /run and /tmp reset as base-core's, re-run here because this stage
 # installs packages or re-runs the unit check, and both write to /run again.
