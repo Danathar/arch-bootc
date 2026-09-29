@@ -1364,6 +1364,63 @@ if ((settings_readable)); then
     assert_hook_permits "a podman verb with no profile flag, or the flag outside a podman command, is left alone: ${ok}" \
       "${ok}"
   done
+  # findmnt -F FILE / --tab-file FILE parses FILE as an fstab table and prints
+  # its fields, so a `key = value` line comes back as SOURCE, TARGET and
+  # FSTYPE under the `findmnt *` allow row, past the Read(...) deny rules.
+  # Shown for real first on a stand-in credentials file, then refused in every
+  # spelling getopt accepts: the long option and its unambiguous
+  # abbreviations, `=FILE`, an attached value and a short cluster.
+  if command -v findmnt >/dev/null 2>&1; then
+    findmnt_dir="$(mktemp -d)"
+    printf 'aws_secret_access_key = STAND-IN-NOT-A-SECRET\n' >"${findmnt_dir}/credentials"
+    findmnt_out="$(findmnt -F "${findmnt_dir}/credentials" -o SOURCE,FSTYPE 2>&1)"
+    rm -rf "${findmnt_dir}"
+    if [[ "${findmnt_out}" == *STAND-IN-NOT-A-SECRET* ]]; then
+      pass "findmnt -F really prints the fields of a file it parses as an fstab table"
+    else
+      fail "findmnt -F really prints the fields of a file it parses as an fstab table" \
+        "findmnt printed no field of the stand-in file; re-derive why -F is refused"
+    fi
+  fi
+  for tab_file in \
+    'findmnt -F ~/.aws/credentials' \
+    'findmnt -F .env -o SOURCE,TARGET,FSTYPE' \
+    'findmnt --tab-file cosign.key' \
+    'findmnt --tab-file=.env' \
+    'findmnt --tab .env' \
+    'findmnt --tab-f=.env' \
+    'findmnt -F.env' \
+    'findmnt -rF .env' \
+    'findmnt -lnF.env' \
+    'findmnt -o SOURCE,FSTYPE -F .env' \
+    'timeout 5 findmnt -F .env' \
+    'git status; findmnt -F .env' \
+    'findmnt -{F,r} .env'; do
+    assert_hook_refuses_naming "findmnt reading a file as an fstab table is refused: ${tab_file}" \
+      "${tab_file}" 'findmnt -F FILE'
+  done
+  for rebuilt in \
+    'findmnt -[E-G] .env' \
+    'findmnt ?F .env' \
+    'findmnt @(-F) .env'; do
+    assert_hook_refuses_naming "a findmnt word bash rewrites is refused: ${rebuilt}" \
+      "${rebuilt}" 'bash rewrites this word of a findmnt invocation'
+  done
+  # Reading the live mount table stays unprompted, including an F that is the
+  # value of a short option (`-oFSTYPE`, `-T /Fdir`) rather than the option.
+  for ok in \
+    'findmnt' \
+    'findmnt -J' \
+    'findmnt -s' \
+    'findmnt -T / -o TARGET,SOURCE' \
+    'findmnt --target / -o FSTYPE' \
+    'findmnt -rn -oFSTYPE' \
+    'findmnt -T /Fdir' \
+    'findmnt --task 1' \
+    'echo findmnt -F .env'; do
+    assert_hook_permits "findmnt without -F, or -F outside a findmnt command, is left alone: ${ok}" \
+      "${ok}"
+  done
   # The hook re-gates what the permission rules wave through. A command no
   # allow rule covers prompts on its own, and a redirection on another
   # command of the same string is that command's own. The brace group and
@@ -3179,6 +3236,10 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     '((cmd_git_name && cmd_read)) && refuse "${GIT_STDIN_MSG}"' \
     '((cmd_git_name && cmd_read)) && true' \
     'git log --stdin <.env'
+  mutation_row 'the findmnt -F/--tab-file refusal' \
+    '((cmd_gated && cmd_findmnt_tab == 1)) && refuse "${FINDMNT_TAB_MSG}"' \
+    '((cmd_gated && cmd_findmnt_tab == 1)) && true' \
+    'findmnt -F .env'
   mutation_row 'noglob in the wrapper list' \
     'nohup | noglob | nice' \
     'nohup | nice' \

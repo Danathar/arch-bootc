@@ -614,6 +614,19 @@ must be described as such.
   and
   [atomic-image-builder#477](https://github.com/Danathar/atomic-image-builder/pull/477)/[#481](https://github.com/Danathar/atomic-image-builder/pull/481),
   so all five Hive hooks stay in step.
+- **A read-only command can still read a file it is told to parse.**
+  `findmnt -F FILE` (`--tab-file`) parses FILE as an fstab table and prints
+  its fields, so under `Bash(findmnt *)` `findmnt -F ~/.aws/credentials -o
+  SOURCE,FSTYPE` printed each `aws_secret_access_key = VALUE` line with the
+  value as FSTYPE: any line of three or more whitespace-separated words comes
+  back, and the `Read(...)` deny rules do not apply to a Bash command. The
+  hook refuses the option in every spelling getopt accepts — `-F FILE`,
+  `-FFILE`, a cluster such as `-rF`, `--tab-file[=FILE]` and its unambiguous
+  abbreviations down to `--tab` — reading a short cluster only up to the
+  first option that takes a value, so `-oFSTYPE` stays allowed. A word bash
+  rewrites in a findmnt command (a brace, a glob, an extglob pattern) is
+  refused the way the podman flags are. Reading the live mount table
+  (`findmnt -T /`, `findmnt -s`) is unaffected.
 - **Neither primitive needs an argument.** An assignment written before an
   allow-listed command (`NAME=value cmd ...`) is an environment that command
   runs under, and the allow rule matches the command prefix that follows it.
