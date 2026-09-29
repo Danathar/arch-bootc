@@ -424,6 +424,47 @@ test_entry_without_efi_linux_paths_is_not_a_reference() {
   assert_dir_exists "foreign-path run prunes nothing" "${esp}/EFI/Linux/current"
 }
 
+# The guard counts deployment directories, not lines that mention /EFI/Linux.
+# A path directly under EFI/Linux names no /EFI/Linux/<id>/ directory, so an ESP
+# whose finalized entries hold only such paths is one this script does not
+# understand: it must refuse, not treat the line as a reference and prune every
+# deployment directory there.
+test_path_directly_under_efi_linux_is_not_a_reference() {
+  local esp output
+  esp="$(new_esp flat-path-esp booted rollback)"
+  {
+    printf 'title Arch Linux\n'
+    printf 'linux /EFI/Linux/vmlinuz-linux\n'
+    printf 'initrd /EFI/Linux/initramfs-linux.img\n'
+  } >"${esp}/loader/entries/flat.conf"
+  run_prune "${esp}"
+  output="${RUN_OUTPUT}"
+  assert_eq "flat-path run exits 0" "0" "${RUN_STATUS}"
+  assert_contains "flat paths yield no keep set" "${output}" "refusing to prune"
+  assert_dir_exists "flat-path run keeps booted" "${esp}/EFI/Linux/booted"
+  assert_dir_exists "flat-path run keeps rollback" "${esp}/EFI/Linux/rollback"
+}
+
+# An initrd line is a reference in its own right, not a companion the linux line
+# vouches for: a directory named only by an initrd path holds something the
+# entry boots.
+test_keeps_deployment_referenced_only_by_initrd() {
+  local esp output
+  esp="$(new_esp initrd-only-esp kernel-dir initrd-dir old)"
+  {
+    printf 'title Arch Linux\n'
+    printf 'linux /EFI/Linux/kernel-dir/vmlinuz\n'
+    printf 'initrd /EFI/Linux/initrd-dir/initrd\n'
+  } >"${esp}/loader/entries/split.conf"
+  run_prune "${esp}"
+  output="${RUN_OUTPUT}"
+  assert_eq "initrd-only run exits 0" "0" "${RUN_STATUS}"
+  assert_dir_exists "linux-referenced deployment kept" "${esp}/EFI/Linux/kernel-dir"
+  assert_dir_exists "initrd-referenced deployment kept" "${esp}/EFI/Linux/initrd-dir"
+  assert_contains "initrd-referenced deployment reported kept" "${output}" "keeping EFI/Linux/initrd-dir"
+  assert_dir_absent "initrd-only run still prunes unreferenced" "${esp}/EFI/Linux/old"
+}
+
 test_crlf_entry_is_parsed() {
   local esp
   esp="$(new_esp crlf-esp current old)"
@@ -1015,6 +1056,8 @@ main() {
     test_refuses_to_prune_with_no_references \
     test_refuses_to_prune_with_only_staged_references \
     test_entry_without_efi_linux_paths_is_not_a_reference \
+    test_path_directly_under_efi_linux_is_not_a_reference \
+    test_keeps_deployment_referenced_only_by_initrd \
     test_crlf_entry_is_parsed \
     test_entry_without_trailing_newline_is_parsed \
     test_files_under_efi_linux_are_ignored \
