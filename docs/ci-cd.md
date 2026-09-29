@@ -141,9 +141,11 @@ possible.
 `tests/test-prune-esp.sh` covers `arch-bootc-prune-esp`: argument
 handling, candidate discovery, the keep-set parsed out of BLS entries (including
 a deployment bootc has staged, whose entry is still under `loader/entries.staged/`,
-CRLF line endings and a final line with no newline), the refuse-to-prune guard
-when no finalized entry under `loader/entries/` references `/EFI/Linux/<id>/`
-(a staged entry alone does not pass it), `--dry-run`, and the fail-closed
+CRLF line endings, a final line with no newline, and an `initrd` line naming a
+directory the `linux` line does not), the refuse-to-prune guard when no
+finalized entry under `loader/entries/` references `/EFI/Linux/<id>/` (a staged
+entry alone does not pass it, and neither does a path directly under
+`EFI/Linux/`), `--dry-run`, and the fail-closed
 rejections in `is_genuine_esp` — the check that stops the script from treating a
 plugged-in bootable USB stick as the ESP.
 
