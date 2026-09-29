@@ -302,6 +302,12 @@ PODMAN_PROFILE_MSG='blocked: podman --cpu-profile FILE and --memory-profile FILE
 # shellcheck disable=SC2016 # the spellings are what the reader has to see
 PODMAN_EXPAND_MSG='blocked: bash rewrites this word of a podman invocation before podman sees it, and the profile-option check reads words as typed, so it cannot tell whether the result is --cpu-profile or --memory-profile: `podman images --cpu-pro{f..f}ile cosign.pub` is a brace bash expands to --cpu-profile with no file needed, and `podman images --cpu-profil*` becomes --cpu-profile=cosign.pub as soon as a file of that name exists in the working directory -- either way podman dumps a pprof profile over cosign.pub with no prompt. An expanding brace, an unquoted glob character (*, ? or a bracket) or an unquoted leading ~ in a word of a gated podman command is refused rather than expanded. Quote a pattern podman should see literally (`podman images '"'"'fedora*'"'"'`), or write the words out.'
 
+# shellcheck disable=SC2016 # the option spellings are what the reader has to see
+FINDMNT_TAB_MSG='blocked: findmnt -F FILE / --tab-file FILE (and --tab-file=FILE, -FFILE, a cluster such as -rF FILE, or an abbreviation such as --tab FILE) makes findmnt parse FILE as an fstab table and print its fields back, so under the Bash(findmnt *) allow row `findmnt -F ~/.aws/credentials -o SOURCE,FSTYPE` printed each `aws_secret_access_key = VALUE` line as SOURCE and FSTYPE with no prompt: every line of three or more whitespace-separated words is printed, past the Read(...) deny rules, which do not stand in front of a Bash command. The allow row is there to inspect mounts; read the mount table without -F (`findmnt -T /`, `findmnt -s` for /etc/fstab).'
+
+# shellcheck disable=SC2016 # the spellings are what the reader has to see
+FINDMNT_EXPAND_MSG='blocked: bash rewrites this word of a findmnt invocation before findmnt sees it, and the --tab-file check reads words as typed, so it cannot tell whether the result is -F or --tab-file: `findmnt -{F,r} ~/.aws/credentials` is a brace bash expands to `-F -r` with no file needed, and a glob or an extglob pattern becomes the option beside a file of that name. Write the option out literally.'
+
 # shellcheck disable=SC2016 # the literal $(...) and <( are what the reader has to see
 GATED_SUBST_MSG='blocked: a substitution or an expansion -- `$(...)`, a backtick, `$VAR`, `<(...)` or `>(...)`, quoted or not, in a word or a redirection target -- in an allow-listed command runs a command or supplies a word as part of a string the allow rule approved on its prefix alone, and neither is held to any rule: `df -T >(cat >cosign.pub)` and `podman images $(printf x >cosign.pub)` truncate the trust anchor from inside the substitution while the command prints as usual. It is refused in these commands the way it is in a git or shellcheck invocation. Write the inner command as a command of its own.'
 
@@ -1430,6 +1436,13 @@ check_gated_command() {
   # it: a brace (`--cpu-pro{f..f}ile`) with no precondition, a glob
   # (`--cpu-profil*`) once a file of that name exists (aurora-zfs-simple#262).
   ((cmd_gated && cmd_podman_profile == 2)) && refuse "${PODMAN_EXPAND_MSG}"
+  # findmnt's -F/--tab-file is the read twin of those writes: findmnt parses
+  # the file it names as an fstab table and prints its fields, so
+  # `findmnt -F ~/.aws/credentials` prints every `key = value` line under the
+  # `findmnt *` allow row, and a word bash rewrites could become the option
+  # after this scan has read it.
+  ((cmd_gated && cmd_findmnt_tab == 1)) && refuse "${FINDMNT_TAB_MSG}"
+  ((cmd_gated && cmd_findmnt_tab == 2)) && refuse "${FINDMNT_EXPAND_MSG}"
   # A shellcheck invocation has its own scan for this, with the message that
   # names the operand; that one is left to say it.
   ((cmd_gated && cmd_subst)) && { [[ "${cmd_prefix}" != shellcheck* ]] || ((cmd_subst == 2)); } && refuse "${GATED_SUBST_MSG}"
@@ -1472,6 +1485,7 @@ reset_command() {
   cmd_read=0
   cmd_subst=0
   cmd_podman_profile=0
+  cmd_findmnt_tab=0
   cmd_heredoc=0
   cmd_assign=0
   cmd_assign_name=''
@@ -1520,6 +1534,7 @@ cmd_git=0     # a literal `git` word is one of its words
 cmd_git_name=0 # a literal `git` word stands where this command's name may be
 cmd_xargs=0   # `xargs` stands among its wrappers, so its operands are not all here
 cmd_podman_profile=0 # 1: a --cpu-profile/--memory-profile word in this podman command; 2: a word bash rewrites
+cmd_findmnt_tab=0 # 1: a -F/--tab-file word in this findmnt command; 2: a word bash rewrites
 bash_options=0 # a gated bash is still reading option words, as bash itself does
 bash_optvals='' # one letter per -o/-O still waiting for its value, in order
 cmd_argv0=0   # an exec/env option before the name set bash's zeroth argument
@@ -1739,6 +1754,43 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
       [[ "${kinds[idx + 1]}" == sep && "${words[idx + 1]}" == '(' ]] &&
       word_ends_in_unquoted_extglob_op "${raw_words[idx]}"; then
       cmd_podman_profile=2
+    fi
+  fi
+  # findmnt's -F/--tab-file, read at each word for the same reason: getopt
+  # takes options anywhere among the operands, so the option stands after the
+  # `findmnt` the allow row matches. getopt also accepts any unambiguous
+  # abbreviation of a long option (`--tab`, `--tab-f=FILE`; `--ta` is
+  # ambiguous with --task and --target) and a short option clustered behind
+  # others (`-rF FILE`, `-rFFILE`). A cluster is read up to the first short
+  # option that takes a value, since the rest of the word is that value
+  # (`-oFSTYPE` is -o with the value FSTYPE).
+  if ((cmd_gated)) && [[ "${cmd_prefix}" == findmnt || "${cmd_prefix}" == 'findmnt '* ]]; then
+    case "${words[idx]}" in
+    --tab | --tab=* | --tab-*) cmd_findmnt_tab=1 ;;
+    --*) ;;
+    -?*)
+      cluster=${words[idx]#-}
+      while [[ -n "${cluster}" ]]; do
+        case "${cluster:0:1}" in
+        F)
+          cmd_findmnt_tab=1
+          break
+          ;;
+        [NdQMSTtOowp]) break ;;
+        *) cluster=${cluster:1} ;;
+        esac
+      done
+      ;;
+    *) ;;
+    esac
+    if ((cmd_findmnt_tab == 0)) && [[ "${raw_words[idx]}" != *'$'* && "${raw_words[idx]}" != *'`'* ]] &&
+      { word_brace_would_expand "${raw_words[idx]}" || word_bash_would_glob "${raw_words[idx]}"; }; then
+      cmd_findmnt_tab=2
+    fi
+    if ((cmd_findmnt_tab == 0)) && ((idx + 1 < ${#words[@]})) &&
+      [[ "${kinds[idx + 1]}" == sep && "${words[idx + 1]}" == '(' ]] &&
+      word_ends_in_unquoted_extglob_op "${raw_words[idx]}"; then
+      cmd_findmnt_tab=2
     fi
   fi
   # A substitution or an expansion quoted into a word (`df -T "$(printf x
