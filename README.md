@@ -77,6 +77,38 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to run the checks, what not to
 change casually, and what a pull request needs to say. [AGENTS.md](AGENTS.md)
 is the authoritative policy behind it.
 
+## Project status
+
+**Beta.** The image builds, installs and boots, and the maintainer runs it, but
+it is not yet something to `bootc switch` a machine you cannot reinstall onto
+and leave to update unattended. Try it in a VM or on hardware you can wipe.
+
+What beta means here:
+
+- **CI proves the image builds, not that it boots.** Every pull request builds
+  the image and runs the shell suite and a quickstart dry run. Nothing in CI
+  boots the result, runs first boot, or upgrades a deployed system to the new
+  image. Those are checked by hand. [Quality signals](docs/quality.md#where-the-gaps-are)
+  lists every gap.
+- **There are no versioned releases.** Installs follow `:latest`, so every
+  merge to `main` reaches every system on its next upgrade. Getting back to a
+  known-good system means `bootc rollback` to the previous deployment.
+- **It is built mostly with directed AI** and reviewed by one maintainer. See
+  [About this project](#about-this-project) below.
+
+It moves to stable when all of these hold:
+
+- [ ] CI boots the built image in a VM on every pull request and fails when it
+      does not reach a login prompt.
+- [ ] CI upgrades a system deployed from the previous `:latest` to the new
+      image with `bootc upgrade` or `bootc switch`, and checks it boots again.
+- [ ] Images are published under version tags as well as `:latest`, so an
+      install can pin one and move on purpose.
+- [ ] Eight consecutive weeks of `:latest` with no reported boot, upgrade or
+      login regression.
+- [ ] The manual VM check in [CLAUDE.md](CLAUDE.md) is no longer the only
+      place first-boot behaviour is verified.
+
 ## About this project
 
 > **Note:** This repo was created primarily using directed AI, though its contents have been manually tested and inspected. I believe it's important for anyone using open-source tools on GitHub to have this context before relying on them. Special thanks to the upstream repository [bootcrew/arch-bootc](https://github.com/bootcrew/arch-bootc) for the foundational bootstrapping work.
