@@ -979,6 +979,8 @@ assert_equal "base-core has exactly one /var reset to compare the other stages a
   "$(grep -c . <<<"${var_reset}")" "1"
 assert_present "the /var reset writes a tmpfiles.d line for each directory it is about to delete" \
   "${CONTAINERFILE}" "stat -c 'd \"%n\" %a %U %G -'"
+assert_present "the /var reset writes a tmpfiles.d line for each symlink it is about to delete" \
+  "${CONTAINERFILE}" "printf 'L \"%s\" - - - - %s"
 var_resets=0
 while IFS= read -r stage; do
   [[ -n "${stage}" ]] || continue
@@ -1028,14 +1030,18 @@ var_group="$(id -gn)"
 V="${var_work}/var"
 
 # Covered: a path named with a trailing slash, one whose line is commented out
-# (so it is NOT covered), and /var/tmp. Uncovered: a package directory with a
-# file in it, a nested spool, and the /var/tmp directory's own contents, which
-# are skipped. Home directories are skipped whole. A symlink is not a directory.
+# (so it is NOT covered), /var/tmp, and systemd's `L /var/run`, which only
+# matches as written because resolving it gives /run. Uncovered: a package
+# directory with a file in it, a nested spool, the filesystem package's
+# /var/mail symlink (an `L` line with its target), and the /var/tmp
+# directory's own contents, which are skipped. Home directories are skipped
+# whole.
 cat >"${var_work}/tmpfiles.conf" <<CONF
 # /usr/lib/tmpfiles.d/var.conf
 d ${V}/lib 0755 - - -
 d ${V}/cache/fc/ 0755 - - -
 q ${V}/tmp 1777 root root 30d
+L ${V}/run - - - - ../run
 #d ${V}/spool 0755 - - -
 CONF
 mkdir -p "${V}/lib/pkgdir" "${V}/cache/fc" "${V}/spool/q/sub" "${V}/tmp/scratch" \
@@ -1045,18 +1051,21 @@ chmod 0750 "${V}/lib/pkgdir"
 chmod 1770 "${V}/spool/q/sub"
 : >"${V}/lib/pkgdir/state.db"
 ln -s ../run "${V}/run"
+ln -s spool/mail "${V}/mail"
 printf 'd /kept 0755 root root -\n' >"${var_work}/arch-bootc-var.conf"
 
 var_expected="$(printf 'd "%s" %s %s %s -\n' \
   "${V}/cache" 755 "${var_user}" "${var_group}" \
-  "${V}/lib/pkgdir" 750 "${var_user}" "${var_group}" \
+  "${V}/lib/pkgdir" 750 "${var_user}" "${var_group}"
+printf 'L "%s" - - - - spool/mail\n' "${V}/mail"
+printf 'd "%s" %s %s %s -\n' \
   "${V}/spool" 755 "${var_user}" "${var_group}" \
   "${V}/spool/q" 755 "${var_user}" "${var_group}" \
   "${V}/spool/q/sub" 1770 "${var_user}" "${var_group}")"
 var_out="$(cd -- "${var_work}" && PATH="${var_work}/bin:${PATH}" bash -c "${var_cmd}" 2>&1)"
 var_status=$?
 assert_equal "the /var reset succeeds when every directory has a named owner" "${var_status}" "0"
-assert_equal "the /var reset writes a d line, with mode and owner, for exactly the uncovered directories, sorted" \
+assert_equal "the /var reset writes a d line, with mode and owner, for exactly the uncovered directories, and an L line for each uncovered symlink, sorted" \
   "$(sed '1d' "${var_work}/arch-bootc-var.conf")" "${var_expected}"
 assert_equal "the /var reset appends to the tmpfiles.d file instead of replacing it" \
   "$(head -1 "${var_work}/arch-bootc-var.conf")" "d /kept 0755 root root -"
