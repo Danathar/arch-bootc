@@ -8576,6 +8576,175 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "README project status (the beta section's claims about CI are joined to the workflows)"
+
+# README.md's "Project status" section tells a reader what CI does and does not
+# prove, and lists the criteria for calling the image stable as unticked boxes.
+# Two of those boxes describe CI jobs, and the prose above them says the same
+# thing in the present tense: "Nothing in CI boots the result, runs first boot,
+# or upgrades a deployed system to the new image." Nothing read the section, so
+# the first boot or upgrade job added to a workflow would leave the README still
+# telling users that it does not exist -- and the box still unticked.
+#
+# The tree side is computed, not assumed: every active (non-comment) line in
+# .github/workflows/ that runs a VM or moves a deployment. While there are none,
+# the prose must say so and both boxes must be open. When there is one, the
+# check fails and says which line, so whoever lands it updates the README in
+# the same change. docs/quality.md's "Where the gaps are" list carries the same
+# statement and is joined the same way.
+
+STATUS_DOC="README.md"
+STATUS_QUALITY_DOC="docs/quality.md"
+status_section="$(awk '/^## Project status$/ { on = 1; print; next } on && /^## / { exit } on' "${STATUS_DOC}")"
+
+if [[ -z "${status_section}" ]]; then
+  fail "${STATUS_DOC} still has its Project status section" \
+    "no '## Project status' heading; every check below would pass by reading nothing"
+else
+  pass "${STATUS_DOC} still has its Project status section"
+
+  # Active workflow lines that boot an image or upgrade a deployment. Comments
+  # are dropped first: a rationale comment naming virt-install is not a job.
+  status_boot_hits=""
+  status_upgrade_hits=""
+  for status_wf in .github/workflows/*.yml .github/workflows/*.yaml; do
+    [[ -f "${status_wf}" ]] || continue
+    while IFS= read -r status_hit; do
+      status_boot_hits+="${status_wf}:${status_hit} "
+    done < <(grep -nE -- 'qemu-system|virt-install|virsh[[:space:]]|systemd-vmspawn|bcvk' "${status_wf}" |
+      grep -v '^[0-9]*:[[:space:]]*#')
+    while IFS= read -r status_hit; do
+      status_upgrade_hits+="${status_wf}:${status_hit} "
+    done < <(grep -nE -- 'bootc[[:space:]]+(upgrade|switch)' "${status_wf}" |
+      grep -v '^[0-9]*:[[:space:]]*#')
+  done
+
+  # Each box is read by its own words, and must be present exactly once, so a
+  # rewrite that deletes the criterion fails here instead of skipping the join.
+  status_box_state() {
+    local needle="$1" lines
+    lines="$(grep -E -- "^- \[[ xX]\] ${needle}" <<<"${status_section}")"
+    if [[ -z "${lines}" ]]; then
+      printf 'missing'
+    elif [[ "$(wc -l <<<"${lines}")" -ne 1 ]]; then
+      printf 'duplicated'
+    elif [[ "${lines}" == "- [ ] "* ]]; then
+      printf 'open'
+    else
+      printf 'ticked'
+    fi
+  }
+
+  status_boot_box="$(status_box_state 'CI boots the built image')"
+  status_upgrade_box="$(status_box_state 'CI upgrades a system deployed from the previous')"
+
+  if [[ -z "${status_boot_hits}" ]]; then
+    assert_equal "${STATUS_DOC}'s 'CI boots the built image' criterion is open while no workflow boots a VM" \
+      "${status_boot_box}" "open"
+  else
+    fail "${STATUS_DOC}'s 'CI boots the built image' criterion is open while no workflow boots a VM" \
+      "a workflow now boots a VM (${status_boot_hits}); update the Project status section and tick the box"
+  fi
+  if [[ -z "${status_upgrade_hits}" ]]; then
+    assert_equal "${STATUS_DOC}'s upgrade criterion is open while no workflow runs bootc upgrade or switch" \
+      "${status_upgrade_box}" "open"
+  else
+    fail "${STATUS_DOC}'s upgrade criterion is open while no workflow runs bootc upgrade or switch" \
+      "a workflow now upgrades a deployment (${status_upgrade_hits}); update the Project status section and tick the box"
+  fi
+
+  # The prose statement the boxes back. Joined to both hit lists: it is true
+  # only while both are empty.
+  # The sentence wraps, so compare it with line breaks and indentation folded.
+  if [[ "$(tr '\n' ' ' <<<"${status_section}" | tr -s ' ')" == *"Nothing in CI boots the result, runs first boot, or upgrades a deployed system to the new image."* ]]; then
+    status_says_no_boot=1
+  else
+    status_says_no_boot=0
+  fi
+  if [[ -z "${status_boot_hits}${status_upgrade_hits}" ]]; then
+    assert_equal "${STATUS_DOC} still says nothing in CI boots or upgrades the image, which is true" \
+      "${status_says_no_boot}" "1"
+  else
+    assert_equal "${STATUS_DOC} no longer says nothing in CI boots or upgrades the image, since a workflow now does" \
+      "${status_says_no_boot}" "0"
+  fi
+
+  # docs/quality.md's gap list is where the README sends the reader for the
+  # full picture, and it opens with the same claim.
+  if grep -qF -- '- **No boot or upgrade test in CI.**' "${STATUS_QUALITY_DOC}"; then
+    status_quality_says=1
+  else
+    status_quality_says=0
+  fi
+  if [[ -z "${status_boot_hits}${status_upgrade_hits}" ]]; then
+    assert_equal "${STATUS_QUALITY_DOC}'s gap list still names the missing boot/upgrade test the README points to" \
+      "${status_quality_says}" "1"
+  else
+    assert_equal "${STATUS_QUALITY_DOC}'s gap list no longer names a boot/upgrade gap a workflow has closed" \
+      "${status_quality_says}" "0"
+  fi
+
+  # "Every pull request ... runs the shell suite and a quickstart dry run."
+  # Every pull request to main runs build.yml or docs-tests.yml (their
+  # complementary path filters are asserted elsewhere in this file); each must
+  # still run check-coverage.sh, which must still run run-tests.sh, whose
+  # manifest must still list the dry run.
+  for status_wf in "${BUILD_WORKFLOW}" .github/workflows/docs-tests.yml; do
+    assert_present "${status_wf} still runs the shell suite the Project status section says every pull request runs" \
+      "${status_wf}" '^[[:space:]]*run:[[:space:]]*\./tests/check-coverage\.sh[[:space:]]*$'
+  done
+  # shellcheck disable=SC2016 # literal ${BASH} and ${SCRIPT_DIR}
+  assert_present "tests/check-coverage.sh still runs tests/run-tests.sh" \
+    "tests/check-coverage.sh" '"\$\{BASH\}" "\$\{SCRIPT_DIR\}/run-tests\.sh"'
+  assert_present "the quickstart dry run the Project status section names is still in the test manifest" \
+    "tests/test-manifest" '^e2e/test-quickstart-dry-run\.sh$'
+
+  # "Installs follow `:latest`." The tag every publish repoints.
+  # shellcheck disable=SC2016 # literal backticks
+  if [[ "${status_section}" == *'Installs follow `:latest`'* ]]; then
+    status_default_tag="$(sed -n 's/^[[:space:]]*DEFAULT_TAG:[[:space:]]*"\{0,1\}\([A-Za-z0-9._-]*\)"\{0,1\}[[:space:]]*$/\1/p' "${BUILD_WORKFLOW}" | head -1)"
+    assert_equal "the tag the Project status section says installs follow is build.yml's DEFAULT_TAG" \
+      "${status_default_tag}" "latest"
+  else
+    fail "the tag the Project status section says installs follow is build.yml's DEFAULT_TAG" \
+      "the 'Installs follow \`:latest\`' sentence changed; re-check it against DEFAULT_TAG"
+  fi
+
+  # The section's own links: the gap list anchor, the manual VM procedure, and
+  # the in-page anchor. Same slug rule as assert_doc_links_resolve above.
+  status_links=0
+  status_link_failures=""
+  while IFS= read -r status_link; do
+    [[ -n "${status_link}" ]] || continue
+    status_links=$((status_links + 1))
+    status_target="${status_link%%#*}"
+    status_anchor=""
+    [[ "${status_link}" == *#* ]] && status_anchor="${status_link#*#}"
+    [[ -n "${status_target}" ]] || status_target="${STATUS_DOC}"
+    if [[ ! -f "${status_target}" ]]; then
+      status_link_failures+="${status_link} (no such file) "
+      continue
+    fi
+    [[ -n "${status_anchor}" ]] || continue
+    status_slugs="$(grep -E '^#{1,6} ' "${status_target}" | sed -E 's/^#{1,6} //' |
+      tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9 -]//g; s/ /-/g')"
+    grep -qx -- "${status_anchor}" <<<"${status_slugs}" ||
+      status_link_failures+="${status_link} (no such anchor) "
+  done < <(grep -oE '\]\([^):]*\)' <<<"${status_section}" | sed 's/^](//; s/)$//' | sort -u)
+  if ((status_links < 3)); then
+    fail "every link in ${STATUS_DOC}'s Project status section resolves" \
+      "found ${status_links} link(s); the gap list, CLAUDE.md and About-this-project hand-offs were 3"
+  elif [[ -n "${status_link_failures}" ]]; then
+    fail "every link in ${STATUS_DOC}'s Project status section resolves" "${status_link_failures}"
+  else
+    pass "every link in ${STATUS_DOC}'s Project status section resolves"
+  fi
+  # The manual check the last criterion names has to still be a VM procedure.
+  assert_present "CLAUDE.md, which the Project status section names as the manual VM check, still runs virt-install" \
+    "CLAUDE.md" 'virt-install'
+fi
+
+# ---------------------------------------------------------------------------
 printf '\n1..%d\n' "${checks_run}"
 if ((failures > 0)); then
   printf 'invariants: %d of %d check(s) failed\n' "${failures}" "${checks_run}" >&2
