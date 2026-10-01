@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Prune old versions of a GitHub Packages container package, keeping the N most
-# recently created ones.
+# Prune old versions of a GitHub Packages container package: drop the versions
+# nobody can name, then keep the N most recently created tagged images.
 #
 # This exists to replace `actions/delete-package-versions`, which has had no
 # release since 2024-02-07. An unmaintained action is an ordinary supply-chain
@@ -14,9 +14,33 @@ set -euo pipefail
 # itself, and tests/test-prune-package-versions.sh covers the decision of what
 # to delete without touching the network.
 #
-# The retention rule is unchanged from the action it replaces: order every
-# version of the package by creation time, keep the newest
-# --min-versions-to-keep, delete the rest.
+# The retention rule counts images a person can name, in three passes:
+#
+#   1. Untagged versions go. Every publish pushes by tag, so an image is
+#      untagged only once a newer build has taken its date tag (several
+#      publishes a day share one YYYYMMDD), and nothing can ask for it by name
+#      any more.
+#   2. Tagged images are ordered by creation time; the newest
+#      --min-versions-to-keep stay and the rest go.
+#   3. A cosign signature (a version whose tags are all `sha256-<hex>.sig`)
+#      names its subject in the tag. It stays while the image `sha256:<hex>`
+#      stays, and goes once that image is gone -- including an image whose own
+#      deletion was asked for in this run and succeeded. A signature whose
+#      subject failed to delete is kept, so a failure never leaves an image
+#      without its signature.
+#
+# The action this replaced counted every version, signatures and untagged
+# images included. At about four publishes a day that kept 15 images and only
+# four days of dated tags under a floor of 30 (issue #430); counting tagged
+# images keeps 30 dated builds.
+#
+# Two assumptions that pass 1 rests on, both true of build.yml today. Every
+# image is a single manifest: a multi-arch index would list its per-platform
+# manifests as untagged versions, and this pass would delete them out from
+# under it. And cosign stores signatures as `.sig` tags
+# (--new-bundle-format=false): the newer bundle format stores them as untagged
+# OCI referrers, which this pass would also delete. Change either and this
+# script has to change with it.
 #
 # One deliberate addition. The workflow's own comment argues that a version
 # tagged `latest` is always among the newest, because `latest` is repointed at
@@ -27,14 +51,6 @@ set -euo pipefail
 # version tagged `latest` is never deleted. If the reasoning ever stops
 # holding, the failure mode becomes one version too many surviving a prune
 # rather than a broken upgrade path on installed systems.
-#
-# Known limitation, carried over unchanged from the action: a cosign signature
-# is published as its own package version, tagged `sha256-<digest>.sig`. It
-# therefore occupies one of the retained slots and is pruned on its own,
-# independently of the image it signs, so a signature can outlive its subject
-# or be dropped while its subject is kept. Pairing the two changes the
-# retention arithmetic -- --min-versions-to-keep would stop meaning "versions"
-# and start meaning "images" -- so it is deliberately not done here.
 #
 # Nothing is written to disk and no temporary files are created: every API
 # response is read into a variable, so the only state this touches is the
@@ -51,11 +67,13 @@ usage() {
   cat <<'USAGE'
 Usage: prune-package-versions.sh --package NAME --min-versions-to-keep N [options]
 
-Delete old versions of a GitHub Packages package, keeping the newest N.
+Delete old versions of a GitHub Packages package: every untagged version,
+every tagged image past the newest N, and every signature whose image is gone.
 
   --package NAME            Package name, e.g. arch-bootc-base. Required.
-  --min-versions-to-keep N  How many of the newest versions to keep. Required,
-                            and must be at least 1.
+  --min-versions-to-keep N  How many of the newest tagged images to keep.
+                            Signatures and untagged versions do not count.
+                            Required, and must be at least 1.
   --owner OWNER             Account owning the package. Defaults to
                             $GITHUB_REPOSITORY_OWNER.
   --owner-type TYPE         "user" or "organization". Looked up from the API
@@ -228,20 +246,30 @@ if ! versions="$(jq -s '.' <<<"${versions_ndjson}" 2>&1)"; then
 fi
 
 total="$(jq 'length' <<<"${versions}")"
-printf 'prune: %s/%s (%s) has %s version(s); keeping the newest %s\n' \
+printf 'prune: %s/%s (%s) has %s version(s); keeping the newest %s tagged image(s)\n' \
   "${owner}" "${package_name}" "${package_type}" "${total}" "${min_versions_to_keep}"
 
-if ((total <= min_versions_to_keep)); then
-  echo "prune: nothing to prune"
-  exit 0
-fi
+# A signature is a version whose every tag is `sha256-<hex>.sig`; an image is
+# any other tagged version. Each version gets a `kind` and, for a signature,
+# the digest of the image it signs.
+classified="$(jq -c '
+  map(
+    (.metadata.container.tags // []) as $tags
+    | if ($tags | length) == 0 then . + {kind: "untagged"}
+      elif all($tags[]; test("^sha256-[0-9a-f]+\\.sig$")) then
+        . + {kind: "signature", subject: ($tags[0] | sub("^sha256-"; "sha256:") | sub("\\.sig$"; ""))}
+      else . + {kind: "image"}
+      end
+  )' <<<"${versions}")"
 
 # `.id` as a secondary sort key so two versions created in the same second get
 # a defined order. Without it the boundary between kept and pruned moves
 # between runs on ties, which is the kind of thing that surfaces months later
 # as one unexpectedly missing image.
-ordered="$(jq -c 'sort_by(.created_at, .id) | reverse' <<<"${versions}")"
+ordered="$(jq -c '[.[] | select(.kind == "image")] | sort_by(.created_at, .id) | reverse' <<<"${classified}")"
 candidates="$(jq -c --argjson keep "${min_versions_to_keep}" '.[$keep:]' <<<"${ordered}")"
+untagged="$(jq -c '[.[] | select(.kind == "untagged")] | sort_by(.created_at, .id)' <<<"${classified}")"
+signatures="$(jq -c '[.[] | select(.kind == "signature")] | sort_by(.created_at, .id)' <<<"${classified}")"
 
 tsv() {
   jq -r '.[] | [
@@ -264,16 +292,20 @@ if ((protected_count > 0)); then
   done < <(tsv <<<"${protected}")
 fi
 
-doomed="$(jq -c '[.[] | select(((.metadata.container.tags // []) | index("latest")) == null)]' <<<"${candidates}")"
-doomed_count="$(jq 'length' <<<"${doomed}")"
+# Untagged versions first, then tagged images past the floor. Signatures are
+# decided after both, against what actually went.
+doomed_images="$(jq -c --argjson untagged "${untagged}" \
+  '$untagged + [.[] | select(((.metadata.container.tags // []) | index("latest")) == null)]' <<<"${candidates}")"
 
 pruned=0
 failed=0
-while IFS=$'\t' read -r id digest created tags; do
+gone_digests=()
+remove() {
+  local id="$1" digest="$2" created="$3" tags="$4"
   if ((dry_run)); then
     printf 'prune: would remove %s (%s, created %s, tags %s)\n' "${id}" "${digest}" "${created}" "${tags}"
     pruned=$((pruned + 1))
-    continue
+    return 0
   fi
   # `2>&1 >/dev/null` in that order: stderr goes to the capture and stdout to
   # nowhere. Reversed, both would be captured and a successful response body
@@ -281,12 +313,34 @@ while IFS=$'\t' read -r id digest created tags; do
   if api_error="$(gh api --method DELETE "${versions_path}/${id}" 2>&1 >/dev/null)"; then
     printf 'prune: removed %s (%s, created %s, tags %s)\n' "${id}" "${digest}" "${created}" "${tags}"
     pruned=$((pruned + 1))
-  else
-    printf 'prune: FAILED on %s (%s, created %s, tags %s): %s\n' \
-      "${id}" "${digest}" "${created}" "${tags}" "$(one_line "${api_error}")" >&2
-    failed=$((failed + 1))
+    return 0
   fi
-done < <(tsv <<<"${doomed}")
+  printf 'prune: FAILED on %s (%s, created %s, tags %s): %s\n' \
+    "${id}" "${digest}" "${created}" "${tags}" "$(one_line "${api_error}")" >&2
+  failed=$((failed + 1))
+  return 1
+}
+
+while IFS=$'\t' read -r id digest created tags; do
+  remove "${id}" "${digest}" "${created}" "${tags}" && gone_digests+=("${digest}")
+done < <(tsv <<<"${doomed_images}")
+
+# The images still standing are every image and untagged version that was not
+# removed just now. A signature whose subject is among them stays; any other
+# signature has nothing left to sign.
+standing="$(jq -c --args '[.[] | select(.kind != "signature") | .name] - $ARGS.positional' \
+  "${gone_digests[@]}" <<<"${classified}")"
+doomed_signatures="$(jq -c --argjson standing "${standing}" \
+  '[.[] | select(.subject as $s | ($standing | index($s)) == null)]' <<<"${signatures}")"
+while IFS=$'\t' read -r id digest created tags; do
+  remove "${id}" "${digest}" "${created}" "${tags}" || true
+done < <(tsv <<<"${doomed_signatures}")
+
+doomed_count=$(($(jq 'length' <<<"${doomed_images}") + $(jq 'length' <<<"${doomed_signatures}")))
+if ((doomed_count == 0)); then
+  echo "prune: nothing to prune"
+  exit 0
+fi
 
 if ((dry_run)); then
   printf 'prune: dry run -- %s of %s candidate version(s) would go, %s kept by the latest guard\n' \

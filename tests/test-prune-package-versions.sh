@@ -299,11 +299,19 @@ assert_status "the same shape without the tag exits 0" 0 "$?"
 assert_equal "without the tag that version is removed like any other" "1 2" "$(pruned_ids)"
 assert_absent "nothing is held back when no candidate is tagged latest" "${output}" "KEEPING"
 
-# --- untagged versions ----------------------------------------------------
+# --- untagged versions and signatures --------------------------------------
 #
-# Cosign publishes a signature as its own version, and an overwritten tag
-# leaves the version behind untagged. Both must still be reachable by the
-# retention rule, or the package fills up with things nothing can name.
+# The floor counts tagged images only (issue #430). Every publish pushes by tag,
+# so an untagged image is one whose date tag a newer build has taken, and a
+# cosign signature is its own version tagged `sha256-<hex>.sig` after the image
+# it signs. Counting those against the floor kept about four days of dated
+# tags under a floor of 30.
+
+# A signature of the image with the given id, as cosign tags it. make_version
+# names image N `sha256:N`, so its signature is tagged `sha256-N.sig`.
+make_signature() {
+  make_version "$1" "$2" "sha256-$3.sig"
+}
 
 write_versions \
   "$(make_version 1 2026-01-01T00:00:00Z)" \
@@ -311,8 +319,81 @@ write_versions \
   "$(make_version 3 2026-01-03T00:00:00Z latest)"
 output="$(run_script "${BASE_ARGS[@]}" --min-versions-to-keep 1)"
 assert_status "untagged and signature versions exit 0" 0 "$?"
-assert_equal "an untagged version and a signature are both removable" "1 2" "$(pruned_ids)"
+assert_equal "an untagged version and an orphaned signature are both removable" "1 2" "$(pruned_ids)"
 assert_contains "an untagged version is labelled in the log" "${output}" "(untagged)"
+
+# Untagged versions go even when the package is inside its floor. Under the old
+# rule this package (three versions, floor 5) lost nothing.
+write_versions \
+  "$(make_version 1 2026-01-01T00:00:00Z 20260101)" \
+  "$(make_version 2 2026-01-02T00:00:00Z)" \
+  "$(make_version 3 2026-01-03T00:00:00Z latest 20260103)"
+output="$(run_script "${BASE_ARGS[@]}" --min-versions-to-keep 5)"
+assert_status "a package with an untagged version inside its floor exits 0" 0 "$?"
+assert_equal "the untagged version goes first, whatever the floor" "2" "$(pruned_ids)"
+assert_absent "a package with an untagged version is not reported as having nothing to prune" \
+  "${output}" "nothing to prune"
+
+# Four images, each with its signature, one of them untagged. A floor of 2
+# keeps the two newest tagged images and their signatures. The untagged image
+# and the oldest tagged one go, and their signatures go with them. Counted the
+# old way, a floor of 2 kept only version 41 and version 40.
+signed_fixture() {
+  write_versions \
+    "$(make_signature 41 2026-01-04T00:01:00Z 40)" \
+    "$(make_version 10 2026-01-01T00:00:00Z 20260101)" \
+    "$(make_signature 21 2026-01-02T00:01:00Z 20)" \
+    "$(make_version 30 2026-01-03T00:00:00Z 20260103)" \
+    "$(make_signature 11 2026-01-01T00:01:00Z 10)" \
+    "$(make_version 40 2026-01-04T00:00:00Z latest 20260104)" \
+    "$(make_version 20 2026-01-02T00:00:00Z)" \
+    "$(make_signature 31 2026-01-03T00:01:00Z 30)"
+}
+signed_fixture
+output="$(run_script "${BASE_ARGS[@]}" --min-versions-to-keep 2)"
+assert_status "a signed package over its floor exits 0" 0 "$?"
+assert_equal "the floor counts tagged images; untagged images and the signatures of removed images go" \
+  "10 11 20 21" "$(pruned_ids)"
+assert_contains "the summary counts images and signatures together" "${output}" "removed 4 of 4 version(s)"
+
+# The pairing in the other direction: the signature of a kept image survives
+# even when it is the oldest version in the package.
+write_versions \
+  "$(make_signature 2 2026-01-01T00:00:00Z 3)" \
+  "$(make_version 1 2026-01-02T00:00:00Z 20260102)" \
+  "$(make_version 3 2026-01-03T00:00:00Z latest 20260103)"
+output="$(run_script "${BASE_ARGS[@]}" --min-versions-to-keep 1)"
+assert_status "an old signature of a kept image exits 0" 0 "$?"
+assert_equal "a signature stays while the image it signs stays" "1" "$(pruned_ids)"
+
+# A signature whose image failed to delete is kept: deleting it anyway would
+# leave a published image with no signature.
+signed_fixture
+output="$(GH_STUB_FAIL_IDS="10" run_script "${BASE_ARGS[@]}" --min-versions-to-keep 2)"
+assert_status "a failed image deletion still fails the run" 1 "$?"
+assert_equal "the signature of an image that failed to delete is kept" "20 21" "$(pruned_ids)"
+assert_contains "the failure is named" "${output}" "FAILED on 10"
+
+# The latest guard holds under the new rule, and the guarded image keeps its
+# signature.
+write_versions \
+  "$(make_version 1 2026-01-01T00:00:00Z latest 20260101)" \
+  "$(make_signature 4 2026-01-01T00:01:00Z 1)" \
+  "$(make_version 2 2026-01-02T00:00:00Z 20260102)" \
+  "$(make_version 3 2026-01-03T00:00:00Z 20260103)"
+output="$(run_script "${BASE_ARGS[@]}" --min-versions-to-keep 1)"
+assert_status "a stranded latest with a signature exits 0" 0 "$?"
+assert_equal "the image tagged latest and its signature both survive" "2" "$(pruned_ids)"
+assert_contains "the stranded latest is still reported" "${output}" "KEEPING 1"
+
+# A dry run reaches the signatures too: it treats every image it would remove
+# as gone.
+signed_fixture
+output="$(run_script "${BASE_ARGS[@]}" --min-versions-to-keep 2 --dry-run)"
+assert_status "a dry run of a signed package exits 0" 0 "$?"
+assert_equal "a dry run of a signed package removes nothing" "" "$(pruned_ids)"
+assert_contains "a dry run names the signatures it would remove" "${output}" "would remove 11"
+assert_contains "a dry run counts images and signatures" "${output}" "4 of 4 candidate version(s) would go"
 
 # --- dry run --------------------------------------------------------------
 
@@ -662,10 +743,11 @@ assert_status "the prepare step exits 0" 0 "$?"
 assert_equal "the prepare step lowercases the repository name into IMAGE_NAME" \
   "IMAGE_NAME=arch-bootc" "$(cat "${GITHUB_ENV_FILE}")"
 
-# 31 versions against the retention floor the workflow passes: exactly one
-# version is outside it, so a changed or dropped `--min-versions-to-keep 30`
-# cannot pass here. The newest carries `latest`, as every published package
-# does.
+# 31 tagged images against the retention floor the workflow passes: exactly
+# one is outside it, so a changed or dropped `--min-versions-to-keep 30` cannot
+# pass here. Each carries a tag of its own, because an untagged version goes
+# whatever the floor says. The newest carries `latest`, as every published
+# package does.
 workflow_fixture() {
   local -a entries=()
   local id
@@ -673,7 +755,7 @@ workflow_fixture() {
     if ((id == 31)); then
       entries+=("$(make_version "${id}" "$(printf '2026-01-01T00:%02d:00Z' "${id}")" latest)")
     else
-      entries+=("$(make_version "${id}" "$(printf '2026-01-01T00:%02d:00Z' "${id}")")")
+      entries+=("$(make_version "${id}" "$(printf '2026-01-01T00:%02d:00Z' "${id}")" "build${id}")")
     fi
   done
   write_versions "${entries[@]}"
@@ -731,7 +813,7 @@ assert_equal "the retention floor is the same under the org scope" "1" "$(pruned
 # A package already inside its retention budget: the step must not delete
 # anything, and must still exit 0 so the job does not fail on a quiet day.
 write_versions \
-  "$(make_version 1 2026-01-01T00:01:00Z)" \
+  "$(make_version 1 2026-01-01T00:01:00Z 20260101)" \
   "$(make_version 2 2026-01-01T00:02:00Z latest)"
 output="$(run_prune_step Danathar User "${image_name}-base")"
 assert_status "a package within the retention floor exits 0" 0 "$?"
