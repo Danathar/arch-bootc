@@ -3390,6 +3390,153 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
 
 fi
 
+group "The fleet's shared refusal corpus (tests/fixtures/gate-refusal-corpus.json)"
+
+# Six repositories each carry their own copy of this gate, in bash and Python,
+# so a bypass fixed in one says nothing about the other five
+# (Danathar/atomic-image-builder#609). tests/fixtures/gate-refusal-corpus.json
+# is the one table they share: each row is a command, the verdict every gate
+# has to reach, and the command prefixes the row depends on. The rows this
+# repository's allow list reaches run through the registered hook here, so a
+# bypass found anywhere is one new row, and every repository that allows the
+# command fails until its gate refuses it.
+#
+# The canonical copy lives in Danathar/atomic-image-builder, whose
+# docs/gate-refusal-corpus.md documents the row format. The copy here is
+# pinned by SHA-256: change a row there, then copy the file here and update the
+# pin. Exit 2, or a "deny" decision on stdout, is a refusal; exit 0 with no
+# decision is an allow.
+
+CORPUS="tests/fixtures/gate-refusal-corpus.json"
+CORPUS_SHA256="8a4bf0f7118af630f2549633cb91d33a324312d5750bbc83e0f0a8489700cf71"
+
+# The command prefix each wildcard Bash(...) allow rule covers, one per line.
+# The fleet spells a prefix rule three ways (`git diff:*`, `git diff *`,
+# `git diff*`); all three cover `git diff`. A rule with no wildcard allows one
+# exact command and covers no prefix.
+corpus_allow_prefixes() {
+  jq -r '
+    .permissions.allow // [] | .[]
+    | select(startswith("Bash(") and endswith(")"))
+    | .[5:-1]
+    | if endswith(":*") then .[:-2]
+      elif endswith(" *") then .[:-2]
+      elif endswith("*") then .[:-1]
+      else empty end
+  '
+}
+
+# corpus_covered PREFIX PREFIXES: a prefix rule covers PREFIX at a word boundary.
+corpus_covered() {
+  local prefix="$1" rule
+  while IFS= read -r rule; do
+    [[ -n "${rule}" ]] || continue
+    if [[ "${prefix}" == "${rule}" || "${prefix}" == "${rule} "* ]]; then
+      return 0
+    fi
+  done <<<"$2"
+  return 1
+}
+
+if ((settings_readable)) && [[ -f "${CORPUS}" ]]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    shared_digest="$(sha256sum "${CORPUS}" | cut -d' ' -f1)"
+  else
+    shared_digest="$(shasum -a 256 "${CORPUS}" | cut -d' ' -f1)"
+  fi
+  assert_equal "the corpus copy matches the pinned canonical file" \
+    "${shared_digest}" "${CORPUS_SHA256}"
+  assert_equal "the corpus schema version is one this file reads" \
+    "$(jq -r '.schema' "${CORPUS}")" "1"
+  shared_bad_rows="$(jq -r '
+    .rows[]
+    | select(
+        (keys != ["class", "command", "id", "requires", "verdict", "why"])
+        or ((.verdict == "refuse" or .verdict == "allow") | not)
+        or ((.requires | length) == 0)
+        or any(.requires[]; . != (. | gsub("^\\s+|\\s+$"; "")))
+        or ((.command | gsub("\\s"; "")) == "")
+        or ((.why | gsub("\\s"; "")) == "")
+      )
+    | .id
+  ' "${CORPUS}")"
+  assert_equal "every corpus row has exactly the documented fields" "${shared_bad_rows}" ""
+  assert_equal "corpus row ids are unique" \
+    "$(jq -r '[.rows[].id] | unique | length' "${CORPUS}")" \
+    "$(jq -r '.rows | length' "${CORPUS}")"
+  # Refusals alone would pass a gate that refuses everything.
+  assert_equal "the corpus holds both verdicts" \
+    "$(jq -r '[.rows[].verdict] | unique | join(" ")' "${CORPUS}")" "allow refuse"
+
+  for shared_rule in 'Bash(git diff:*)' 'Bash(git diff *)' 'Bash(git diff*)'; do
+    if corpus_covered "git diff" \
+      "$(jq -n --arg r "${shared_rule}" '{permissions: {allow: [$r]}}' | corpus_allow_prefixes)"; then
+      pass "${shared_rule} covers the git diff prefix"
+    else
+      fail "${shared_rule} covers the git diff prefix"
+    fi
+  done
+  if corpus_covered "ruff check" \
+    "$(jq -n '{permissions: {allow: ["Bash(ruff check)"]}}' | corpus_allow_prefixes)"; then
+    fail "an exact allow rule covers no prefix"
+  else
+    pass "an exact allow rule covers no prefix"
+  fi
+  shared_prefixes="$(jq -n '{permissions: {allow: ["Bash(gh pr:*)"]}}' | corpus_allow_prefixes)"
+  if corpus_covered "gh pr view" "${shared_prefixes}" &&
+    ! corpus_covered "gh prx view" "${shared_prefixes}"; then
+    pass "a prefix rule covers only at a word boundary"
+  else
+    fail "a prefix rule covers only at a word boundary"
+  fi
+
+  shared_prefixes="$(corpus_allow_prefixes <"${CLAUDE_SETTINGS}")"
+  shared_hook="$(jq -r '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[0].command][0] // empty' \
+    "${CLAUDE_SETTINGS}")"
+  shared_applied=0
+  while IFS= read -r shared_row; do
+    shared_id="$(jq -r '.id' <<<"${shared_row}")"
+    shared_verdict="$(jq -r '.verdict' <<<"${shared_row}")"
+    shared_row_command="$(jq -r '.command' <<<"${shared_row}")"
+    shared_reachable=1
+    while IFS= read -r shared_prefix; do
+      corpus_covered "${shared_prefix}" "${shared_prefixes}" || shared_reachable=0
+    done < <(jq -r '.requires[]' <<<"${shared_row}")
+    ((shared_reachable)) || continue
+    shared_applied=$((shared_applied + 1))
+
+    shared_err_file="$(mktemp)"
+    shared_stdout="$(jq -cn --arg c "${shared_row_command}" '{tool_name: "Bash", tool_input: {command: $c}}' |
+      CLAUDE_PROJECT_DIR="${REPO_ROOT}" bash -c "${shared_hook}" 2>"${shared_err_file}")"
+    shared_status=$?
+    shared_stderr="$(cat "${shared_err_file}")"
+    rm -f "${shared_err_file}"
+    if ((shared_status != 0 && shared_status != 2)); then
+      fail "corpus row ${shared_id}: the hook exits 0 or 2" \
+        "exit ${shared_status}: ${shared_stderr:0:120}"
+      continue
+    fi
+    if ((shared_status == 2)) || [[ "${shared_stdout}" == *'"deny"'* ]]; then
+      shared_got="refuse"
+    else
+      shared_got="allow"
+    fi
+    assert_equal "corpus row ${shared_id}: ${shared_verdict} ${shared_row_command}" \
+      "${shared_got}" "${shared_verdict}"
+  done < <(jq -c '.rows[]' "${CORPUS}")
+
+  # If the allow list stopped covering `git diff`, every row would be skipped
+  # and the checks above would pass on nothing.
+  if ((shared_applied >= 20)); then
+    pass "enough corpus rows apply here to mean something (${shared_applied})"
+  else
+    fail "enough corpus rows apply here to mean something" "only ${shared_applied} apply"
+  fi
+else
+  fail "${CORPUS} is present and ${CLAUDE_SETTINGS} was readable" \
+    "the shared corpus did not run"
+fi
+
 printf '1..%d\n' "${checks_run}"
 if ((failures > 0)); then
   printf 'FAILED %d of %d assertion(s)\n' "${failures}" "${checks_run}" >&2
