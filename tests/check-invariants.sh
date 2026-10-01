@@ -1030,23 +1030,30 @@ var_group="$(id -gn)"
 V="${var_work}/var"
 
 # Covered: a path named with a trailing slash, one whose line is commented out
-# (so it is NOT covered), /var/tmp, and systemd's `L /var/run`, which only
-# matches as written because resolving it gives /run. Uncovered: a package
-# directory with a file in it, a nested spool, the filesystem package's
-# /var/mail symlink (an `L` line with its target), and the /var/tmp
+# (so it is NOT covered), /var/tmp, systemd's `L /var/run`, which only
+# matches as written because resolving it gives /run, and a directory named
+# through the /var/mail symlink, which only matches resolved. Uncovered: a
+# package directory with a file in it, a nested spool, the filesystem
+# package's /var/mail symlink (an `L` line with its target), and the /var/tmp
 # directory's own contents, which are skipped. Home directories are skipped
 # whole.
+# Both symlinks point at directories that exist, as they do in the image:
+# /var/mail is a symlink and not a directory even though `[ -d ]` says it is
+# one, and the scan must not follow /var/run into what /run holds.
 cat >"${var_work}/tmpfiles.conf" <<CONF
 # /usr/lib/tmpfiles.d/var.conf
 d ${V}/lib 0755 - - -
 d ${V}/cache/fc/ 0755 - - -
 q ${V}/tmp 1777 root root 30d
 L ${V}/run - - - - ../run
+d ${V}/mail/archive 0755 - - -
 #d ${V}/spool 0755 - - -
 CONF
 mkdir -p "${V}/lib/pkgdir" "${V}/cache/fc" "${V}/spool/q/sub" "${V}/tmp/scratch" \
-  "${V}/home/someone/cache" "${V}/roothome/.config" "${var_work}/run"
+  "${V}/home/someone/cache" "${V}/roothome/.config" "${var_work}/run/systemd" \
+  "${V}/spool/mail/archive"
 chmod 0755 "${V}/cache" "${V}/spool" "${V}/spool/q"
+chmod 1777 "${V}/spool/mail"
 chmod 0750 "${V}/lib/pkgdir"
 chmod 1770 "${V}/spool/q/sub"
 : >"${V}/lib/pkgdir/state.db"
@@ -1060,6 +1067,7 @@ var_expected="$(printf 'd "%s" %s %s %s -\n' \
 printf 'L "%s" - - - - spool/mail\n' "${V}/mail"
 printf 'd "%s" %s %s %s -\n' \
   "${V}/spool" 755 "${var_user}" "${var_group}" \
+  "${V}/spool/mail" 1777 "${var_user}" "${var_group}" \
   "${V}/spool/q" 755 "${var_user}" "${var_group}" \
   "${V}/spool/q/sub" 1770 "${var_user}" "${var_group}")"
 var_out="$(cd -- "${var_work}" && PATH="${var_work}/bin:${PATH}" bash -c "${var_cmd}" 2>&1)"
