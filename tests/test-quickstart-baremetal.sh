@@ -577,6 +577,47 @@ run_cleanup
 assert_status "the handler succeeds with nothing to clean up" 0 "${STATUS}"
 assert_equals "nothing is touched when no directory was staged" "" "$(cleanup_calls)"
 
+# warn_if_selinux_enforcing: an install from an SELinux-enforcing host is
+# unverified (the image ships no chcon, which bootc install uses there), so
+# main warns before anything is pulled. Driven against a stand-in for
+# /sys/fs/selinux/enforce, since the host's own answer is whatever it is.
+run_selinux_warning() {
+  # shellcheck disable=SC2016
+  OUT="$(
+    "${BASH}" -c '
+      source "$1" 2>/dev/null
+      SELINUX_ENFORCE_FILE="$2"
+      warn_if_selinux_enforcing
+    ' _ "${QUICKSTART}" "$1" 2>&1
+  )"
+  STATUS=$?
+}
+
+new_case
+printf '1\n' >"${OUT_DIR}/enforce"
+run_selinux_warning "${OUT_DIR}/enforce"
+assert_status "an enforcing host is warned, not refused" 0 "${STATUS}"
+assert_contains "the warning says to install from a host without SELinux enforcing" "${OUT}" \
+  "without SELinux enforcing"
+assert_contains "the warning names chcon as the reason" "${OUT}" "chcon"
+
+new_case
+printf '0\n' >"${OUT_DIR}/enforce"
+run_selinux_warning "${OUT_DIR}/enforce"
+assert_status "a permissive host passes" 0 "${STATUS}"
+assert_equals "a permissive host is not warned" "" "${OUT}"
+
+new_case
+run_selinux_warning "${OUT_DIR}/no-selinux-here"
+assert_status "a host without SELinux passes" 0 "${STATUS}"
+assert_equals "a host without SELinux is not warned" "" "${OUT}"
+
+if grep -q '^    warn_if_selinux_enforcing$' "${QUICKSTART}"; then
+  check "main runs the SELinux check" 0
+else
+  check "main runs the SELinux check" 1 "warn_if_selinux_enforcing is never called"
+fi
+
 # A real block device, used only to satisfy `[ -b ]`. Every command run against
 # it below is stubbed, and none of these functions writes anything.
 #

@@ -872,6 +872,17 @@ done < <(find "${UNIT_SRC_DIR}" -mindepth 1 -maxdepth 1 -type d -name '*.d' | so
 # assertion above is satisfied by any one copy, so a copy edited on its own, or
 # dropped from one flavor, passed. These read each stage separately.
 
+# Every lint call is this one line. --fatal-warnings is what lets the lint fail
+# the build: without it each warning is a line in a log nobody reads, and
+# nonempty-run-tmp and var-tmpfiles both shipped that way. --skip runtime-deps
+# is the single exception, for the chcon Arch does not ship (issue #425).
+LINT_RUN='RUN bootc container lint --fatal-warnings --skip runtime-deps'
+lint_lines="$(grep -E '^[[:space:]]*[^#[:space:]].*bootc container lint' "${CONTAINERFILE}")"
+assert_equal "the Containerfile runs bootc container lint four times (base-core and each flavor)" \
+  "$(grep -c . <<<"${lint_lines}")" "4"
+assert_equal "every bootc container lint call carries --fatal-warnings and skips only runtime-deps" \
+  "$(grep -vxF "${LINT_RUN}" <<<"${lint_lines}")" ""
+
 # The instructions of one stage, one per line: whole-line comments and blank
 # lines dropped, `\`-continued lines folded into their instruction, runs of
 # whitespace collapsed, so two copies compare equal whatever their indentation.
@@ -928,7 +939,7 @@ while IFS= read -r flavor; do
       "instruction $((last_link + 1)) creates a symlink the check at instruction $((verify_at + 1)) never sees"
   fi
   assert_equal "the ${flavor} stage ends with bootc container lint" \
-    "${flavor_steps[-1]:-}" "RUN bootc container lint"
+    "${flavor_steps[-1]:-}" "${LINT_RUN}"
 
   assert_equal "the ${flavor} stage tags files for rechunking the same way the base flavor does" \
     "$(grep -F 'CHUNK_TAG' < <(printf '%s\n' "${flavor_steps[@]}"))" "${flavor_chunk_tag}"
@@ -956,14 +967,14 @@ while IFS= read -r stage; do
   [[ -n "${stage}" ]] || continue
   mapfile -t stage_steps < <(stage_instructions "${stage}")
   for i in "${!stage_steps[@]}"; do
-    [[ "${stage_steps[i]}" == "RUN bootc container lint" ]] || continue
+    [[ "${stage_steps[i]}" == "${LINT_RUN}" ]] || continue
     lint_calls=$((lint_calls + 1))
     assert_equal "the ${stage} stage empties /run and /tmp, unchanged, straight before bootc container lint" \
       "${stage_steps[i - 1]:-}" "${run_tmp_reset}"
   done
 done < <(grep -oE '^FROM .* AS [a-z][a-z0-9-]*$' "${CONTAINERFILE}" | awk '{print $NF}')
 assert_equal "every bootc container lint call was checked for the /run and /tmp reset" \
-  "${lint_calls}" "$(grep -c '^RUN bootc container lint$' "${CONTAINERFILE}")"
+  "${lint_calls}" "$(grep -cxF "${LINT_RUN}" "${CONTAINERFILE}")"
 
 # bootc copies /var out of the image only at install, and every `pacman -S`
 # after base-core's `rm -rf /var` fills it again (package-owned directories,
@@ -986,14 +997,14 @@ while IFS= read -r stage; do
   [[ -n "${stage}" ]] || continue
   mapfile -t stage_steps < <(stage_instructions "${stage}")
   for i in "${!stage_steps[@]}"; do
-    [[ "${stage_steps[i]}" == "RUN bootc container lint" ]] || continue
+    [[ "${stage_steps[i]}" == "${LINT_RUN}" ]] || continue
     var_resets=$((var_resets + 1))
     assert_equal "the ${stage} stage empties /var, unchanged, straight before its /run and /tmp reset" \
       "${stage_steps[i - 2]:-}" "${var_reset}"
   done
 done < <(grep -oE '^FROM .* AS [a-z][a-z0-9-]*$' "${CONTAINERFILE}" | awk '{print $NF}')
 assert_equal "every bootc container lint call was checked for the /var reset" \
-  "${var_resets}" "$(grep -c '^RUN bootc container lint$' "${CONTAINERFILE}")"
+  "${var_resets}" "$(grep -cxF "${LINT_RUN}" "${CONTAINERFILE}")"
 
 # The checks above pin the /var reset's TEXT: one copy, the same everywhere.
 # What the text does was never run, so a change to the find exclusions, the

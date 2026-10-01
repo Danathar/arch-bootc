@@ -424,7 +424,16 @@ RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpL
 RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
       -exec rm -rf {} + || true
 
-RUN bootc container lint
+# --fatal-warnings: a lint that only warns cannot fail the build, and one that
+# warns on every build hides the next warning in a log nobody reads
+# (nonempty-run-tmp and var-tmpfiles both arrived that way). runtime-deps is
+# skipped because it reports exactly one missing command, chcon: Arch's
+# coreutils ships none. bootc install uses chcon to relabel itself install_t
+# when it runs on an SELinux host, so until an install from an SELinux-
+# enforcing host has been checked by hand (issue #425), docs/installation.md
+# and scripts/quickstart.sh say to install from a host without SELinux
+# enforcing. Every lint call in this file carries the same flags.
+RUN bootc container lint --fatal-warnings --skip runtime-deps
 
 # Copy ublue-os/brew and enable its systemd services. `systemctl preset` has
 # no way to target /usr — it always writes to /etc — so this is intentionally
@@ -621,7 +630,8 @@ RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpL
 RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
       -exec rm -rf {} + || true
 
-RUN bootc container lint
+# Same flags as base-core's lint; the comment there says why.
+RUN bootc container lint --fatal-warnings --skip runtime-deps
 
 
 # --- Desktop Layer ---
@@ -731,7 +741,8 @@ RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpL
 RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
       -exec rm -rf {} + || true
 
-RUN bootc container lint
+# Same flags as base-core's lint; the comment there says why.
+RUN bootc container lint --fatal-warnings --skip runtime-deps
 
 
 # --- Desktop Layer (XFCE) ---
@@ -810,4 +821,5 @@ RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpL
 RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
       -exec rm -rf {} + || true
 
-RUN bootc container lint
+# Same flags as base-core's lint; the comment there says why.
+RUN bootc container lint --fatal-warnings --skip runtime-deps

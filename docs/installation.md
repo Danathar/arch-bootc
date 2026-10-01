@@ -72,6 +72,15 @@ actually happening — the quickstart just runs them for you.
   without it (`verify_published_image` in `scripts/quickstart.sh`), and the
   manual Path A and bare-metal steps below run the same check. It is not needed
   when you install an image you built locally: there is no signature to check.
+- <a id="install-host-selinux"></a>A host where SELinux is **not** enforcing
+  (`getenforce` prints `Disabled` or `Permissive`, or the command is absent).
+  On an SELinux host, `bootc install` relabels a copy of itself with `chcon` to
+  run as `install_t`, and this Arch image ships no `chcon`. Whether an install
+  from an enforcing host gets past that step has not been checked yet
+  ([#425](https://github.com/Danathar/arch-bootc/issues/425)). Fedora and its
+  live media enforce SELinux by default, so use another host or live
+  environment until then. `just quickstart` warns when it sees an enforcing
+  host.
 
 > **Note:** This project uses `just` as a command runner. You can inspect the `Justfile` to see the underlying `podman` and `qemu` commands being executed.
 
@@ -257,7 +266,8 @@ qemu-img info output/arch-bootc-100g.qcow2
 
 ### 5. Install On Bare Metal (Clean Reimage)
 Install directly to physical hardware from any Linux live environment with
-`podman` available. `bootc install to-disk` writes straight to the target
+`podman` available and SELinux not enforcing (see
+[Prerequisites](#install-host-selinux)). `bootc install to-disk` writes straight to the target
 block device — no intermediate raw image file, no `dd`.
 
 1. Identify the target disk:
