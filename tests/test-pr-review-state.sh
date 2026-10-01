@@ -1708,9 +1708,7 @@ path_is_tiered() { # path
 # ledger is checked in both directions, so it can only shrink -- a new
 # untiered file fails until it is tiered or recorded here, and an entry fails
 # as soon as the page tiers it, so the record cannot outlive the gap.
-declare -A UNTIERED_PATHS=(
-  [scripts/pr-review-state.sh]="run by ai-fix.yml with a repository token"
-)
+declare -A UNTIERED_PATHS=()
 
 untiered_unrecorded=""
 tracked_checked=0
