@@ -8727,6 +8727,112 @@ else
       "the 'Installs follow \`:latest\`' sentence changed; re-check it against DEFAULT_TAG"
   fi
 
+  # "Every pull request that changes more than documentation builds the image."
+  # build.yml's pull_request trigger has a paths-ignore list, and a pull request
+  # that matches only those paths runs docs-tests.yml, which does not build. The
+  # README said every pull request built the image until #428; the scope has to
+  # stay while the filter does. Read from the pull_request block itself, since
+  # the push trigger carries the same list.
+  status_flat="$(tr '\n' ' ' <<<"${status_section}" | tr -s ' ')"
+  status_pr_ignore="$(awk '
+    /^  pull_request:[[:space:]]*$/ { pr = 1; next }
+    pr && /^  [^ ]/ { exit }
+    pr && /^    paths-ignore:/ { grab = 1; next }
+    pr && grab && /^      - / { item = substr($0, 9); gsub(/"/, "", item); printf "%s ", item; next }
+    grab { grab = 0 }
+  ' "${BUILD_WORKFLOW}")"
+  if [[ -n "${status_pr_ignore// /}" ]]; then
+    if [[ "${status_flat}" == *"Every pull request that changes more than documentation builds the image"* ]]; then
+      pass "${STATUS_DOC} scopes the build claim to the pull requests build.yml does not skip"
+    else
+      fail "${STATUS_DOC} scopes the build claim to the pull requests build.yml does not skip" \
+        "build.yml's pull_request trigger ignores ${status_pr_ignore% }, but the 'Every pull request that changes more than documentation builds the image' sentence is gone"
+    fi
+  else
+    fail "${STATUS_DOC} scopes the build claim to the pull requests build.yml does not skip" \
+      "build.yml's pull_request trigger no longer has a paths-ignore list; every pull request builds now, so drop the scope"
+  fi
+
+  # "Each publish also pushes a dated tag, `YYYYMMDD`, but old images are
+  # pruned." Both halves are build.yml: the metadata step's date-only tag rule,
+  # and cleanup_packages running the prune script with a floor.
+  # shellcheck disable=SC2016 # literal backticks
+  if [[ "${status_flat}" == *'Each publish also pushes a dated tag, `YYYYMMDD`, but old images are pruned'* ]]; then
+    pass "${STATUS_DOC} still says each publish pushes a dated tag that is later pruned"
+  else
+    fail "${STATUS_DOC} still says each publish pushes a dated tag that is later pruned" \
+      "the dated-tag sentence changed; re-check it against build.yml's metadata tags and cleanup_packages"
+  fi
+  assert_present "build.yml still pushes the date-only tag the Project status section names" \
+    "${BUILD_WORKFLOW}" "^[[:space:]]*type=raw,value=\{\{date 'YYYYMMDD'\}\}[[:space:]]*$"
+  if grep -qE -- '(^|[[:space:]/])prune-package-versions\.sh[[:space:]]' <<<"${cicd_cleanup}" && [[ -n "${cicd_keep}" ]]; then
+    pass "cleanup_packages still prunes old images, as the Project status section says"
+  else
+    fail "cleanup_packages still prunes old images, as the Project status section says" \
+      "no active prune-package-versions.sh --min-versions-to-keep line in cleanup_packages"
+  fi
+
+  # Criterion 3 asks for release tags that are never pruned. Every tag rule the
+  # metadata step applies outside pull requests is today either repointed
+  # (DEFAULT_TAG) or dated and pruned, so the box must be open. A new rule fails
+  # here so whoever adds it decides whether it is that release tag.
+  status_release_box="$(status_box_state 'Images are published under release tags that are never pruned')"
+  status_tag_rules="$(awk '
+    /^[[:space:]]*- name: Image Metadata[[:space:]]*$/ { on = 1; next }
+    on && /^[[:space:]]*- name: / { exit }
+    on && /^[[:space:]]*labels:/ { exit }
+    on && /^[[:space:]]*type=/ { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print }
+  ' "${BUILD_WORKFLOW}")"
+  status_unknown_rules=""
+  status_known_rules=0
+  while IFS= read -r status_rule; do
+    [[ -n "${status_rule}" ]] || continue
+    case "${status_rule}" in
+      "type=raw,value=\${{ env.DEFAULT_TAG }}" | \
+        "type=raw,value=\${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}" | \
+        "type=raw,value={{date 'YYYYMMDD'}}" | \
+        "type=sha,enable=\${{ github.event_name == 'pull_request' }}" | \
+        'type=ref,event=pr')
+        status_known_rules=$((status_known_rules + 1))
+        ;;
+      *) status_unknown_rules+="${status_rule} | " ;;
+    esac
+  done <<<"${status_tag_rules}"
+  if ((status_known_rules == 0)); then
+    fail "${STATUS_DOC}'s never-pruned release tag criterion is open while every published tag is repointed or pruned" \
+      "no tag rule read from build.yml's Image Metadata step; the extraction is empty"
+  elif [[ -n "${status_unknown_rules}" ]]; then
+    fail "${STATUS_DOC}'s never-pruned release tag criterion is open while every published tag is repointed or pruned" \
+      "build.yml has a new tag rule (${status_unknown_rules% | }); decide whether it is a release tag and update the Project status section"
+  else
+    assert_equal "${STATUS_DOC}'s never-pruned release tag criterion is open while every published tag is repointed or pruned" \
+      "${status_release_box}" "open"
+  fi
+
+  # The second way back: `bootc switch` to a dated tag. The image has to be one
+  # the build publishes, and the tag the dated placeholder, not a moving tag.
+  status_switch_refs="$(grep -Eo 'bootc switch ghcr\.io/[^ `]+' <<<"${status_section}" | sed 's/^bootc switch //' | sort -u)"
+  status_switch_bad=""
+  while IFS= read -r status_ref; do
+    [[ -n "${status_ref}" ]] || continue
+    status_image="${status_ref##*/}"
+    status_flavor="${status_image%%:*}"
+    status_flavor="${status_flavor#arch-bootc-}"
+    grep -qw -- "${status_flavor}" <<<"${workflow_flavors}" ||
+      status_switch_bad+="${status_ref} (flavor '${status_flavor}' is not in the build matrix) "
+    [[ "${status_image##*:}" == "YYYYMMDD" ]] ||
+      status_switch_bad+="${status_ref} (not the dated tag) "
+  done <<<"${status_switch_refs}"
+  if [[ -z "${status_switch_refs}" ]]; then
+    fail "the dated-tag way back in ${STATUS_DOC}'s Project status section switches to a published image" \
+      "no 'bootc switch ghcr.io/...' command in the section"
+  elif [[ -n "${status_switch_bad}" ]]; then
+    fail "the dated-tag way back in ${STATUS_DOC}'s Project status section switches to a published image" \
+      "${status_switch_bad}"
+  else
+    pass "the dated-tag way back in ${STATUS_DOC}'s Project status section switches to a published image"
+  fi
+
   # The section's own links: the gap list anchor, the manual VM procedure, and
   # the in-page anchor. Same slug rule as assert_doc_links_resolve above.
   status_links=0
