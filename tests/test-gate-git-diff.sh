@@ -1421,6 +1421,62 @@ if ((settings_readable)); then
     assert_hook_permits "findmnt without -F, or -F outside a findmnt command, is left alone: ${ok}" \
       "${ok}"
   done
+  # The cluster scan stops at the first short option that takes a value, so
+  # which letters count as value-taking decides what it sees: a letter wrongly
+  # on the value list hides the F behind it (`-AF FILE` read as -A with the
+  # value F, when findmnt reads it as -A -F FILE), and a letter wrongly off it
+  # refuses a mount query whose value starts with F. The rows above exercise
+  # only -r, -l, -n and -o, so every other letter is pinned here, from
+  # util-linux 2.41's getopt string. h, H and V are left out: findmnt prints
+  # help, the column list or its version and exits without reading the file.
+  findmnt_flag_letters='a b c e f i k l m n r s u v x y A C D I J P R U'
+  findmnt_value_letters='d o p t w M N O Q S T'
+  # Checked against the installed findmnt first, on a stand-in file: each flag
+  # letter in front of F prints its line back, and no value letter does.
+  if command -v findmnt >/dev/null 2>&1; then
+    findmnt_dir="$(mktemp -d)"
+    printf 'aws_secret_access_key = STAND-IN-NOT-A-SECRET\n' >"${findmnt_dir}/credentials"
+    findmnt_wrong=''
+    for letter in ${findmnt_flag_letters}; do
+      findmnt_out="$(timeout 5 findmnt "-${letter}F" "${findmnt_dir}/credentials" </dev/null 2>&1)"
+      [[ "${findmnt_out}" == *STAND-IN-NOT-A-SECRET* ]] || findmnt_wrong+=" -${letter}F(no read)"
+    done
+    for letter in ${findmnt_value_letters}; do
+      findmnt_out="$(timeout 5 findmnt "-${letter}F" "${findmnt_dir}/credentials" </dev/null 2>&1)"
+      [[ "${findmnt_out}" != *STAND-IN-NOT-A-SECRET* ]] || findmnt_wrong+=" -${letter}F(read)"
+    done
+    rm -rf "${findmnt_dir}"
+    if [[ -z "${findmnt_wrong}" ]]; then
+      pass "the installed findmnt reads -<letter>F as -F for each flag letter and as a value for each value letter"
+    else
+      fail "the installed findmnt reads -<letter>F as -F for each flag letter and as a value for each value letter" \
+        "these disagree:${findmnt_wrong}; move the letter between the lists here and in the hook's cluster scan"
+    fi
+  fi
+  for letter in ${findmnt_flag_letters}; do
+    assert_hook_refuses_naming "an F behind a flag letter in a findmnt cluster is still -F: -${letter}F" \
+      "findmnt -${letter}F .env" 'findmnt -F FILE'
+  done
+  for letter in ${findmnt_value_letters}; do
+    assert_hook_permits "an F behind a value letter in a findmnt cluster is that letter's value: -r${letter}Fdir" \
+      "findmnt -r${letter}Fdir"
+  done
+  # The option bash or findmnt sees once quoting is removed is what counts,
+  # not the word as typed; `--tab=FILE` is the abbreviation's `=` form; and a
+  # brace with no F in it as typed still expands to the option.
+  for tab_file in \
+    'findmnt --tab=.env' \
+    'findmnt "-F" .env' \
+    "findmnt '--tab-file' .env" \
+    'findmnt -\F .env'; do
+    assert_hook_refuses_naming "findmnt reading a file as an fstab table is refused: ${tab_file}" \
+      "${tab_file}" 'findmnt -F FILE'
+  done
+  assert_hook_refuses_naming "a findmnt word bash rewrites is refused: findmnt --{tab,tab}=.env" \
+    'findmnt --{tab,tab}=.env' 'bash rewrites this word of a findmnt invocation'
+  # An extglob operator only opens a pattern when a `(` follows it.
+  assert_hook_permits "a findmnt word ending in @ with no ( after it is left alone" \
+    'findmnt -T /srv/a@ -r'
   # The hook re-gates what the permission rules wave through. A command no
   # allow rule covers prompts on its own, and a redirection on another
   # command of the same string is that command's own. The brace group and
