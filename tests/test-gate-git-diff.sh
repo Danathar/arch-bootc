@@ -3493,6 +3493,22 @@ if ((settings_readable)) && [[ -f "${CORPUS}" ]]; then
   shared_prefixes="$(corpus_allow_prefixes <"${CLAUDE_SETTINGS}")"
   shared_hook="$(jq -r '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[0].command][0] // empty' \
     "${CLAUDE_SETTINGS}")"
+  # The rows run in a scratch repository with two commits and a copy of
+  # .claude/, not in this checkout. CI checks this repository out at depth 1,
+  # where `HEAD~1` names no commit, so the gate reads `git diff HEAD~1 HEAD`
+  # as two plain-file operands and refuses it -- correctly for that checkout,
+  # but it fails the allow-diff-range row, whose verdict assumes the history
+  # an agent's working clone has.
+  shared_project="$(mktemp -d)"
+  cp -R "${REPO_ROOT}/.claude" "${shared_project}/.claude"
+  (
+    cd "${shared_project}" || exit 1
+    git init -q . &&
+      git -c user.email=t@example.invalid -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m first &&
+      git -c user.email=t@example.invalid -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m second
+  ) </dev/null >/dev/null 2>&1
+  assert_equal "the scratch repository for the corpus has a HEAD~1" \
+    "$(git -C "${shared_project}" rev-list --count HEAD 2>/dev/null)" "2"
   shared_applied=0
   while IFS= read -r shared_row; do
     shared_id="$(jq -r '.id' <<<"${shared_row}")"
@@ -3507,7 +3523,7 @@ if ((settings_readable)) && [[ -f "${CORPUS}" ]]; then
 
     shared_err_file="$(mktemp)"
     shared_stdout="$(jq -cn --arg c "${shared_row_command}" '{tool_name: "Bash", tool_input: {command: $c}}' |
-      CLAUDE_PROJECT_DIR="${REPO_ROOT}" bash -c "${shared_hook}" 2>"${shared_err_file}")"
+      CLAUDE_PROJECT_DIR="${shared_project}" bash -c "${shared_hook}" 2>"${shared_err_file}")"
     shared_status=$?
     shared_stderr="$(cat "${shared_err_file}")"
     rm -f "${shared_err_file}"
@@ -3524,6 +3540,7 @@ if ((settings_readable)) && [[ -f "${CORPUS}" ]]; then
     assert_equal "corpus row ${shared_id}: ${shared_verdict} ${shared_row_command}" \
       "${shared_got}" "${shared_verdict}"
   done < <(jq -c '.rows[]' "${CORPUS}")
+  rm -rf "${shared_project}"
 
   # If the allow list stopped covering `git diff`, every row would be skipped
   # and the checks above would pass on nothing.
