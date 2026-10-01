@@ -391,16 +391,22 @@ RUN --mount=type=bind,source=system_files/usr/lib/systemd/system,target=/tmp/shi
 # without its `d` line journald's Storage=auto falls back to the volatile
 # /run/log/journal. base-core's cleanup above leaves /var alone for the same
 # reason: deleting it there would drop base-core's directories before this
-# step could convert them. Files are dropped: the caches rebuild at runtime.
+# step could convert them. Symlinks get the same treatment as `L` lines:
+# systemd recreates /var/run and /var/lock itself, but nothing recreates the
+# filesystem package's /var/mail -> spool/mail. A covered path is matched both
+# resolved and as written (`realpath -ms`), since resolving turns systemd's
+# `L /var/run` into /run. Files are dropped: the caches rebuild at runtime.
 # Home directories and /var/tmp's contents are never package state and are
 # skipped.
 # The lines are printed to the build log. This runs before every lint call,
 # like the /run and /tmp reset below, because each flavor installs packages.
-RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpLcbC]/ && NF >= 2 { print $2 }' | xargs -r -d '\n' realpath -m --)" && \
-    lines="$(find /var -mindepth 1 -type d \
+RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpLcbC]/ && NF >= 2 { print $2 }' | xargs -r -d '\n' sh -c 'realpath -m -- "$@"; realpath -ms -- "$@"' sh)" && \
+    lines="$(find /var -mindepth 1 \( -type d -o -type l \) \
       ! -path /var/home ! -path '/var/home/*' ! -path /var/roothome ! -path '/var/roothome/*' ! -path '/var/tmp/*' \
-      | sort | while IFS= read -r dir; do \
-        printf '%s\n' "${covered}" | grep -qxF -- "${dir}" || stat -c 'd "%n" %a %U %G -' "${dir}"; \
+      | sort | while IFS= read -r path; do \
+        printf '%s\n' "${covered}" | grep -qxF -- "${path}" || \
+          if [ -L "${path}" ]; then printf 'L "%s" - - - - %s\n' "${path}" "$(readlink -- "${path}")"; \
+          else stat -c 'd "%n" %a %U %G -' "${path}"; fi; \
       done)" && \
     if printf '%s\n' "${lines}" | grep -q ' UNKNOWN '; then echo "error: /var directory with an owner or group that has no name:" >&2; printf '%s\n' "${lines}" | grep ' UNKNOWN ' >&2; exit 1; fi && \
     if [ -n "${lines}" ]; then printf '%s\n' "${lines}" | tee -a /usr/lib/tmpfiles.d/arch-bootc-var.conf; fi && \
@@ -598,11 +604,13 @@ RUN --mount=type=bind,source=system_files/usr/lib/systemd/system,target=/tmp/shi
 
 # Same /var reset as base-core's. This stage installs no packages, so it finds
 # /var empty today; it is repeated so that every lint call runs after it.
-RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpLcbC]/ && NF >= 2 { print $2 }' | xargs -r -d '\n' realpath -m --)" && \
-    lines="$(find /var -mindepth 1 -type d \
+RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpLcbC]/ && NF >= 2 { print $2 }' | xargs -r -d '\n' sh -c 'realpath -m -- "$@"; realpath -ms -- "$@"' sh)" && \
+    lines="$(find /var -mindepth 1 \( -type d -o -type l \) \
       ! -path /var/home ! -path '/var/home/*' ! -path /var/roothome ! -path '/var/roothome/*' ! -path '/var/tmp/*' \
-      | sort | while IFS= read -r dir; do \
-        printf '%s\n' "${covered}" | grep -qxF -- "${dir}" || stat -c 'd "%n" %a %U %G -' "${dir}"; \
+      | sort | while IFS= read -r path; do \
+        printf '%s\n' "${covered}" | grep -qxF -- "${path}" || \
+          if [ -L "${path}" ]; then printf 'L "%s" - - - - %s\n' "${path}" "$(readlink -- "${path}")"; \
+          else stat -c 'd "%n" %a %U %G -' "${path}"; fi; \
       done)" && \
     if printf '%s\n' "${lines}" | grep -q ' UNKNOWN '; then echo "error: /var directory with an owner or group that has no name:" >&2; printf '%s\n' "${lines}" | grep ' UNKNOWN ' >&2; exit 1; fi && \
     if [ -n "${lines}" ]; then printf '%s\n' "${lines}" | tee -a /usr/lib/tmpfiles.d/arch-bootc-var.conf; fi && \
@@ -706,11 +714,13 @@ RUN --mount=type=bind,source=system_files/usr/lib/systemd/system,target=/tmp/shi
 
 # Same /var reset as base-core's, re-run here because this stage installs
 # packages, and pacman fills /var again.
-RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpLcbC]/ && NF >= 2 { print $2 }' | xargs -r -d '\n' realpath -m --)" && \
-    lines="$(find /var -mindepth 1 -type d \
+RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpLcbC]/ && NF >= 2 { print $2 }' | xargs -r -d '\n' sh -c 'realpath -m -- "$@"; realpath -ms -- "$@"' sh)" && \
+    lines="$(find /var -mindepth 1 \( -type d -o -type l \) \
       ! -path /var/home ! -path '/var/home/*' ! -path /var/roothome ! -path '/var/roothome/*' ! -path '/var/tmp/*' \
-      | sort | while IFS= read -r dir; do \
-        printf '%s\n' "${covered}" | grep -qxF -- "${dir}" || stat -c 'd "%n" %a %U %G -' "${dir}"; \
+      | sort | while IFS= read -r path; do \
+        printf '%s\n' "${covered}" | grep -qxF -- "${path}" || \
+          if [ -L "${path}" ]; then printf 'L "%s" - - - - %s\n' "${path}" "$(readlink -- "${path}")"; \
+          else stat -c 'd "%n" %a %U %G -' "${path}"; fi; \
       done)" && \
     if printf '%s\n' "${lines}" | grep -q ' UNKNOWN '; then echo "error: /var directory with an owner or group that has no name:" >&2; printf '%s\n' "${lines}" | grep ' UNKNOWN ' >&2; exit 1; fi && \
     if [ -n "${lines}" ]; then printf '%s\n' "${lines}" | tee -a /usr/lib/tmpfiles.d/arch-bootc-var.conf; fi && \
@@ -783,11 +793,13 @@ RUN --mount=type=bind,source=system_files/usr/lib/systemd/system,target=/tmp/shi
 
 # Same /var reset as base-core's, re-run here because this stage installs
 # packages, and pacman fills /var again.
-RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpLcbC]/ && NF >= 2 { print $2 }' | xargs -r -d '\n' realpath -m --)" && \
-    lines="$(find /var -mindepth 1 -type d \
+RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpLcbC]/ && NF >= 2 { print $2 }' | xargs -r -d '\n' sh -c 'realpath -m -- "$@"; realpath -ms -- "$@"' sh)" && \
+    lines="$(find /var -mindepth 1 \( -type d -o -type l \) \
       ! -path /var/home ! -path '/var/home/*' ! -path /var/roothome ! -path '/var/roothome/*' ! -path '/var/tmp/*' \
-      | sort | while IFS= read -r dir; do \
-        printf '%s\n' "${covered}" | grep -qxF -- "${dir}" || stat -c 'd "%n" %a %U %G -' "${dir}"; \
+      | sort | while IFS= read -r path; do \
+        printf '%s\n' "${covered}" | grep -qxF -- "${path}" || \
+          if [ -L "${path}" ]; then printf 'L "%s" - - - - %s\n' "${path}" "$(readlink -- "${path}")"; \
+          else stat -c 'd "%n" %a %U %G -' "${path}"; fi; \
       done)" && \
     if printf '%s\n' "${lines}" | grep -q ' UNKNOWN '; then echo "error: /var directory with an owner or group that has no name:" >&2; printf '%s\n' "${lines}" | grep ' UNKNOWN ' >&2; exit 1; fi && \
     if [ -n "${lines}" ]; then printf '%s\n' "${lines}" | tee -a /usr/lib/tmpfiles.d/arch-bootc-var.conf; fi && \
