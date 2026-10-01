@@ -565,8 +565,10 @@ jobs:
       # This workflow pushes `latest`, `latest.YYYYMMDD` and `YYYYMMDD` for
       # every one of the 3 flavors on every publish (daily via the schedule
       # trigger, plus every push to main), forever, with nothing removing
-      # old versions. --min-versions-to-keep keeps the N most-recently-created
-      # versions of the package and prunes the rest; since a package's
+      # old versions. The script removes untagged versions, keeps the N
+      # most-recently-created tagged images (signatures and untagged versions
+      # do not count), prunes the rest, then removes each signature whose
+      # image is gone; since a package's
       # `latest` tag is repointed to the newest version on every publish, the
       # version currently tagged `latest` is always among the most recent and
       # so is always kept. scripts/prune-package-versions.sh enforces that
