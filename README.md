@@ -86,14 +86,21 @@ and leave to update unattended. Try it in a VM or on hardware you can wipe.
 
 What beta means here:
 
-- **CI proves the image builds, not that it boots.** Every pull request builds
-  the image and runs the shell suite and a quickstart dry run. Nothing in CI
+- **CI proves the image builds, not that it boots.** Every pull request that
+  changes more than documentation builds the image, and every pull request runs
+  the shell suite and a quickstart dry run. Nothing in CI
   boots the result, runs first boot, or upgrades a deployed system to the new
   image. Those are checked by hand. [Quality signals](docs/quality.md#where-the-gaps-are)
   lists every gap.
-- **There are no versioned releases.** Installs follow `:latest`, so every
-  merge to `main` reaches every system on its next upgrade. Getting back to a
-  known-good system means `bootc rollback` to the previous deployment.
+- **No release tag is kept for good.** Installs follow `:latest`, so every
+  merge to `main` reaches every system on its next upgrade. Each publish also
+  pushes a dated tag, `YYYYMMDD`, but old images are pruned, so a date stays
+  available only for a limited time. [Pruning old package versions](docs/ci-cd.md#pruning-old-package-versions)
+  says how many are kept. There are two ways back to a known-good system:
+  `bootc rollback` to the previous deployment, or
+  `bootc switch ghcr.io/<your-user>/arch-bootc-kde:YYYYMMDD` to an earlier date
+  that retention still holds. A dated tag never moves, so switch back to
+  `:latest` to resume updates.
 - **It is built mostly with directed AI** and reviewed by one maintainer. See
   [About this project](#about-this-project) below.
 
@@ -103,7 +110,7 @@ It moves to stable when all of these hold:
       does not reach a login prompt.
 - [ ] CI upgrades a system deployed from the previous `:latest` to the new
       image with `bootc upgrade` or `bootc switch`, and checks it boots again.
-- [ ] Images are published under version tags as well as `:latest`, so an
+- [ ] Images are published under release tags that are never pruned, so an
       install can pin one and move on purpose.
 - [ ] Eight consecutive weeks of `:latest` with no reported boot, upgrade or
       login regression.
