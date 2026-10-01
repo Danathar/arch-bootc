@@ -602,14 +602,27 @@ rejects an unsigned one; see the gaps section of [quality.md](quality.md).
 Every publish pushes `latest`, `latest.YYYYMMDD` and `YYYYMMDD` for all three
 flavors, daily, forever. `build.yml`'s `cleanup_packages` job keeps that from
 growing without bound: for each flavor it runs
-`scripts/prune-package-versions.sh`, which lists the package's versions, keeps
-the 30 most recently created, and removes the rest.
+`scripts/prune-package-versions.sh`, which lists the package's versions and
+removes them in three passes. Untagged versions go first: every publish pushes
+by tag, so an image is untagged only once a newer build has taken its date tag.
+Of the tagged images, it keeps the 30 most recently created and removes the
+rest. Last, it removes each cosign signature (`sha256-<hex>.sig`) whose image
+is gone, and keeps every signature whose image stays. Signatures and untagged
+versions do not count toward the 30, so the floor holds 30 dated builds. When
+it counted every version, a floor of 30 held 15 images and about four days of
+dated tags.
 
 Two things about that job are worth knowing before touching it.
 
 **It can break installed systems.** A published version may be what a machine
 running this image upgrades from, and a cosign signature is a separate manifest
-that a careless prune can orphan. The retention rule is meant to keep the
+that a careless prune can orphan or strip from an image it keeps. The script
+pairs them by the digest in the signature's tag, and keeps a signature whose
+image failed to delete. The untagged pass assumes two things `build.yml` does
+today: each image is a single manifest (a multi-arch index lists its
+per-platform manifests as untagged versions), and cosign stores signatures as
+`.sig` tags (`--new-bundle-format=false`; the newer format stores them as
+untagged referrers). Change either and the script has to change with it. The retention rule is meant to keep the
 version tagged `latest` safe on its own — `latest` is repointed at the newest
 version on every publish, so it is always among the newest 30 — but the script
 does not only rely on that argument: it refuses to remove a version tagged
@@ -632,7 +645,8 @@ published image, so leaving it unmaintained put the worst-placed dependency in
 the least-maintained state. The replacement makes the same REST calls through
 `gh`, which is already on every GitHub-hosted runner, and
 `tests/test-prune-package-versions.sh` covers the selection logic — the
-retention boundary, the `latest` guard, tie-breaking, and every API failure that
+retention boundary, the `latest` guard, the untagged pass, signature pairing,
+tie-breaking, and every API failure that
 would otherwise look like an empty package — without touching the network.
 
 That covers what the script decides once it is called correctly. What calls it
