@@ -68,6 +68,7 @@ tools, and manual alternatives.
 |            [Change risk tiers](docs/risk-tiers.md) |                                                How a change is classified before it is written, and the evidence each tier needs |
 |     [Branch protection](docs/branch-protection.md) |                          The ruleset that keeps `main` behind a pull request, the check it requires, and how to check it is live |
 | [AI security policy](docs/security/SECURITY-AI.md) |                          What agent-assisted changes defend, which inputs are untrusted, and the invariants that hold regardless |
+|                       [Security](SECURITY.md) |                                                                      How to privately report a vulnerability in the image build or CI/CD pipeline |
 |                         [Metrics](docs/metrics.md) |                                                PR acceptance, time to merge, and CI health — with the `gh` commands to recompute |
 |                   [Reflections](docs/reflections/) |                                  Durable write-ups of what went wrong here, how it was caught, and what would catch it next time |
 
