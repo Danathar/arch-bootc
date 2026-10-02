@@ -395,6 +395,58 @@ assert_equal "a dry run of a signed package removes nothing" "" "$(pruned_ids)"
 assert_contains "a dry run names the signatures it would remove" "${output}" "would remove 11"
 assert_contains "a dry run counts images and signatures" "${output}" "4 of 4 candidate version(s) would go"
 
+# An image whose own delete failed keeps its signature whether it was tagged or
+# not. The untagged pass is a separate list from the tagged one, and the
+# signature check has to treat a failure in either the same way.
+signed_fixture
+output="$(GH_STUB_FAIL_IDS="20" run_script "${BASE_ARGS[@]}" --min-versions-to-keep 2)"
+assert_status "a failed untagged-image deletion fails the run" 1 "$?"
+assert_equal "the signature of an untagged image that failed to delete is kept" \
+  "10 11" "$(pruned_ids)"
+assert_contains "the untagged failure is named" "${output}" "FAILED on 20"
+
+# A signature that fails to delete fails the run, like an image would. The
+# signature pass ignores remove()'s status so the other signatures still go,
+# which leaves the failure counter as the only thing that reports it.
+signed_fixture
+output="$(GH_STUB_FAIL_IDS="11" run_script "${BASE_ARGS[@]}" --min-versions-to-keep 2)"
+assert_status "a failed signature deletion fails the run" 1 "$?"
+assert_equal "the other doomed versions still go when a signature fails" \
+  "10 20 21" "$(pruned_ids)"
+assert_contains "the signature failure is named" "${output}" "FAILED on 11"
+assert_contains "the signature failure is counted" "${output}" "1 failure(s)"
+
+# What makes a version a signature. Getting this wrong only ever deletes:
+# a version read as a signature is removed as soon as no image carries the
+# digest in its tag, and it is never counted against the floor or checked
+# against the latest guard. Read as an image, it is kept by the floor like any
+# other. So every case below is the newest version in the package, which the
+# floor of 1 keeps, and a classification that called it a signature would
+# remove it as well, because no image here has the digest it names.
+#
+# Every tag must be a signature tag. A version that also carries a date tag is
+# an image somebody can pull by that tag.
+write_versions \
+  "$(make_version 1 2026-01-01T00:00:00Z 20260101)" \
+  "$(make_version 2 2026-01-02T00:00:00Z 20260102 sha256-9.sig)"
+output="$(run_script "${BASE_ARGS[@]}" --min-versions-to-keep 1)"
+assert_status "a version with a signature tag and a date tag exits 0" 0 "$?"
+assert_equal "a version with a signature tag and a date tag is counted as an image" \
+  "1" "$(pruned_ids)"
+
+# Only `sha256-<hex>.sig` itself. The tags cosign writes for an attestation
+# (`.att`) and an attached SBOM (`.sbom`) share the prefix and are not
+# signatures, and the pattern is anchored at both ends and limited to hex.
+for near_miss in sha256-9.att sha256-9.sbom sha256-9.sig.bak x-sha256-9.sig sha256-9z.sig; do
+  write_versions \
+    "$(make_version 1 2026-01-01T00:00:00Z 20260101)" \
+    "$(make_version 2 2026-01-02T00:00:00Z "${near_miss}")"
+  output="$(run_script "${BASE_ARGS[@]}" --min-versions-to-keep 1)"
+  assert_status "a version tagged only ${near_miss} exits 0" 0 "$?"
+  assert_equal "a version tagged only ${near_miss} is counted as an image, not a signature" \
+    "1" "$(pruned_ids)"
+done
+
 # --- dry run --------------------------------------------------------------
 
 default_fixture
