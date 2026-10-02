@@ -18,6 +18,8 @@
 #   - Image files are only ever installed through --via-loopback.
 #   - A bare-metal target must be typed out in full and confirmed twice, and
 #     is refused if anything on it is mounted.
+#   - A host where SELinux is enforcing gets a warning before anything else:
+#     installing from one is unverified (docs/installation.md, Prerequisites).
 #
 # Run with --dry-run to print shell-escaped mutating commands instead of
 # executing them. Read-only host validation still runs.
@@ -31,6 +33,7 @@ DRY_RUN=0
 SEED_STAGING_DIR=''
 BAREMETAL_MOUNT_DIR=''
 ISO_TOOL=''
+SELINUX_ENFORCE_FILE=/sys/fs/selinux/enforce
 
 # ---------------------------------------------------------------- output ---
 
@@ -150,6 +153,20 @@ confirm() {
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "'$1' not found on PATH. $2"
+}
+
+# bootc install relabels a copy of itself with `chcon -t install_t` when it
+# finds SELinux on the host, and this Arch image ships no chcon (the image's
+# `bootc container lint` skips its runtime-deps check for that one command).
+# Whether an install from an enforcing host gets past that step has not been
+# checked yet, so say so before anything is pulled or written. A warning, not a
+# refusal: nothing here proves the install fails, either.
+warn_if_selinux_enforcing() {
+    [ "$(cat -- "${SELINUX_ENFORCE_FILE}" 2>/dev/null)" = "1" ] || return 0
+    warn "SELinux is enforcing on this host. Installing arch-bootc from an
+    SELinux-enforcing host is not verified yet: bootc install may need chcon,
+    which the image does not ship. Install from a host or live environment
+    without SELinux enforcing until it is (docs/installation.md, Prerequisites)."
 }
 
 # The disk image must not land on tmpfs -- a multi-GB qcow2 there is host RAM.
@@ -860,6 +877,7 @@ main() {
     done
 
     need_cmd podman "Install podman."
+    warn_if_selinux_enforcing
 
     printf '%s\n' "${C_BOLD}arch-bootc quickstart${C_RESET}"
     if [ "${DRY_RUN}" -eq 1 ]; then

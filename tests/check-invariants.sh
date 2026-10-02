@@ -872,6 +872,17 @@ done < <(find "${UNIT_SRC_DIR}" -mindepth 1 -maxdepth 1 -type d -name '*.d' | so
 # assertion above is satisfied by any one copy, so a copy edited on its own, or
 # dropped from one flavor, passed. These read each stage separately.
 
+# Every lint call is this one line. --fatal-warnings is what lets the lint fail
+# the build: without it each warning is a line in a log nobody reads, and
+# nonempty-run-tmp and var-tmpfiles both shipped that way. --skip runtime-deps
+# is the single exception, for the chcon Arch does not ship (issue #425).
+LINT_RUN='RUN bootc container lint --fatal-warnings --skip runtime-deps'
+lint_lines="$(grep -E '^[[:space:]]*[^#[:space:]].*bootc container lint' "${CONTAINERFILE}")"
+assert_equal "the Containerfile runs bootc container lint four times (base-core and each flavor)" \
+  "$(grep -c . <<<"${lint_lines}")" "4"
+assert_equal "every bootc container lint call carries --fatal-warnings and skips only runtime-deps" \
+  "$(grep -vxF "${LINT_RUN}" <<<"${lint_lines}")" ""
+
 # The instructions of one stage, one per line: whole-line comments and blank
 # lines dropped, `\`-continued lines folded into their instruction, runs of
 # whitespace collapsed, so two copies compare equal whatever their indentation.
@@ -928,7 +939,7 @@ while IFS= read -r flavor; do
       "instruction $((last_link + 1)) creates a symlink the check at instruction $((verify_at + 1)) never sees"
   fi
   assert_equal "the ${flavor} stage ends with bootc container lint" \
-    "${flavor_steps[-1]:-}" "RUN bootc container lint"
+    "${flavor_steps[-1]:-}" "${LINT_RUN}"
 
   assert_equal "the ${flavor} stage tags files for rechunking the same way the base flavor does" \
     "$(grep -F 'CHUNK_TAG' < <(printf '%s\n' "${flavor_steps[@]}"))" "${flavor_chunk_tag}"
@@ -941,6 +952,102 @@ while IFS= read -r flavor; do
       "instruction $((last_install + 1)) installs packages the tagging at instruction $((chunk_tag_at + 1)) never sees"
   fi
 done < <(grep -oE '^FROM base-core AS [a-z][a-z0-9-]*' "${CONTAINERFILE}" | awk '{print $NF}')
+
+# A flavor stage's `pacman -Syu` upgrades the kernel whenever Arch shipped one
+# after base-core's daily rebuild, and the dracut pacman hook then builds the
+# new kernel's initramfs in /boot, not in /usr/lib/modules/<kver>/, where
+# bootc boots from. The kde and xfce builds of 2026-10-01 did exactly that
+# (linux 7.2.7 -> 7.2.8); with --fatal-warnings the lint stopped them on
+# nonempty-boot. Each flavor that installs packages carries one hand copy of
+# the step that puts this right, after its last install.
+kernel_step="$(stage_instructions kde | grep -F 'initramfs.img')"
+assert_equal "the kde stage has exactly one kernel and initramfs step to compare the others against" \
+  "$(grep -c . <<<"${kernel_step}")" "1"
+while IFS= read -r flavor; do
+  [[ -n "${flavor}" ]] || continue
+  mapfile -t flavor_steps < <(stage_instructions "${flavor}")
+  last_install=-1
+  kernel_at=-1
+  for i in "${!flavor_steps[@]}"; do
+    [[ "${flavor_steps[i]}" =~ pacman\ -S[a-z]*\ .*--noconfirm\ [^-] ]] && last_install="${i}"
+    [[ "${flavor_steps[i]}" == "${kernel_step}" ]] && kernel_at="${i}"
+  done
+  ((last_install >= 0)) || continue
+  if ((kernel_at > last_install)); then
+    pass "the ${flavor} stage rebuilds the kernel's initramfs and empties /boot after its last package install"
+  else
+    fail "the ${flavor} stage rebuilds the kernel's initramfs and empties /boot after its last package install" \
+      "no copy of kde's kernel step follows instruction $((last_install + 1)), which can upgrade the kernel"
+  fi
+done < <(grep -oE '^FROM base-core AS [a-z][a-z0-9-]*' "${CONTAINERFILE}" | awk '{print $NF}')
+
+# What the step does, run against a scratch tree: every /usr/lib/modules and
+# /boot in it is redirected, and a dracut shim records its arguments in the
+# file it is asked to write.
+kernel_work="$(mktemp -d)"
+kernel_work="$(cd -- "${kernel_work}" && pwd -P)"
+kernel_cmd="${kernel_step#RUN }"
+assert_equal "the kernel step names /usr/lib/modules exactly five times, all of which the scratch run redirects" \
+  "$(grep -o '/usr/lib/modules' <<<"${kernel_cmd}" | grep -c .)" "5"
+assert_equal "the kernel step names /boot exactly once, which the scratch run redirects" \
+  "$(grep -o '/boot' <<<"${kernel_cmd}" | grep -c .)" "1"
+kernel_cmd="${kernel_cmd//\/usr\/lib\/modules/${kernel_work}/modules}"
+kernel_cmd="${kernel_cmd//\/boot/${kernel_work}/boot}"
+mkdir -p "${kernel_work}/bin"
+cat >"${kernel_work}/bin/dracut" <<'SHIM'
+#!/bin/sh
+printf '%s\n' "$*" >"$2"
+SHIM
+chmod +x "${kernel_work}/bin/dracut"
+K="${kernel_work}/modules"
+B="${kernel_work}/boot"
+
+# An upgrade: the old kernel's directory holds only base-core's initramfs, the
+# new one has no initramfs, and the hook's copies sit in /boot.
+mkdir -p "${K}/7.2.7-arch1-1" "${K}/7.2.8-arch1-1/kernel" "${B}"
+: >"${K}/7.2.7-arch1-1/initramfs.img"
+: >"${K}/7.2.8-arch1-1/vmlinuz"
+: >"${B}/vmlinuz-linux"
+: >"${B}/initramfs-linux.img"
+if PATH="${kernel_work}/bin:${PATH}" bash -c "${kernel_cmd}" >/dev/null 2>&1; then
+  pass "after a kernel upgrade the kernel step succeeds"
+else
+  fail "after a kernel upgrade the kernel step succeeds"
+fi
+assert_equal "after a kernel upgrade the old kernel's leftover directory is gone" \
+  "$(find "${K}" -mindepth 1 -maxdepth 1 -printf '%f\n')" "7.2.8-arch1-1"
+assert_equal "after a kernel upgrade the new kernel's initramfs is built where bootc reads it, for that kernel" \
+  "$(cat "${K}/7.2.8-arch1-1/initramfs.img" 2>/dev/null)" \
+  "--force ${K}/7.2.8-arch1-1/initramfs.img 7.2.8-arch1-1"
+assert_equal "after a kernel upgrade /boot is empty and still there" \
+  "$(find "${B}" -mindepth 1 | grep -c .)/$([[ -d "${B}" ]] && echo dir)" "0/dir"
+
+# No upgrade: base-core's initramfs is kept, not rebuilt.
+rm -rf "${K}" "${B}"
+mkdir -p "${K}/7.2.7-arch1-1" "${B}"
+: >"${K}/7.2.7-arch1-1/vmlinuz"
+printf 'from base-core\n' >"${K}/7.2.7-arch1-1/initramfs.img"
+PATH="${kernel_work}/bin:${PATH}" bash -c "${kernel_cmd}" >/dev/null 2>&1
+assert_equal "without a kernel upgrade base-core's initramfs is left as it is" \
+  "$(cat "${K}/7.2.7-arch1-1/initramfs.img")" "from base-core"
+
+# Two kernels, or a directory that is more than a leftover initramfs, is not
+# guessed at: the build stops.
+mkdir -p "${K}/7.2.8-arch1-1"
+: >"${K}/7.2.8-arch1-1/vmlinuz"
+if PATH="${kernel_work}/bin:${PATH}" bash -c "${kernel_cmd}" >/dev/null 2>&1; then
+  fail "two kernels fail the kernel step"
+else
+  pass "two kernels fail the kernel step"
+fi
+rm -rf "${K}/7.2.8-arch1-1"
+mkdir -p "${K}/extramodules"
+: >"${K}/extramodules/initramfs.img"
+: >"${K}/extramodules/zfs.ko"
+PATH="${kernel_work}/bin:${PATH}" bash -c "${kernel_cmd}" >/dev/null 2>&1
+assert_equal "a modules directory holding more than an initramfs is not removed" \
+  "$(find "${K}/extramodules" -mindepth 1 -printf '%f\n' | sort | tr '\n' ' ')" "initramfs.img zfs.ko "
+rm -rf "${kernel_work}"
 
 # /run and /tmp are tmpfs on a booted system, and every stage refills them
 # during the build (pacman's systemd-tmpfiles hook, the unit-verify RUN), so
@@ -956,14 +1063,14 @@ while IFS= read -r stage; do
   [[ -n "${stage}" ]] || continue
   mapfile -t stage_steps < <(stage_instructions "${stage}")
   for i in "${!stage_steps[@]}"; do
-    [[ "${stage_steps[i]}" == "RUN bootc container lint" ]] || continue
+    [[ "${stage_steps[i]}" == "${LINT_RUN}" ]] || continue
     lint_calls=$((lint_calls + 1))
     assert_equal "the ${stage} stage empties /run and /tmp, unchanged, straight before bootc container lint" \
       "${stage_steps[i - 1]:-}" "${run_tmp_reset}"
   done
 done < <(grep -oE '^FROM .* AS [a-z][a-z0-9-]*$' "${CONTAINERFILE}" | awk '{print $NF}')
 assert_equal "every bootc container lint call was checked for the /run and /tmp reset" \
-  "${lint_calls}" "$(grep -c '^RUN bootc container lint$' "${CONTAINERFILE}")"
+  "${lint_calls}" "$(grep -cxF "${LINT_RUN}" "${CONTAINERFILE}")"
 
 # bootc copies /var out of the image only at install, and every `pacman -S`
 # after base-core's `rm -rf /var` fills it again (package-owned directories,
@@ -986,14 +1093,14 @@ while IFS= read -r stage; do
   [[ -n "${stage}" ]] || continue
   mapfile -t stage_steps < <(stage_instructions "${stage}")
   for i in "${!stage_steps[@]}"; do
-    [[ "${stage_steps[i]}" == "RUN bootc container lint" ]] || continue
+    [[ "${stage_steps[i]}" == "${LINT_RUN}" ]] || continue
     var_resets=$((var_resets + 1))
     assert_equal "the ${stage} stage empties /var, unchanged, straight before its /run and /tmp reset" \
       "${stage_steps[i - 2]:-}" "${var_reset}"
   done
 done < <(grep -oE '^FROM .* AS [a-z][a-z0-9-]*$' "${CONTAINERFILE}" | awk '{print $NF}')
 assert_equal "every bootc container lint call was checked for the /var reset" \
-  "${var_resets}" "$(grep -c '^RUN bootc container lint$' "${CONTAINERFILE}")"
+  "${var_resets}" "$(grep -cxF "${LINT_RUN}" "${CONTAINERFILE}")"
 
 # The checks above pin the /var reset's TEXT: one copy, the same everywhere.
 # What the text does was never run, so a change to the find exclusions, the

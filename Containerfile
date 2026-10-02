@@ -424,7 +424,16 @@ RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpL
 RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
       -exec rm -rf {} + || true
 
-RUN bootc container lint
+# --fatal-warnings: a lint that only warns cannot fail the build, and one that
+# warns on every build hides the next warning in a log nobody reads
+# (nonempty-run-tmp and var-tmpfiles both arrived that way). runtime-deps is
+# skipped because it reports exactly one missing command, chcon: Arch's
+# coreutils ships none. bootc install uses chcon to relabel itself install_t
+# when it runs on an SELinux host, so until an install from an SELinux-
+# enforcing host has been checked by hand (issue #425), docs/installation.md
+# and scripts/quickstart.sh say to install from a host without SELinux
+# enforcing. Every lint call in this file carries the same flags.
+RUN bootc container lint --fatal-warnings --skip runtime-deps
 
 # Copy ublue-os/brew and enable its systemd services. `systemctl preset` has
 # no way to target /usr — it always writes to /etc — so this is intentionally
@@ -621,7 +630,8 @@ RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpL
 RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
       -exec rm -rf {} + || true
 
-RUN bootc container lint
+# Same flags as base-core's lint; the comment there says why.
+RUN bootc container lint --fatal-warnings --skip runtime-deps
 
 
 # --- Desktop Layer ---
@@ -632,6 +642,32 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
     --mount=type=bind,source=packages-kde.txt,target=/tmp/packages-kde.txt \
     pacman -Syu --noconfirm $(grep -vE '^[[:space:]]*#|^[[:space:]]*$' /tmp/packages-kde.txt) && \
     pacman -S --clean --noconfirm
+
+# One kernel, with the bootc initramfs, and an empty /boot. base-core runs
+# dracut for the kernel it installs, and its layer is rebuilt once a day
+# (PACMAN_CACHE_BUST), but the `pacman -Syu` above runs again whenever this
+# stage misses the cache. If Arch shipped a new kernel after base-core was
+# built, that upgrade installs it here (linux 7.2.7 -> 7.2.8 on 2026-10-01),
+# and the dracut pacman hook builds its initramfs in /boot, which bootc does
+# not boot from and `bootc container lint` reports as nonempty-boot. base-core
+# wrote the initramfs bootc does boot from, /usr/lib/modules/<kver>/
+# initramfs.img, for the old kernel only, and pacman does not remove that
+# untracked file with the old kernel. So: drop a modules directory that holds
+# nothing but an initramfs.img, require exactly one kernel, build its
+# initramfs with base-core's dracut config if it has none, and empty /boot.
+RUN for dir in /usr/lib/modules/*/; do \
+        if [ ! -f "${dir}vmlinuz" ] && [ "$(ls -A "${dir}")" = initramfs.img ]; then rm -rf "${dir}"; fi; \
+    done && \
+    kvers="$(find /usr/lib/modules -mindepth 2 -maxdepth 2 -name vmlinuz -printf '%h\n' | xargs -r -n1 basename)" && \
+    if [ "$(printf '%s\n' "${kvers}" | grep -c .)" -ne 1 ]; then \
+        echo "error: expected exactly one kernel under /usr/lib/modules, found:" >&2; \
+        printf '%s\n' "${kvers}" >&2; \
+        exit 1; \
+    fi && \
+    if [ ! -f "/usr/lib/modules/${kvers}/initramfs.img" ]; then \
+        dracut --force "/usr/lib/modules/${kvers}/initramfs.img" "${kvers}"; \
+    fi && \
+    find /boot -mindepth 1 -delete
 
 # mariadb (KDE PIM/Akonadi) and packagekit-qt6 are installed via
 # packages-kde.txt. (systemd-networkd-wait-online.service is already
@@ -731,7 +767,8 @@ RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpL
 RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
       -exec rm -rf {} + || true
 
-RUN bootc container lint
+# Same flags as base-core's lint; the comment there says why.
+RUN bootc container lint --fatal-warnings --skip runtime-deps
 
 
 # --- Desktop Layer (XFCE) ---
@@ -742,6 +779,21 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
     --mount=type=bind,source=packages-xfce.txt,target=/tmp/packages-xfce.txt \
     pacman -Syu --noconfirm $(grep -vE '^[[:space:]]*#|^[[:space:]]*$' /tmp/packages-xfce.txt) && \
     pacman -S --clean --noconfirm
+
+# Same kernel, initramfs and /boot step as kde's; the comment there says why.
+RUN for dir in /usr/lib/modules/*/; do \
+        if [ ! -f "${dir}vmlinuz" ] && [ "$(ls -A "${dir}")" = initramfs.img ]; then rm -rf "${dir}"; fi; \
+    done && \
+    kvers="$(find /usr/lib/modules -mindepth 2 -maxdepth 2 -name vmlinuz -printf '%h\n' | xargs -r -n1 basename)" && \
+    if [ "$(printf '%s\n' "${kvers}" | grep -c .)" -ne 1 ]; then \
+        echo "error: expected exactly one kernel under /usr/lib/modules, found:" >&2; \
+        printf '%s\n' "${kvers}" >&2; \
+        exit 1; \
+    fi && \
+    if [ ! -f "/usr/lib/modules/${kvers}/initramfs.img" ]; then \
+        dracut --force "/usr/lib/modules/${kvers}/initramfs.img" "${kvers}"; \
+    fi && \
+    find /boot -mindepth 1 -delete
 
 # (systemd-networkd-wait-online.service is already disabled in base-core.)
 
@@ -810,4 +862,5 @@ RUN covered="$(systemd-tmpfiles --no-pager --cat-config | awk '$1 ~ /^[fFdDvqQpL
 RUN find /run /tmp -mindepth 1 -maxdepth 1 ! -name .containerenv \
       -exec rm -rf {} + || true
 
-RUN bootc container lint
+# Same flags as base-core's lint; the comment there says why.
+RUN bootc container lint --fatal-warnings --skip runtime-deps
