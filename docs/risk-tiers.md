@@ -93,7 +93,9 @@ expectations that come with the real tier still apply.
 `tests/`, `.coverage-thresholds.json`, `.github/auto-qa-tuning.json` (the policy
 `tests/tune-coverage.sh` enforces over the floors), `Justfile`,
 `.github/workflows/`, `.github/labeler.yml`, `.shellcheckrc`, `.editorconfig`,
-`renovate.json`, `scripts/pr-review-state.sh` (read-only; `ai-fix.yml` pastes
+`renovate.json`, `risk-config.json` (this page's tiers as data; the "Risk tiers
+config" group in tests/check-invariants.sh fails when the two disagree),
+`scripts/pr-review-state.sh` (read-only; `ai-fix.yml` pastes
 its report of unresolved threads and failing checks into the work order).
 
 Plus `.github/ISSUE_TEMPLATE/`, per the note above.

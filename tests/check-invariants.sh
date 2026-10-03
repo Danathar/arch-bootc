@@ -8728,6 +8728,215 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Risk tiers config (risk-config.json is docs/risk-tiers.md as data: tiers, reach, evidence, path claims, selection rule)"
+
+# docs/risk-tiers.md is read by people. risk-config.json holds the same four
+# tiers in a form a program can read -- per tier its id, name, what it reaches,
+# the extra evidence it asks for, the evidence commands the page shows, and the
+# repository paths the page assigns to it -- plus the rule for choosing among
+# them. It is only worth keeping if it cannot drift, so this group reads the
+# page and the file against each other and the file against the tree. Nothing
+# here changes the policy: the page stays the source and the file is its copy.
+#
+# A "path claim" is read from the same paragraphs the tier-completeness checks in
+# tests/test-pr-review-state.sh read: each tier section's first paragraph, its
+# "Plus" paragraphs and (T3) its bold-led bullets. Of the backticked tokens in
+# those, a token counts when it has no space, does not start with `/` (an
+# in-image path) and either contains a `/` or is exactly a tracked root-level
+# file; `*.md` (where the page says "anywhere") and `packages-*.txt` are the two
+# root globs. The rest are prose (`BOOTC_VERSION`, `deny`, `ai-fix.yml`) and are
+# not paths. The first
+# occurrence wins, so `cosign.pub` is listed once, under T3, where it first
+# appears.
+
+RISK_CONFIG="risk-config.json"
+RISK_DOC="docs/risk-tiers.md"
+RISK_ROOT_GLOBS=('packages-*.txt')
+
+risk_trim() { # text
+  local text="$1"
+  text="${text#"${text%%[![:space:]]*}"}"
+  printf '%s' "${text%"${text##*[![:space:]]}"}"
+}
+
+risk_section() { # tier id
+  awk -v want="## $1 — " 'index($0, want) == 1 { inside = 1; next } inside && /^## / { exit } inside' "${RISK_DOC}"
+}
+
+risk_assigning_paragraphs() { # tier id
+  risk_section "$1" | awk '
+    BEGIN { blank = 1 }
+    /^[[:space:]]*$/ { blank = 1; next }
+    blank { blank = 0; paragraph++; keep = (paragraph == 1 || /^Plus / || /^- \*\*/) }
+    keep'
+}
+
+risk_doc_paths() { # tier id
+  local section token
+  section="$(risk_assigning_paragraphs "$1")"
+  # shellcheck disable=SC2016 # the page's own backtick markup
+  while IFS= read -r token; do
+    [[ -z "${token}" || "${token}" == *" "* || "${token}" == /* ]] && continue
+    if [[ "${token}" == */* ]]; then
+      printf '%s\n' "${token}"
+    elif [[ "${token}" == *'*'* ]]; then
+      if [[ "${section}" == *"\`${token}\` anywhere"* ]] ||
+        [[ " ${RISK_ROOT_GLOBS[*]} " == *" ${token} "* ]]; then
+        printf '%s\n' "${token}"
+      fi
+    elif git ls-files --error-unmatch -- "${token}" >/dev/null 2>&1; then
+      printf '%s\n' "${token}"
+    fi
+  done < <(grep -oE '`[^`]+`' <<<"${section}" | tr -d '`' | awk '!seen[$0]++')
+}
+
+risk_doc_commands() { # tier id: the fenced command lines, comment after two or more spaces
+  risk_section "$1" | awk '/^```/ { fenced = !fenced; next } fenced' | sed -E 's/ {2,}# /\t/; s/[[:space:]]+$//'
+}
+
+risk_path_exists() { # path from the config
+  case "$1" in
+    */ | *'*'*) [[ -n "$(git ls-files -- "$1")" ]] ;;
+    *) git ls-files --error-unmatch -- "$1" >/dev/null 2>&1 ;;
+  esac
+}
+
+risk_flat() { tr '\n' ' ' | sed -E 's/\*\*//g; s/ +/ /g'; }
+
+if git ls-files --error-unmatch -- "${RISK_CONFIG}" >/dev/null 2>&1; then
+  pass "${RISK_CONFIG} is tracked"
+else
+  fail "${RISK_CONFIG} is tracked" "git does not track it, so a clean checkout has no machine-readable tiers"
+fi
+
+if jq -e '(.tiers | type == "array") and (.rule | type == "object")' "${RISK_CONFIG}" >/dev/null 2>&1; then
+  pass "${RISK_CONFIG} parses and has tiers and rule"
+
+  # The tier set, in order, against the page's table and its section headings.
+  # Order is part of the contract: "highest" means later in this list.
+  risk_table_ids="$(grep -oE '^\| \*\*T[0-9]\*\*' "${RISK_DOC}" | grep -oE 'T[0-9]')"
+  risk_heading_ids="$(grep -oE '^## T[0-9] — ' "${RISK_DOC}" | grep -oE 'T[0-9]')"
+  risk_config_ids="$(jq -r '.tiers[].id' "${RISK_CONFIG}")"
+  assert_equal "${RISK_CONFIG} lists the tiers of the ${RISK_DOC} table, in order" \
+    "${risk_config_ids}" "${risk_table_ids}"
+  assert_equal "${RISK_DOC} has one section per tier in its table" \
+    "${risk_heading_ids}" "${risk_table_ids}"
+  assert_equal "every tier in ${RISK_CONFIG} has exactly the keys id, name, reaches, evidence, evidence_commands, paths (T3 adds content_triggers)" \
+    "$(jq -r '[.tiers[] | del(.content_triggers) | keys | join(",")] | unique | join(";")' "${RISK_CONFIG}")" \
+    "evidence,evidence_commands,id,name,paths,reaches"
+
+  while IFS= read -r risk_id; do
+    [[ -z "${risk_id}" ]] && continue
+    risk_row="$(grep -E "^\| \*\*${risk_id}\*\* " "${RISK_DOC}")"
+    IFS='|' read -r _ risk_cell_name risk_cell_reach risk_cell_evidence _ <<<"${risk_row}"
+    risk_cell_name="$(risk_trim "${risk_cell_name}")"
+    risk_heading_name="$(grep -E "^## ${risk_id} — " "${RISK_DOC}")"
+    risk_cfg() { jq -r --arg id "${risk_id}" ".tiers[] | select(.id == \$id) | $1" "${RISK_CONFIG}"; }
+
+    assert_equal "${risk_id} name in ${RISK_CONFIG} is the table's" \
+      "$(risk_cfg .name)" "${risk_cell_name#*\*\* }"
+    assert_equal "${risk_id} name in ${RISK_CONFIG} is its section heading's" \
+      "$(risk_cfg .name)" "${risk_heading_name#"## ${risk_id} — "}"
+    assert_equal "${risk_id} 'reaches' in ${RISK_CONFIG} is the table's" \
+      "$(risk_cfg .reaches)" "$(risk_trim "${risk_cell_reach}")"
+    assert_equal "${risk_id} 'evidence' in ${RISK_CONFIG} is the table's" \
+      "$(risk_cfg .evidence)" "$(risk_trim "${risk_cell_evidence}")"
+    assert_equal "${risk_id} paths in ${RISK_CONFIG} are the page's path claims, in the page's order" \
+      "$(risk_cfg '.paths[]')" "$(risk_doc_paths "${risk_id}")"
+    assert_equal "${risk_id} evidence commands in ${RISK_CONFIG} are the page's fenced commands" \
+      "$(risk_cfg '.evidence_commands[] | [.command, .comment // empty] | join("\t")')" \
+      "$(risk_doc_commands "${risk_id}")"
+
+    risk_missing=""
+    while IFS= read -r risk_path; do
+      [[ -z "${risk_path}" ]] && continue
+      risk_path_exists "${risk_path}" || risk_missing+="${risk_path} "
+    done < <(risk_cfg '.paths[]')
+    assert_equal "every ${risk_id} path in ${RISK_CONFIG} is tracked in the tree" "" "${risk_missing}"
+  done <<<"${risk_table_ids}"
+
+  # The selection rule, as the page words it. "highest" is defined by the order
+  # asserted above; the two sentences are quoted so rewording one on either side
+  # fails here instead of leaving the file describing a rule the page dropped.
+  risk_doc_flat="$(risk_flat <"${RISK_DOC}")"
+  assert_equal "${RISK_CONFIG} selects the highest tier" \
+    "$(jq -r '.rule.selection' "${RISK_CONFIG}")" "highest"
+  assert_equal "${RISK_CONFIG} rounds up when two tiers look defensible" \
+    "$(jq -r '.rule.when_unsure' "${RISK_CONFIG}")" "round-up"
+  for risk_key in text when_unsure_text path_match_text; do
+    risk_sentence="$(jq -r --arg key "${risk_key}" '.rule[$key]' "${RISK_CONFIG}")"
+    if [[ -n "${risk_sentence}" && "${risk_sentence}" != null && "${risk_doc_flat}" == *"${risk_sentence}"* ]]; then
+      pass "${RISK_DOC} still says: ${risk_sentence}"
+    else
+      fail "${RISK_DOC} still says: ${risk_sentence}" "rule.${risk_key} in ${RISK_CONFIG} is not a sentence of the page"
+    fi
+  done
+
+  # The path claims are a floor. The page says "Classify by what the diff does"
+  # because no rule over file paths tells a Containerfile comment fix from a
+  # change to how bootc is fetched; a program that only matched `paths` would put
+  # a BOOTC_COMMIT edit in T2 and a signing edit in T1. So T3 also carries the
+  # page's content triggers as data. Each trigger's page tokens must still be in
+  # the page's T3 section, and its file tokens must still be in the files it
+  # names, so neither side can move without the other.
+  assert_equal "${RISK_CONFIG} treats the path match as a minimum, not a classification" \
+    "$(jq -r '.rule.path_match' "${RISK_CONFIG}")" "minimum"
+  assert_equal "only T3 carries content_triggers in ${RISK_CONFIG}" \
+    "$(jq -r '[.tiers[] | select(has("content_triggers")) | .id] | join(",")' "${RISK_CONFIG}")" "T3"
+  risk_t3_flat="$(risk_section T3 | risk_flat)"
+  risk_trigger_count=0
+  while IFS= read -r risk_trigger; do
+    [[ -z "${risk_trigger}" ]] && continue
+    risk_trigger_count=$((risk_trigger_count + 1))
+    risk_tcfg() { jq -r --arg id "${risk_trigger}" ".tiers[3].content_triggers[] | select(.id == \$id) | $1" "${RISK_CONFIG}"; }
+    risk_gone=""
+    while IFS= read -r risk_token; do
+      [[ -z "${risk_token}" ]] && continue
+      [[ "${risk_t3_flat}" == *"${risk_token}"* ]] || risk_gone+="'${risk_token}' "
+    done < <(risk_tcfg '.page_tokens[]')
+    assert_equal "T3 trigger ${risk_trigger}: every page token is still in the page's T3 section" "" "${risk_gone}"
+    risk_gone=""
+    while IFS= read -r risk_file; do
+      [[ -z "${risk_file}" ]] && continue
+      if [[ ! -f "${risk_file}" ]]; then
+        risk_gone+="${risk_file}(missing) "
+        continue
+      fi
+      git ls-files --error-unmatch -- "${risk_file}" >/dev/null 2>&1 || risk_gone+="${risk_file}(untracked) "
+    done < <(risk_tcfg '.files[]')
+    while IFS= read -r risk_token; do
+      [[ -z "${risk_token}" ]] && continue
+      risk_found=0
+      while IFS= read -r risk_file; do
+        # Active lines only, as assert_present does: a rationale comment that
+        # names the token survives deleting the code that uses it.
+        [[ -f "${risk_file}" ]] || continue
+        risk_active="$(grep -Ev '^[[:space:]]*#' "${risk_file}")"
+        grep -qF -- "${risk_token}" <<<"${risk_active}" && risk_found=1
+      done < <(risk_tcfg '.files[]')
+      ((risk_found)) || risk_gone+="'${risk_token}' "
+    done < <(risk_tcfg '.file_tokens[]')
+    assert_equal "T3 trigger ${risk_trigger}: its files are tracked and still hold its tokens" "" "${risk_gone}"
+  done < <(jq -r '.tiers[3].content_triggers[].id' "${RISK_CONFIG}")
+  check_triggers="$((risk_trigger_count > 0 ? 0 : 1))"
+  if ((check_triggers == 0)); then
+    pass "${RISK_CONFIG} has T3 content triggers"
+  else
+    fail "${RISK_CONFIG} has T3 content triggers" "tiers[3] has none, so content-only T3 changes match no tier"
+  fi
+else
+  fail "${RISK_CONFIG} parses and has tiers and rule" "missing, not valid JSON, or tiers/rule have the wrong type"
+fi
+
+# The file is itself a harness file, so the page has to say so by name.
+# shellcheck disable=SC2016 # the page's own backtick markup
+if grep -Fq '`risk-config.json`' <<<"$(risk_section T1)"; then
+  pass "${RISK_DOC} tiers ${RISK_CONFIG} as T1"
+else
+  fail "${RISK_DOC} tiers ${RISK_CONFIG} as T1" "no \`risk-config.json\` in its T1 section"
+fi
+
+# ---------------------------------------------------------------------------
 group "Supply chain (docs/security/SECURITY-AI.md: every dependency is pinned, and the pins are tracked)"
 
 # The "Supply chain" section is a table of dependency KINDS -- what pins each
