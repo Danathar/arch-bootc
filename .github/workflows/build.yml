@@ -66,6 +66,7 @@ jobs:
             /mnt/tests/test-gate-git-diff.sh \
             /mnt/tests/test-prune-esp.sh \
             /mnt/tests/test-homebrew-profile.sh \
+            /mnt/tests/test-agent-audit.sh \
             /mnt/tests/test-homebrew-shell-integration.sh \
             /mnt/tests/test-nightly-compliance.sh \
             /mnt/tests/test-ostree-pkg-diff.sh \

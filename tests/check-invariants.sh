@@ -1493,6 +1493,84 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Agent audit trail (docs/ci-cd.md: the read-only job that reads back what agent pull requests leave)"
+
+# .github/workflows/agent-audit.yml is a monthly, read-only job, and
+# docs/ci-cd.md says so in numbers: the day and time it fires, the window, the
+# cap it refuses at, the login it treats as the Hive app, and the token it holds.
+# Each of those is read out of the workflow and held to the section, so the page
+# cannot keep promising a schedule, a window or a token the file no longer has.
+# The step's behaviour and its T3 path list are tests/test-agent-audit.sh's job;
+# this group is the page and the shape of the workflow around the step.
+AUDIT_WORKFLOW=".github/workflows/agent-audit.yml"
+AUDIT_SECTION="$(awk '/^## Agent audit trail$/ { inside = 1; next } inside && /^## / { exit } inside' docs/ci-cd.md | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+
+if [[ ! -f "${AUDIT_WORKFLOW}" ]]; then
+  fail "the agent audit workflow exists" "${AUDIT_WORKFLOW} is missing; docs/ci-cd.md and docs/quality.md describe it"
+elif [[ -z "${AUDIT_SECTION}" ]]; then
+  fail "docs/ci-cd.md has an Agent audit trail section" "no '## Agent audit trail' heading, or nothing under it"
+else
+  pass "the agent audit workflow and its docs/ci-cd.md section both exist"
+
+  audit_cron="$(sed -nE 's/^[[:space:]]*- cron: "([^"]+)".*/\1/p' "${AUDIT_WORKFLOW}")"
+  read -r audit_minute audit_hour audit_dom audit_month audit_dow <<<"${audit_cron}"
+  assert_equal "the audit fires monthly: a fixed day of the month and no month or weekday" \
+    "${audit_dom}|${audit_month}|${audit_dow}" "1|*|*"
+  audit_time="$(printf '%02d:%02d UTC' "${audit_hour:-99}" "${audit_minute:-99}" 2>/dev/null)"
+  if [[ "${AUDIT_SECTION}" == *"1st of each month at ${audit_time}"* ]]; then
+    pass "docs/ci-cd.md gives the audit's schedule as the cron says: 1st of each month at ${audit_time}"
+  else
+    fail "docs/ci-cd.md gives the audit's schedule as the cron says" \
+      "cron '${audit_cron}' is the 1st at ${audit_time}; the section does not say '1st of each month at ${audit_time}'"
+  fi
+  assert_present "the audit can also be run on demand with a since date" \
+    "${AUDIT_WORKFLOW}" '^[[:space:]]*workflow_dispatch:'
+  assert_present "the on-demand run takes a since input" \
+    "${AUDIT_WORKFLOW}" '^[[:space:]]+since:$'
+
+  audit_days="$(grep -oE "date -u -d '[0-9]+ days ago'" "${AUDIT_WORKFLOW}" | grep -oE '[0-9]+' | head -n 1)"
+  if [[ -n "${audit_days}" && "${AUDIT_SECTION}" == *"covering the previous ${audit_days} days"* ]]; then
+    pass "docs/ci-cd.md gives the default window as the ${audit_days} days the step computes"
+  else
+    fail "docs/ci-cd.md gives the default window as the days the step computes" \
+      "the step computes '${audit_days:-nothing}' days ago; the section does not say 'covering the previous N days' for it"
+  fi
+
+  audit_cap="$(sed -nE 's/^[[:space:]]*limit=([0-9]+)$/\1/p' "${AUDIT_WORKFLOW}")"
+  if [[ -n "${audit_cap}" && "${AUDIT_SECTION}" == *"A window of ${audit_cap} or more merged pull requests"* ]]; then
+    pass "docs/ci-cd.md gives the cap the audit refuses at: ${audit_cap}"
+  else
+    fail "docs/ci-cd.md gives the cap the audit refuses at" \
+      "the step sets limit=${audit_cap:-nothing}; the section does not say 'A window of N or more merged pull requests'"
+  fi
+
+  audit_app="$(grep -oE '"app/[A-Za-z0-9-]+"' "${AUDIT_WORKFLOW}" | tr -d '"' | sort -u)"
+  if [[ -n "${audit_app}" && "$(wc -l <<<"${audit_app}")" -eq 1 && "${AUDIT_SECTION}" == *"\`${audit_app}\`"* ]]; then
+    pass "docs/ci-cd.md names the one app login the audit treats as the Hive app: ${audit_app}"
+  else
+    fail "docs/ci-cd.md names the one app login the audit treats as the Hive app" \
+      "the workflow names '${audit_app//$'\n'/ }'; the section must name exactly that login in backticks"
+  fi
+
+  # "Read-only ... runs no action": the token is the two read scopes and nothing
+  # else, no step uses an action, and no step runs a gh verb that writes.
+  assert_equal "the audit job's token is contents: read and pull-requests: read, and the workflow has no top-level block" \
+    "$(jq -c '.workflows["agent-audit.yml"] | [.workflow, .jobs]' "${WORKFLOW_POLICY}")" \
+    '[null,{"audit":{"contents":"read","pull-requests":"read"}}]'
+  assert_absent "the audit workflow runs no action" "${AUDIT_WORKFLOW}" '^[[:space:]]*-?[[:space:]]*uses:'
+  assert_absent "the audit workflow runs no gh verb that writes or dispatches" \
+    "${AUDIT_WORKFLOW}" '(gh[[:space:]]+(issue|release|workflow|run|label|secret|variable|repo)\b|gh[[:space:]]+pr[[:space:]]+(merge|comment|edit|close|review|ready|reopen|create)|gh[[:space:]]+api\b|--method|-X[[:space:]])'
+  assert_present "the audit's test is the one docs/ci-cd.md names" \
+    "tests/test-agent-audit.sh" 'agent-audit\.yml'
+  # shellcheck disable=SC2016  # the backticks are the page's own markup, matched literally
+  if [[ "${AUDIT_SECTION}" == *'`tests/test-agent-audit.sh`'* && -f tests/test-agent-audit.sh ]]; then
+    pass "docs/ci-cd.md names the audit's test and it exists"
+  else
+    fail "docs/ci-cd.md names the audit's test and it exists" "the section does not name \`tests/test-agent-audit.sh\`, or the file is gone"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 group "Lint manifests (docs/quality.md: 'the two lists are maintained by hand')"
 
 # run-tests.sh globs for test files (and checks the glob against
@@ -6977,7 +7055,7 @@ else
   done < <(tr ';' '\n' <<<"${quality_covered_claim}")
 
   assert_equal "every test file the document credits with a workflow body was checked" \
-    "${quality_clauses_checked}" "4"
+    "${quality_clauses_checked}" "5"
 
   # "One more ... is read for its `env:` block but never executed" -- the suite
   # step is the one body a test names without running, so it must stay on the

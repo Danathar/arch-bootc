@@ -201,6 +201,10 @@ the diff is:
   workflow job's `GITHUB_TOKEN` may do. A change to a job's `permissions:`
   block has to change this file too, so widening a token is never a T1 edit
   that happens to sit in a workflow.
+  The monthly agent audit workflow reports which merged agent pull requests
+  touched the paths in this section; its test joins its path list to this
+  section, so naming a new T3 path here fails that test until the list has it
+  too. See [ci-cd.md](ci-cd.md#agent-audit-trail).
 - **The agent permission boundary** — `.claude/settings.json`,
   `.claude/hooks/**`, `.claude/skills/**` and
   `.cursor/rules/arch-bootc-safety.mdc`. The settings file is the

@@ -22,6 +22,7 @@ produced:
 | Published image signature verifies against `cosign.pub` | `signatures` job, nightly workflow | Nightly, per flavor |
 | Dependency freshness | Renovate PRs | Continuously |
 | Thread-aware review state | `./scripts/pr-review-state.sh` | On demand; embedded in the `ai-fix-requested` work order |
+| Agent pull requests leave their record (signature line, sign-off) | `Audit merged agent pull requests` step, `Agent audit trail` workflow | Monthly; on demand |
 | Path labels (incl. `documentation`, which marks a PR no build ran on) | Labels on the PR | Pull requests from this repository |
 
 ```bash
@@ -418,7 +419,10 @@ Stated plainly so nobody mistakes silence for coverage:
   and `labeler.yml`'s `Ensure every configured label exists` catalog drift
   check; and `tests/test-homebrew-shell-integration.sh` runs the `test` job's
   `Install fish` and `Allow unprivileged user namespaces`, which are what make
-  its fish cases a failure rather than a skip in CI. The work-order case covers
+  its fish cases a failure rather than a skip in CI; and
+  `tests/test-agent-audit.sh` runs `agent-audit.yml`'s
+  `Audit merged agent pull requests`, the monthly read-back of the record an
+  agent pull request leaves. The work-order case covers
   what neither side can see alone — that the script is reached by the relative
   path Actions gives it, that its **non-zero exit is the normal result** and
   does not abort the job before the comment is posted, that its stderr is

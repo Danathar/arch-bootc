@@ -597,6 +597,66 @@ This does not make signature verification end-to-end. Nothing yet pulls an image
 under the shipped `policy.json` and confirms it accepts a signed image and
 rejects an unsigned one; see the gaps section of [quality.md](quality.md).
 
+## Agent audit trail
+
+`.github/workflows/agent-audit.yml` is a read-only job that reads back the record
+an agent-written pull request is supposed to leave. It runs on the 1st of each
+month at 05:23 UTC, covering the previous 31 days, and on `workflow_dispatch`
+with an optional `since` date (`YYYY-MM-DD`). Dropping the `schedule:` trigger
+and keeping the manual one is a three-line change.
+
+The record is a `— hive:` signature line at the bottom of the pull request
+description (agent, backend and model) and a `Signed-off-by` trailer on every
+commit. Nothing checked either after the merge: the DCO app is not a required
+check in the ruleset ([branch-protection.md](branch-protection.md)), and an
+omp-backed run pushes under the maintainer's own login, so the author alone
+cannot say which merged pull requests an agent wrote.
+
+The job's token is `contents: read` and `pull-requests: read`, declared on the
+job and written down in `.github/policies/workflow-permissions.json`; it checks
+nothing out and runs no action. It uses only `gh` and `jq`. It lists the pull
+requests merged in the window, keeps the ones the Hive app opened
+(`app/danathar-atomic-hive`) or whose description has a line starting
+`— hive:`, fetches each one's commits and files, and writes one row per pull
+request to the run summary: merged date, author, who merged it, backend, model
+and agent, commit count, how many commits are signed off, and the T3 paths it
+touched.
+
+| Finding | Result |
+| --- | --- |
+| A Hive-app pull request with no `— hive:` line | Fails the run |
+| A commit with no `Signed-off-by` trailer | Fails the run; a merge commit whose headline starts `Merge ` is exempt, as the DCO app exempts it |
+| A path in [T3](risk-tiers.md) | Reported in the row, not failed: an agent may touch one behind review |
+| `Containerfile`, `.github/workflows/build.yml` | Reported as "T3 by content": the root-login model and `bootc` provenance live in the first, the publish and sign jobs in the second, and a path cannot say which hunk changed |
+| A window of 500 or more merged pull requests | Refused with exit 2 rather than audited in part |
+
+A pull request that merely quotes `— hive:` mid-line is neither selected nor
+counted as signed; the line must start the line. A human pull request without
+the line is not audited, and neither is a Renovate pull request: the Hive app
+is matched by login, not by the bot flag.
+
+**The rules were chosen against live data.** Run by hand on 2026-10-03 against
+this repository, the step body listed 106 agent pull requests of the 191 merged
+since 2026-09-02 and reported nine findings: three Hive-app pull requests with
+no signature line (#194, #398 and #414, of the 94 the app opened) and six pull
+requests with eight commits that lack a trailer (#283, #287, #334, #350, #389
+and #407). Both are exceptions, not the routine, so both fail the run instead of
+being report-only. Two more pull requests (#210 and #352) each carry an unsigned
+`Merge origin/main` commit, which is why that case is exempt. None of the
+findings is from October: with `since` set to 2026-10-01 the step listed 12
+agent pull requests of 15 and exited 0, which is the window the first scheduled
+run covers.
+
+`tests/test-agent-audit.sh` executes the step's actual `run:` body against a
+`gh` stub serving staged JSON and the real `jq`: the clean window, a missing
+signature, one and two unsigned commits, the exempt merge commit, a quoted
+mention that is not a signature, the cap, a malformed date and the default
+window. It also joins the step's T3 path list to the T3 section of
+[risk-tiers.md](risk-tiers.md) in both directions and to the tree, and feeds
+the step every listed path plus a set of look-alikes. The stub makes the test
+deterministic and network-free; the first scheduled run is the check against
+the live API.
+
 ## Pruning old package versions
 
 Every publish pushes `latest`, `latest.YYYYMMDD` and `YYYYMMDD` for all three
