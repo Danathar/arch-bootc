@@ -3757,6 +3757,188 @@ fi
 fi
 
 # ---------------------------------------------------------------------------
+group "Strategy page (docs/strategy.md measures the criteria README.md's Project status lists, with commands that must still count everything)"
+
+# docs/strategy.md says how far the project is from leaving beta by giving, for
+# each unticked box in README.md's Project status section, the command that
+# measures it. It holds no running numbers, so it cannot go stale the way a
+# snapshot does. It can go wrong in four quieter ways, and nothing read it:
+#
+#   - A box is added, removed or reordered in the README and the page keeps
+#     answering for the old list.
+#   - A `gh ... list` is left on gh's default limit of 30, or loses `--repo`, and
+#     reports a smaller repository than this one. docs/metrics.md records
+#     exactly this happening.
+#   - A label the commands filter on is renamed, and they return nothing, which
+#     the page tells the reader to read as "none waiting".
+#   - A link or anchor stops resolving.
+#
+# The page also says there is no report job. That is a claim about the tree, so
+# it is joined to .github/workflows/ the way docs/metrics.md's identical claim
+# is above.
+
+STRATEGY_DOC="docs/strategy.md"
+STRATEGY_REPO="Danathar/arch-bootc"
+
+if [[ ! -f "${STRATEGY_DOC}" ]]; then
+  fail "the strategy page exists" "${STRATEGY_DOC} is missing; README.md's documentation table links to it"
+else
+  # -- The criteria ----------------------------------------------------------
+  # The first four words of each box, in order, against the bold words that open
+  # each entry under "Measuring each criterion". The count is part of the
+  # comparison, so an added or deleted box fails here.
+  strategy_boxes="$(awk '
+    /^## Project status$/ { on = 1; next }
+    on && /^## / { exit }
+    on && /^- \[[ xX]\] / { sub(/^- \[[ xX]\] /, ""); print $1, $2, $3, $4 }
+  ' README.md)"
+  strategy_entries="$(awk '
+    /^## Measuring each criterion$/ { on = 1; next }
+    on && /^## / { exit }
+    on && /^\*\*[^*]+\*\*/ { print }
+  ' "${STRATEGY_DOC}" | sed -E 's/^\*\*([^*]+)\*\*.*/\1/')"
+  if [[ -z "${strategy_boxes}" || -z "${strategy_entries}" ]]; then
+    fail "${STRATEGY_DOC} has one entry for each criterion in README.md's Project status" \
+      "read ${#strategy_boxes} chars of boxes and ${#strategy_entries} chars of entries; one side is empty, so the comparison would pass by reading nothing"
+  else
+    assert_equal "${STRATEGY_DOC} has one entry for each criterion in README.md's Project status, in the same order" \
+      "${strategy_entries//$'\n'/ | }" "${strategy_boxes//$'\n'/ | }"
+  fi
+
+  # -- The commands ----------------------------------------------------------
+  strategy_cmds="$(awk '
+    /^```/ { if (in_block) { in_block = 0 } else { in_block = (substr($0, 4) == "bash") } ; next }
+    in_block' "${STRATEGY_DOC}")"
+  strategy_gh=0
+  strategy_git=0
+  strategy_cmd_failures=""
+  while IFS= read -r strategy_cmd; do
+    [[ -n "${strategy_cmd}" ]] || continue
+    case "${strategy_cmd}" in
+      "gh "*)
+        strategy_gh=$((strategy_gh + 1))
+        if [[ "${strategy_cmd}" != *" --repo ${STRATEGY_REPO} "* ]]; then
+          strategy_cmd_failures+="[no --repo ${STRATEGY_REPO}: ${strategy_cmd:0:60}] "
+        fi
+        if [[ "${strategy_cmd}" == "gh issue list "* || "${strategy_cmd}" == "gh pr list "* || "${strategy_cmd}" == "gh release list "* ]]; then
+          strategy_limit="$(sed -nE 's/.* --limit ([0-9]+)( .*|$)/\1/p' <<<"${strategy_cmd}")"
+          if [[ -z "${strategy_limit}" ]] || ((strategy_limit < 1000)); then
+            strategy_cmd_failures+="[--limit '${strategy_limit}' is below 1000 and truncates: ${strategy_cmd:0:60}] "
+          fi
+        fi
+        if [[ "${strategy_cmd}" == "gh issue list "* || "${strategy_cmd}" == "gh pr list "* ]] &&
+          [[ "${strategy_cmd}" != *" --state "* ]]; then
+          strategy_cmd_failures+="[no --state: ${strategy_cmd:0:60}] "
+        fi
+        # A date-pinned search says which day it is pinned to by the placeholder.
+        if [[ "${strategy_cmd}" == *" --search "* && "${strategy_cmd}" != *'--search "created:>=<date>"'* &&
+          "${strategy_cmd}" != *'--search "merged:>=<date>"'* ]]; then
+          strategy_cmd_failures+="[search not pinned to <date>: ${strategy_cmd:0:60}] "
+        fi
+        # Every label filtered on is one a form applies or docs/ci-cd.md names.
+        while IFS= read -r strategy_label; do
+          [[ -n "${strategy_label}" ]] || continue
+          if ! grep -qE -- "^[[:space:]]*-[[:space:]]+${strategy_label}[[:space:]]*$" .github/ISSUE_TEMPLATE/*.yml &&
+            ! grep -qF -- "\`${strategy_label}\`" docs/ci-cd.md; then
+            strategy_cmd_failures+="[label '${strategy_label}' is applied by no issue form and named in no part of docs/ci-cd.md] "
+          fi
+        done < <(grep -oE -- '--label [A-Za-z0-9_-]+' <<<"${strategy_cmd}" | sed 's/^--label //')
+        ;;
+      "git grep "*)
+        strategy_git=$((strategy_git + 1))
+        # Every pathspec after `--` that is a path has to exist; `:!` exclusions
+        # and quotes are not paths.
+        strategy_pathspecs="${strategy_cmd#* -- }"
+        for strategy_path in ${strategy_pathspecs}; do
+          strategy_path="${strategy_path//\'/}"
+          [[ "${strategy_path}" == ":"* ]] && continue
+          [[ -e "${strategy_path}" ]] || strategy_cmd_failures+="[no such path ${strategy_path}] "
+        done
+        ;;
+      *) strategy_cmd_failures+="[not a gh or git grep command: ${strategy_cmd:0:60}] " ;;
+    esac
+  done <<<"${strategy_cmds}"
+  if ((strategy_gh == 0 || strategy_git == 0)); then
+    fail "every command in ${STRATEGY_DOC} names ${STRATEGY_REPO}, a limit that sees everything, and paths that exist" \
+      "found ${strategy_gh} gh and ${strategy_git} git grep command(s); the page's commands are gone"
+  elif [[ -z "${strategy_cmd_failures}" ]]; then
+    pass "every command in ${STRATEGY_DOC} names ${STRATEGY_REPO}, a limit that sees everything, and paths that exist"
+  else
+    fail "every command in ${STRATEGY_DOC} names ${STRATEGY_REPO}, a limit that sees everything, and paths that exist" \
+      "${strategy_cmd_failures}"
+  fi
+
+  # The two workflow searches use the patterns README's group above reads the
+  # same facts with, written out there as `grep -nE -- '<pattern>' "${status_wf}"`.
+  # A page that drifts from them would report no boot job while that group sees
+  # one. Matched literally against the script, on text this group does not
+  # contain.
+  for strategy_pattern in \
+    'qemu-system|virt-install|virsh[[:space:]]|systemd-vmspawn|bcvk' \
+    'bootc[[:space:]]+(upgrade|switch)'; do
+    if grep -qF -- "git grep -nE '${strategy_pattern}' -- .github/workflows" "${STRATEGY_DOC}" &&
+      grep -qF -- "grep -nE -- '${strategy_pattern}' \"\${status_wf}\"" "${SCRIPT_DIR}/check-invariants.sh"; then
+      pass "${STRATEGY_DOC} searches the workflows for '${strategy_pattern}', as the README project-status group does"
+    else
+      fail "${STRATEGY_DOC} searches the workflows for '${strategy_pattern}', as the README project-status group does" \
+        "the page or the group above no longer carries this exact pattern"
+    fi
+  done
+
+  # The branch-prefix command is the one with real logic. Run its jq program on
+  # a fixture: the prefix is what is before the first slash, a name with none is
+  # its own prefix, and the largest group comes first.
+  strategy_jq="$(sed -nE "s/^gh pr list .* --json headRefName --jq '(.*)'\$/\\1/p" <<<"${strategy_cmds}")"
+  if [[ -z "${strategy_jq}" ]]; then
+    fail "${STRATEGY_DOC}'s merged-by-prefix command requests headRefName and groups it with a jq program" \
+      "no 'gh pr list ... --json headRefName --jq '...'' line found"
+  else
+    assert_equal "${STRATEGY_DOC}'s merged-by-prefix jq program groups branch names by prefix, largest first" \
+      "$(jq -c "${strategy_jq}" <<<'[{"headRefName":"quality/a"},{"headRefName":"renovate/x"},{"headRefName":"quality/b"},{"headRefName":"flat"}]' 2>&1)" \
+      '[{"prefix":"quality","count":2},{"prefix":"flat","count":1},{"prefix":"renovate","count":1}]'
+  fi
+
+  # -- The dated reading -----------------------------------------------------
+  strategy_reading="$(sed -nE 's/^### Reading on ([0-9]{4}-[0-9]{2}-[0-9]{2})$/\1/p' "${STRATEGY_DOC}")"
+  if [[ -z "${strategy_reading}" ]]; then
+    fail "${STRATEGY_DOC} dates the one reading it quotes" \
+      "no '### Reading on YYYY-MM-DD' heading; the table reads as current when it is not"
+  elif [[ "${strategy_reading}" > "$(date -u +%F)" ]]; then
+    fail "${STRATEGY_DOC}'s reading date is not in the future" "read on ${strategy_reading}"
+  elif grep -qE -- "merged:[0-9]{4}-[0-9]{2}-[0-9]{2}\.\.${strategy_reading}" "${STRATEGY_DOC}"; then
+    pass "${STRATEGY_DOC} dates its reading, and the merged range it quotes ends that day"
+  else
+    fail "${STRATEGY_DOC} dates its reading, and the merged range it quotes ends that day" \
+      "no 'merged:YYYY-MM-DD..${strategy_reading}' range; the pull request counts are not pinned"
+  fi
+
+  # -- Links, and the way in -------------------------------------------------
+  assert_doc_links_resolve "${STRATEGY_DOC}" \
+    "no relative links found; the hand-off to README.md, CLAUDE.md and metrics.md is gone"
+  assert_present "README.md's documentation table lists ${STRATEGY_DOC}" \
+    "README.md" '^\|[[:space:]]*\[Strategy\]\(docs/strategy\.md\)[[:space:]]*\|'
+  strategy_status_link="$(awk '/^## Project status$/ { on = 1; next } on && /^## / { exit } on' README.md |
+    grep -cF -- '](docs/strategy.md)')"
+  assert_equal "README.md's Project status section links ${STRATEGY_DOC}" "${strategy_status_link}" "1"
+
+  # -- No report job ---------------------------------------------------------
+  strategy_writers="$(grep -lE -- 'strategy-report|docs/strategy\.md' .github/workflows/*.y*ml 2>/dev/null | tr '\n' ' ')"
+  if [[ -z "${strategy_writers}" && ! -e .github/workflows/strategy-report.yml ]]; then
+    pass "no workflow writes or reads ${STRATEGY_DOC}, as the page's 'Why there is no report job' section states"
+  else
+    fail "no workflow writes or reads ${STRATEGY_DOC}, as the page's 'Why there is no report job' section states" \
+      "${strategy_writers:-.github/workflows/strategy-report.yml exists}"
+  fi
+  if grep -qx -- '## Why there is no report job' "${STRATEGY_DOC}"; then
+    pass "${STRATEGY_DOC} still has its 'Why there is no report job' section"
+  else
+    fail "${STRATEGY_DOC} still has its 'Why there is no report job' section" "no such heading"
+  fi
+  assert_present "docs/metrics.md still declines a scheduled job, the reason ${STRATEGY_DOC} gives for having none" \
+    "${METRICS_DOC}" 'no scheduled job writing numbers'
+fi
+
+# ---------------------------------------------------------------------------
 group "VM runbook (docs/vm-workflow.md is a hand copy of scripts/quickstart.sh's virt-install and of the guest-agent contract)"
 
 # docs/vm-workflow.md is the document a reader follows once a qcow2 exists. It

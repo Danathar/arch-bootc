@@ -70,6 +70,7 @@ tools, and manual alternatives.
 | [AI security policy](docs/security/SECURITY-AI.md) |                          What agent-assisted changes defend, which inputs are untrusted, and the invariants that hold regardless |
 |                       [Security](SECURITY.md) |                                                                      How to privately report a vulnerability in the image build or CI/CD pipeline |
 |                         [Metrics](docs/metrics.md) |                                                PR acceptance, time to merge, and CI health — with the `gh` commands to recompute |
+|                       [Strategy](docs/strategy.md) |     How far the project is from leaving beta: the command that measures each stable-exit criterion, and what work is going there |
 |                   [Reflections](docs/reflections/) |                                  Durable write-ups of what went wrong here, how it was caught, and what would catch it next time |
 
 ## Contributing
@@ -116,6 +117,8 @@ It moves to stable when all of these hold:
       login regression.
 - [ ] The manual VM check in [CLAUDE.md](CLAUDE.md) is no longer the only
       place first-boot behaviour is verified.
+
+[Strategy](docs/strategy.md) gives the command that measures progress on each box, in this order.
 
 ## About this project
 
