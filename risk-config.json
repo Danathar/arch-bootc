@@ -1,0 +1,112 @@
+{
+  "$comment": [
+    "docs/risk-tiers.md as data: the four change tiers, what each reaches, the repository",
+    "paths the page assigns to it, the evidence commands it shows, and the rule that picks a",
+    "tier. The page is the policy and this file is its machine-readable copy; neither is a gate.",
+    "The 'Risk tiers config' group in tests/check-invariants.sh fails when the two disagree:",
+    "a tier added or renamed, a 'reaches' or 'evidence' cell reworded, a path claim added,",
+    "dropped or reordered in a tier's path paragraphs, an evidence command changed, the",
+    "selection rule reworded, or a listed path that is no longer tracked. So changing a tier's",
+    "paths takes two edits a reviewer sees side by side: the page, and this file.",
+    "'paths' are the page's literal path claims in its order: the backticked tokens of each",
+    "tier section's first paragraph, its 'Plus' paragraphs and (T3) its bold-led bullets that",
+    "contain a '/' or name a tracked root file; '*.md' and 'packages-*.txt' are the two",
+    "root-level globs. Prose tokens that are not paths (BOOTC_VERSION, deny) are not claims.",
+    "Changing this file is T1 in docs/risk-tiers.md."
+  ],
+  "rule": {
+    "selection": "highest",
+    "text": "Take the highest tier matched by any file in the diff.",
+    "when_unsure": "round-up",
+    "when_unsure_text": "When two tiers both look defensible, round up."
+  },
+  "tiers": [
+    {
+      "id": "T0",
+      "name": "Documentation",
+      "reaches": "Readers only",
+      "evidence": "Read the rendered result",
+      "evidence_commands": [],
+      "paths": [
+        "*.md",
+        "docs/",
+        ".github/pull_request_template.md",
+        ".github/prompts/",
+        ".gitignore",
+        ".prettierrc.json",
+        "LICENSE",
+        "LICENSE.APACHE-2.0"
+      ]
+    },
+    {
+      "id": "T1",
+      "name": "Build and test harness",
+      "reaches": "CI, local workflow",
+      "evidence": "Name the checks that ran and what they printed",
+      "evidence_commands": [
+        {
+          "command": "just test",
+          "comment": "tests + coverage floors"
+        },
+        {
+          "command": "shellcheck <changed>",
+          "comment": "and add new tests/test-*.sh to BOTH lint lists"
+        },
+        {
+          "command": "actionlint / zizmor",
+          "comment": "changed workflows"
+        }
+      ],
+      "paths": [
+        "tests/",
+        ".coverage-thresholds.json",
+        ".github/auto-qa-tuning.json",
+        "tests/tune-coverage.sh",
+        "Justfile",
+        ".github/workflows/",
+        ".github/labeler.yml",
+        ".shellcheckrc",
+        ".editorconfig",
+        "renovate.json",
+        "risk-config.json",
+        "scripts/pr-review-state.sh",
+        ".github/ISSUE_TEMPLATE/",
+        ".memory/corrections.jsonl"
+      ]
+    },
+    {
+      "id": "T2",
+      "name": "Image contents",
+      "reaches": "Every machine that installs or upgrades",
+      "evidence": "Which flavors built; effect on an upgrade",
+      "evidence_commands": [],
+      "paths": [
+        "packages-*.txt",
+        "system_files/",
+        "Containerfile"
+      ]
+    },
+    {
+      "id": "T3",
+      "name": "Boot, security model, provenance, or published artifacts",
+      "reaches": "Root on every machine running this image",
+      "evidence": "Evidence that exercises the changed path, and an explicit statement that the security model is in scope",
+      "evidence_commands": [],
+      "paths": [
+        "brew-payload.manifest",
+        "system_files/etc/containers/policy.json",
+        "cosign.pub",
+        "system_files/etc/containers/registries.d/",
+        "scripts/quickstart.sh",
+        "scripts/prune-package-versions.sh",
+        ".github/rulesets/**",
+        ".github/policies/workflow-permissions.json",
+        ".claude/settings.json",
+        ".claude/hooks/**",
+        ".claude/skills/**",
+        ".cursor/rules/arch-bootc-safety.mdc",
+        ".claude/hooks/gate-git-diff.sh"
+      ]
+    }
+  ]
+}
