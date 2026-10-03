@@ -16,18 +16,19 @@ own. Anything that does is a command under
 
 ## Who works here
 
-A Hive agent signs the pull requests it opens with a line at the end of the
-body:
+A Hive agent signs what it files with a line at the end of the body:
 
 ```text
 — hive: agent=<role> backend=claude model=<model> ...
 ```
 
-Its commits carry a `Signed-off-by:` trailer for `danathar-atomic-hive[bot]`,
-and the pull request's author is `app/danathar-atomic-hive`. Its branches are
-named `<prefix>/<slug>`. Issues it files carry an `agent/<label>` label and a
-`[role]` title prefix. The roster below is read from pull requests and issues
-up to 2026-10-03.
+That line is the primary mark, on pull requests and on issues. The commit
+author, the `Signed-off-by:` trailer and the pull request's author vary, so
+[`docs/agent-tasks/`](agent-tasks/README.md) is the page that says how to read
+each of them back. A Hive agent's branches are named `<prefix>/<slug>`.
+Issues it files usually carry an `agent/<label>` label and a `[role]` title
+prefix. The roster below is read from pull requests and issues up to
+2026-10-03.
 
 | Role          | Signature           | Branch prefix                                  | Issue label           | Work seen so far                                                   |
 | ------------- | ------------------- | ---------------------------------------------- | --------------------- | ------------------------------------------------------------------ |
@@ -38,18 +39,24 @@ up to 2026-10-03.
 | architect     | `agent=architect`   | `architect/` (earlier pull requests: `arch/`)  | `agent/architect`     | Structural fixes with the reasoning behind them.                   |
 | strategist    | none seen           | none seen                                      | `agent/strategist`    | Coordinates the other agents. Has filed one issue so far.          |
 | ci-maintainer | none seen           | none seen                                      | `agent/ci-maintainer` | Filed three CI issues.                                             |
+| dashboard     | `agent=dashboard`   | none seen                                      | none (`acmm` label)   | Files the `[ACMM Lx]` maturity issues. Has opened no pull request. |
 | reviewer      | none, it opens none | none                                           | none                  | Works through open pull requests. Never merges, approves or closes. |
 
-Older issues from `sec-check` carry `agent/security`. The README's
+Older issues from `sec-check` carry `agent/security`. The `dashboard` role does
+not use an `agent/` label: it files the `[ACMM Lx]` maturity issues, labeled
+`acmm`. The README's
 [*Maintained with Hive*](../README.md#maintained-with-hive-acmm-l5) section
 names the reviewer, the architect and the strategist.
 
 Not every pull request comes from Hive:
 
-- **The maintainer** opens pull requests under the `Danathar` login. Some use
-  the same prefixes as the agents (`quality/`, `sec/`), so a prefix alone does
-  not say who wrote a change. The author, the `— hive:` line and the
-  `Signed-off-by:` trailer do.
+- **The maintainer** opens pull requests under the `Danathar` login, on
+  `fix/`, `docs/`, `ci/`, `feat/`, `test/` and `acmm/` branches (the `acmm/`
+  ones close the `[ACMM Lx]` issues). Some use the same prefixes as the
+  agents (`quality/`, `sec/`). Some pull requests that carry a `— hive:` line
+  are also opened under the `Danathar` login, so neither the author nor the
+  prefix alone says which agent wrote a change. The `— hive:` line is the
+  mark to read.
 - **Renovate** opens `renovate/` pull requests for dependency updates. See
   [Renovate](renovate.md).
 - **GitHub Copilot's coding agent** opened `copilot/` pull requests early on.
@@ -84,9 +91,11 @@ and on what. The repository shapes what the agent finds when it gets there.
    a change touches. They never say that anyone approved it, and the workflow
    never touches `hold` or `needs-human`.
 
-Three issue labels tell an agent to look elsewhere first:
+Three issue labels say an issue may already be handled or is waiting:
 
-- `hive/covered-by-pr`: Hive saw an open pull request that names the issue.
+- `hive/covered-by-pr`: Hive saw an open pull request that names the issue. The
+  label's own description says the issue is still actionable until confirmed,
+  so check that pull request before starting.
 - `hive/likely-done`: Hive saw a merged pull request that names it.
 - `needs-human`: waits for a person. The label has no description, so its name is its only definition.
 
@@ -116,9 +125,9 @@ requires one check, `Shell tests and coverage`. It sets
 `strict_required_status_checks_policy` to `false` in
 [`.github/rulesets/main.json`](../.github/rulesets/main.json). A pull request
 therefore does not have to be tested against the latest `main` before it
-merges. The reason is Renovate: it rebases a branch only when it conflicts, and
-a strict policy would hold every Renovate pull request behind a moved `main`
-([branch protection](branch-protection.md)). The cost falls on agents. When
+merges. The reason is Renovate: it rebases a branch only when it conflicts, to
+keep rebuild churn low ([Renovate, Gotchas](renovate.md#gotchas)). The cost
+falls on agents. When
 two open pull requests touch the same document and the test that reads it,
 update the second one from `main` before it merges, so the check runs on the
 pair. To read the live setting:
@@ -139,8 +148,8 @@ repository does. Every Hive pull request merged so far was merged by the
 maintainer:
 
 ```bash
-gh pr list --repo Danathar/arch-bootc --state merged --limit 300 --author app/danathar-atomic-hive \
-  --json mergedBy --jq '[.[].mergedBy.login] | unique'
+gh pr list --repo Danathar/arch-bootc --state merged --limit 1000 --json mergedBy,body \
+  --jq '[.[] | select((.body // "") | test("— hive:")) | .mergedBy.login] | unique'
 ```
 
 It prints `["Danathar"]`.
@@ -188,12 +197,13 @@ checks above.
 ## What is in flight right now
 
 ```bash
-gh pr list --repo Danathar/arch-bootc --state open --json number,headRefName,labels \
-  --jq '.[] | "#\(.number) \(.headRefName) \([.labels[].name] | join(","))"'
+gh pr list --repo Danathar/arch-bootc --state open --json number,headRefName,author,body,labels \
+  --jq '.[] | "#\(.number) \(.headRefName) \(.author.login) \((.body // "") | [scan("— hive: agent=[a-z-]+")] | first // "unsigned") \([.labels[].name] | join(","))"'
 gh issue list --repo Danathar/arch-bootc --state open --label hive/covered-by-pr
 gh issue list --repo Danathar/arch-bootc --state open --label needs-human
 ```
 
-The first lists open pull requests by branch, so the prefix says which agent
-owns each. The other two list issues an agent should leave alone. Empty output
+The first lists open pull requests with their branch, author and signature.
+Read the author and the `— hive:` role, not the branch prefix, to see who owns
+one. The other two list issues that are probably taken or waiting. Empty output
 means none.

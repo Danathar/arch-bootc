@@ -8677,6 +8677,22 @@ else
   done < <(grep -E '^\| [a-z-]+ +\| `agent=' "${MA_DOC}")
   assert_equal "each signed role's signature names its own role" "${ma_bad_rows}" ""
   ma_says "the page shows the shape of the signature line" '— hive: agent=<role> backend=claude'
+  # The two pages that explain the marks must not disagree. The trace page owns
+  # them; this page names the signature line as primary and links there.
+  ma_says "the page sends a reader to the trace page for the other marks" "](agent-tasks/README.md)"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  assert_present "the trace page exists and describes the signature line" docs/agent-tasks/README.md '`— hive:`'
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  assert_absent "the page does not claim the bot trailer or author marks every agent change" "${MA_DOC}" \
+    'trailer for `danathar-atomic-hive|author is `app/danathar-atomic-hive`'
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  if grep -Eq '^\| dashboard +\| `agent=dashboard`' "${MA_DOC}"; then
+    pass "the roster has a dashboard row, the signer of the ACMM issues"
+  else
+    fail "the roster has a dashboard row, the signer of the ACMM issues" "no dashboard row in ${MA_DOC}"
+  fi
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ma_says "the page names the acmm/ branch prefix among the non-Hive ones" '`acmm/` branches'
 
   # --- The ruleset --------------------------------------------------------------
 
