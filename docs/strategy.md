@@ -25,10 +25,12 @@ hold.
 ## Measuring each criterion
 
 One entry per box, in the README's order. Each entry opens with the first
-words of its box. `<date>` is a day written `YYYY-MM-DD`; every search is
-pinned to it, so a command gives the same answer on that day and a month later.
-The `git grep` commands read the checked-out tree, so run them in a clone at the
-commit you mean to measure.
+words of its box. `<start>` and `<end>` are days written `YYYY-MM-DD`. Every
+search is a closed range, `created:<start>..<end>` or `merged:<start>..<end>`,
+so once `<end>` is in the past it gives the same answer later, except that a
+pull request or issue edited afterwards can still change state. A range with
+`<end>` of today or later keeps growing. The `git grep` commands read the
+checked-out tree, so run them in a clone at the commit you mean to measure.
 
 **CI boots the built** image in a VM: an active workflow line that starts one.
 No output means no workflow boots anything. The pattern is the one
@@ -67,18 +69,19 @@ them. Which are boot, upgrade or login problems has to be read from the issue.
 Start the window the day the first three boxes hold, not before.
 
 ```bash
-gh issue list --repo Danathar/arch-bootc --label bug --state all --limit 1000 --search "created:>=<date>" --json number,title,state
-gh issue list --repo Danathar/arch-bootc --state all --limit 1000 --search "created:>=<date>" --json number,title,state
+gh issue list --repo Danathar/arch-bootc --label bug --state all --limit 1000 --search "created:<start>..<end>" --json number,title,state
+gh issue list --repo Danathar/arch-bootc --state all --limit 1000 --search "created:<start>..<end>" --json number,title,state
 ```
 
 **The manual VM check** in [CLAUDE.md](../CLAUDE.md) is no longer the only
 place first-boot behaviour is verified: every place in `tests/` that names a VM
-tool. A hit has to be read. At the reading below the only hits are in
-`tests/e2e/test-quickstart-dry-run.sh`, which runs the quickstart with
-`--dry-run`, so nothing there boots a VM.
+tool. A hit has to be read. At the reading below the hits are the quickstart
+dry run, `tests/e2e/test-quickstart-dry-run.sh`, which stubs `virsh` and
+`virt-install` and runs with `--dry-run`, and comments in `tests/run-tests.sh`,
+`tests/test-manifest` and `tests/test-gate-git-diff.sh`. Nothing there boots a VM.
 
 ```bash
-git grep -nE 'virt-install|qemu-system|systemd-vmspawn|bcvk' -- tests ':!tests/check-invariants.sh'
+git grep -nE 'virt-install|qemu-system|virsh[[:space:]]|systemd-vmspawn|bcvk' -- tests ':!tests/check-invariants.sh'
 ```
 
 ## Is the work going there?
@@ -88,7 +91,7 @@ were last changed, or the day the last box was ticked. The prefix is the
 nearest thing to "what kind of work" the history records.
 
 ```bash
-gh pr list --repo Danathar/arch-bootc --state merged --limit 1000 --search "merged:>=<date>" --json headRefName --jq 'map(.headRefName | split("/")[0]) | group_by(.) | map({prefix: .[0], count: length}) | sort_by(-.count)'
+gh pr list --repo Danathar/arch-bootc --state merged --limit 1000 --search "merged:<start>..<end>" --json headRefName --jq 'map(.headRefName | split("/")[0]) | group_by(.) | map({prefix: .[0], count: length}) | sort_by(-.count)'
 ```
 
 Read it against the section above. A large count under `quality/`, `sec/` or
@@ -108,19 +111,22 @@ gh pr list --repo Danathar/arch-bootc --label hold --state open --limit 1000
 
 ### Reading on 2026-10-03
 
-Taken on 2026-10-03 with the commands above, `<date>` set to 2026-09-30, the
-day the criteria were added to the README (PR #426). Pull requests are bounded
-with `merged:2026-09-30..2026-10-03` instead of `>=`, so a rerun reads the same
-range.
+Taken on 2026-10-03 with the commands above, `<start>` set to 2026-09-30, the
+day the criteria were added to the README (PR #426), and `<end>` set to
+2026-10-02, a day already over. The pull request range is
+`merged:2026-09-30..2026-10-02` and the issue range is
+`created:2026-09-30..2026-10-02`. The workflow, release and label rows are
+open state read at that moment, not bounded by the range.
 
 | Command | Result |
 | --- | --- |
 | Workflow lines that boot a VM | none |
 | Workflow lines that run `bootc upgrade` or `bootc switch` | none |
 | Releases published | none |
-| Pull requests merged, 2026-09-30 to 2026-10-03 | 17: `quality/` 7, `architect/` 3, `scanner/` 3, `renovate/` 2, `fix/` 1, `guide/` 1 |
-| Issues opened in that range | 18, of which 1 labelled `bug` |
-| Waiting on `needs-human` or `hold` | none |
+| Pull requests merged, 2026-09-30 to 2026-10-02 | 14: `quality/` 6, `architect/` 3, `scanner/` 2, `fix/` 1, `guide/` 1, `renovate/` 1 |
+| Issues opened in that range | 8, of which 1 labelled `bug` |
+| Open issues labelled `needs-human` | none |
+| Open pull requests labelled `hold` | 1 (#464) |
 
 None of the five boxes moved in that range.
 

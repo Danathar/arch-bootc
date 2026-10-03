@@ -3830,10 +3830,11 @@ else
           [[ "${strategy_cmd}" != *" --state "* ]]; then
           strategy_cmd_failures+="[no --state: ${strategy_cmd:0:60}] "
         fi
-        # A date-pinned search says which day it is pinned to by the placeholder.
-        if [[ "${strategy_cmd}" == *" --search "* && "${strategy_cmd}" != *'--search "created:>=<date>"'* &&
-          "${strategy_cmd}" != *'--search "merged:>=<date>"'* ]]; then
-          strategy_cmd_failures+="[search not pinned to <date>: ${strategy_cmd:0:60}] "
+        # A search says the range it covers with a closed <start>..<end> pair, so
+        # a reading that stops growing can be reproduced later.
+        if [[ "${strategy_cmd}" == *" --search "* && "${strategy_cmd}" != *'--search "created:<start>..<end>"'* &&
+          "${strategy_cmd}" != *'--search "merged:<start>..<end>"'* ]]; then
+          strategy_cmd_failures+="[search not a closed <start>..<end> range: ${strategy_cmd:0:60}] "
         fi
         # Every label filtered on is one a form applies or docs/ci-cd.md names.
         while IFS= read -r strategy_label; do
@@ -3905,11 +3906,33 @@ else
       "no '### Reading on YYYY-MM-DD' heading; the table reads as current when it is not"
   elif [[ "${strategy_reading}" > "$(date -u +%F)" ]]; then
     fail "${STRATEGY_DOC}'s reading date is not in the future" "read on ${strategy_reading}"
-  elif grep -qE -- "merged:[0-9]{4}-[0-9]{2}-[0-9]{2}\.\.${strategy_reading}" "${STRATEGY_DOC}"; then
-    pass "${STRATEGY_DOC} dates its reading, and the merged range it quotes ends that day"
   else
-    fail "${STRATEGY_DOC} dates its reading, and the merged range it quotes ends that day" \
-      "no 'merged:YYYY-MM-DD..${strategy_reading}' range; the pull request counts are not pinned"
+    # Both quoted ranges must end before the reading date, so they are over and
+    # a rerun cannot gain members.
+    strategy_range_bad=""
+    for strategy_kind in merged created; do
+      strategy_end="$(grep -oE -- "${strategy_kind}:[0-9]{4}-[0-9]{2}-[0-9]{2}\.\.[0-9]{4}-[0-9]{2}-[0-9]{2}" "${STRATEGY_DOC}" | sed -E 's/.*\.\.//' | sort -u)"
+      if [[ -z "${strategy_end}" || "$(wc -l <<<"${strategy_end}")" -ne 1 ]]; then
+        strategy_range_bad+="[${strategy_kind}: found '${strategy_end//$'\n'/ }'] "
+      elif [[ ! "${strategy_end}" < "${strategy_reading}" ]]; then
+        strategy_range_bad+="[${strategy_kind} range ends ${strategy_end}, not before ${strategy_reading}] "
+      fi
+    done
+    if [[ -z "${strategy_range_bad}" ]]; then
+      pass "${STRATEGY_DOC} dates its reading, and the merged and created ranges it quotes ended before that day"
+    else
+      fail "${STRATEGY_DOC} dates its reading, and the merged and created ranges it quotes ended before that day" \
+        "${strategy_range_bad}"
+    fi
+  fi
+
+  # The tests search is the same pattern as the workflow boot search above, so
+  # a tool the README group looks for is not missed here.
+  if grep -qF -- "git grep -nE 'virt-install|qemu-system|virsh[[:space:]]|systemd-vmspawn|bcvk' -- tests" "${STRATEGY_DOC}"; then
+    pass "${STRATEGY_DOC}'s search of tests/ for VM tools carries the same virsh-inclusive pattern"
+  else
+    fail "${STRATEGY_DOC}'s search of tests/ for VM tools carries the same virsh-inclusive pattern" \
+      "the page's tests/ search no longer names virsh, or its pattern drifted"
   fi
 
   # -- Links, and the way in -------------------------------------------------
