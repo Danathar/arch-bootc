@@ -8256,6 +8256,296 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "AI operations runbook (docs/ai-ops-runbook.md names every workflow, quotes their messages and steps, and sends a reader to the pages that hold the detail)"
+
+# docs/ai-ops-runbook.md is what a maintainer opens when a workflow goes red or
+# an agent's output looks wrong. It is prose around things the tree owns: the
+# six workflow files, the steps and jobs it says go red, the messages those
+# steps print, the schedules behind "a scheduled run is missing", and the
+# refusals the PreToolUse gate prints. Each of those moves independently of the
+# page, and a runbook that names a step that was renamed or quotes a message
+# that was reworded fails exactly when someone is reading it under pressure.
+#
+# Asserted below:
+#
+#   - the page names every workflow file, and every workflow file it names exists;
+#   - each workflow has its own section, and the table's `name:` column is the
+#     workflow's declared name;
+#   - the nightly table is the nightly workflow's checking steps (those with a
+#     `run:` body), job by job, in file order;
+#   - the build table's `job` / `step` pairs are real jobs and real steps;
+#   - every message the page quotes is still printed by the file that prints it
+#     and still on the page;
+#   - the schedules, the `fail-fast: false` matrices, the `needs:` gate and the
+#     inputs and label the page relies on are still in the workflows;
+#   - every repository path the page puts in backticks exists;
+#   - every relative link and anchor resolves, and the pages it hands off to are
+#     all still linked.
+RUNBOOK_DOC="docs/ai-ops-runbook.md"
+
+if [[ ! -f "${RUNBOOK_DOC}" ]]; then
+  fail "the AI operations runbook exists" "${RUNBOOK_DOC} is missing; README.md's documentation table links to it"
+else
+
+  assert_present "README.md's documentation table links to the AI operations runbook" \
+    "README.md" '\]\(docs/ai-ops-runbook\.md\)'
+
+  # The page with its line breaks folded, so a quoted message wrapped across
+  # two lines is still one string.
+  runbook_flat="$(tr '\n' ' ' <"${RUNBOOK_DOC}" | tr -s ' ')"
+
+  # The checking steps of every job of one workflow, as `job|step`, in file
+  # order: the steps that carry a `run:` body. Steps that run an action
+  # (checkout, install cosign) check nothing themselves.
+  runbook_run_steps() {
+    awk '
+      /^jobs:$/ { in_jobs = 1; next }
+      /^[A-Za-z_]/ { in_jobs = 0 }
+      in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ { job = substr($0, 3, length($0) - 3); step = ""; next }
+      /^      - name: / { step = substr($0, 15); next }
+      /^        run:/ { if (step != "") { print job "|" step; step = "" } }
+    ' "$1"
+  }
+
+  # Every step name of one job, whether or not it has a `run:` body.
+  runbook_job_steps() {
+    awk -v job="$2" '
+      /^jobs:$/ { in_jobs = 1; next }
+      /^[A-Za-z_]/ { in_jobs = 0 }
+      in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ { current = substr($0, 3, length($0) - 3); next }
+      in_jobs && current == job && /^      - name: / { print substr($0, 15) }
+    ' "$1"
+  }
+
+  # A section's lines: from its `## ` heading to the next one.
+  runbook_section() {
+    awk -v want="## $1" '
+      $0 == want { inside = 1; next }
+      inside && /^## / { exit }
+      inside
+    ' "${RUNBOOK_DOC}"
+  }
+
+  # --- Every workflow is named, and every named workflow exists ----------------
+
+  runbook_tree_workflows="$(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | LC_ALL=C sort)"
+  runbook_named_workflows="$(grep -oE '\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml' "${RUNBOOK_DOC}" | LC_ALL=C sort -u)"
+  if [[ -z "${runbook_tree_workflows}" ]]; then
+    fail "the repository still has workflows for the runbook to describe" "no file under .github/workflows/"
+  else
+    runbook_unnamed="$(comm -23 <(printf '%s\n' "${runbook_tree_workflows}") <(printf '%s\n' "${runbook_named_workflows}") | tr '\n' ' ')"
+    runbook_ghosts="$(comm -13 <(printf '%s\n' "${runbook_tree_workflows}") <(printf '%s\n' "${runbook_named_workflows}") | tr '\n' ' ')"
+    assert_equal "every workflow under .github/workflows/ is named on the AI operations runbook" \
+      "${runbook_unnamed}" ""
+    assert_equal "every workflow the AI operations runbook names exists under .github/workflows/" \
+      "${runbook_ghosts}" ""
+
+    # Each one has a section of its own, and the table says what GitHub calls it.
+    while IFS= read -r runbook_wf; do
+      [[ -n "${runbook_wf}" ]] || continue
+      if grep -qxF -- "## \`${runbook_wf}\`" "${RUNBOOK_DOC}"; then
+        pass "the runbook has a section for ${runbook_wf}"
+      else
+        fail "the runbook has a section for ${runbook_wf}" "no '## \`${runbook_wf}\`' heading"
+      fi
+      runbook_declared="$(sed -nE 's/^name: (.+)$/\1/p' "${runbook_wf}" | head -n 1)"
+      assert_equal "the runbook's table gives ${runbook_wf}'s declared workflow name" \
+        "$(grep -F -- "| \`${runbook_wf}\` |" "${RUNBOOK_DOC}" | head -n 1 | awk -F'|' '{ gsub(/^ *`|` *$/, "", $3); print $3 }')" \
+        "${runbook_declared}"
+    done <<<"${runbook_tree_workflows}"
+  fi
+
+  # --- The incident sections the page promises exist ---------------------------
+
+  runbook_missing_sections=""
+  while IFS= read -r want; do
+    grep -qxF -- "## ${want}" "${RUNBOOK_DOC}" || runbook_missing_sections+="${want}; "
+  done <<'RUNBOOK_SECTIONS'
+Start here
+`main` is red
+A scheduled run is missing
+Renovate automerge went wrong
+An agent's pull request looks wrong
+An issue for work that is already done
+A gate refusal from `.claude/hooks/gate-git-diff.sh`
+An agent acted on text it read
+RUNBOOK_SECTIONS
+  if [[ -z "${runbook_missing_sections}" ]]; then
+    pass "the runbook still has a section for every situation it exists to cover"
+  else
+    fail "the runbook still has a section for every situation it exists to cover" \
+      "missing: ${runbook_missing_sections}"
+  fi
+
+  # --- The nightly table is the nightly workflow's checking steps --------------
+
+  runbook_nightly_tree="$(runbook_run_steps "${NIGHTLY_WORKFLOW}")"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  runbook_nightly_page="$(runbook_section '`.github/workflows/nightly-compliance.yml`' |
+    awk -F'|' '/^\| `/ { for (i = 2; i <= 3; i++) gsub(/^ *`|` *$/, "", $i); print $2 "|" $3 }')"
+  if [[ -z "${runbook_nightly_tree}" || -z "${runbook_nightly_page}" ]]; then
+    fail "the nightly table and the nightly workflow's checking steps are both readable" \
+      "tree='${runbook_nightly_tree//$'\n'/ ; }' page='${runbook_nightly_page//$'\n'/ ; }'"
+  else
+    assert_equal "the runbook's nightly table has one row per checking step of the nightly workflow, in order" \
+      "${runbook_nightly_page//$'\n'/ ; }" \
+      "${runbook_nightly_tree//$'\n'/ ; }"
+  fi
+
+  # --- The build table's job / step pairs are real -----------------------------
+
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  runbook_build_pairs="$(runbook_section '`.github/workflows/build.yml`' |
+    sed -nE 's/^\| `([A-Za-z_]+)` \/ `([^`]+)` \|.*/\1|\2/p')"
+  if [[ -z "${runbook_build_pairs}" ]]; then
+    fail "the runbook's build table still names job / step pairs" "no '| \`job\` / \`step\` |' row found"
+  else
+    runbook_bad_pairs=""
+    while IFS='|' read -r runbook_job runbook_step; do
+      # The prune step's name carries a matrix expression; the page says <flavor>.
+      runbook_step="${runbook_step//<flavor>/\$\{\{ matrix.flavor \}\}}"
+      grep -qxF -- "${runbook_step}" <<<"$(runbook_job_steps "${BUILD_WORKFLOW}" "${runbook_job}")" ||
+        runbook_bad_pairs+="${runbook_job} / ${runbook_step}; "
+    done <<<"${runbook_build_pairs}"
+    if [[ -z "${runbook_bad_pairs}" ]]; then
+      pass "every job / step the runbook's build table names is a step of that job in build.yml"
+    else
+      fail "every job / step the runbook's build table names is a step of that job in build.yml" \
+        "not found: ${runbook_bad_pairs}"
+    fi
+  fi
+
+  # Steps the prose of the other sections names, as `file|job|step`.
+  runbook_bad_steps=""
+  while IFS='|' read -r runbook_file runbook_job runbook_step; do
+    [[ -n "${runbook_file}" ]] || continue
+    grep -qxF -- "${runbook_step}" <<<"$(runbook_job_steps "${runbook_file}" "${runbook_job}")" ||
+      runbook_bad_steps+="${runbook_file} ${runbook_job}: ${runbook_step}; "
+    grep -qF -- "\`${runbook_step}\`" "${RUNBOOK_DOC}" ||
+      runbook_bad_steps+="${runbook_step} is no longer on the page; "
+  done <<'RUNBOOK_STEPS'
+.github/workflows/zizmor.yaml|zizmor|Run zizmor
+.github/workflows/labeler.yml|label|Ensure every configured label exists
+RUNBOOK_STEPS
+  if [[ -z "${runbook_bad_steps}" ]]; then
+    pass "the steps the runbook names outside its tables exist in their workflows"
+  else
+    fail "the steps the runbook names outside its tables exist in their workflows" "${runbook_bad_steps}"
+  fi
+  # The page says `Log in to GHCR`, the first words of that step's name.
+  assert_present "the build_push step the runbook calls 'Log in to GHCR' still exists" \
+    "${BUILD_WORKFLOW}" '^      - name: Log in to GHCR'
+
+  # --- Quoted messages are still printed, and still quoted ---------------------
+
+  runbook_bad_quotes=""
+  while IFS='|' read -r runbook_file runbook_fragment; do
+    [[ -n "${runbook_file}" ]] || continue
+    grep -qF -- "${runbook_fragment}" "${runbook_file}" ||
+      runbook_bad_quotes+="${runbook_file} no longer prints '${runbook_fragment}'; "
+    grep -qF -- "${runbook_fragment}" <<<"${runbook_flat}" ||
+      runbook_bad_quotes+="the page no longer quotes '${runbook_fragment}'; "
+  done <<'RUNBOOK_QUOTES'
+.github/workflows/build.yml|unprivileged user + mount namespaces are still refused
+.github/workflows/build.yml|is missing or unreadable
+.github/workflows/nightly-compliance.yml|now resolves to
+.github/workflows/nightly-compliance.yml|no longer exists upstream
+.github/workflows/nightly-compliance.yml|supply-chain event
+.github/workflows/labeler.yml|is configured but has no catalog entry in .github/workflows/labeler.yml
+.github/workflows/labeler.yml|has a catalog entry but no path rule in .github/labeler.yml
+.github/workflows/ai-fix.yml|target must be a number
+scripts/prune-package-versions.sh|prune: FAILED on
+scripts/prune-package-versions.sh|tagged latest but outside the newest
+.claude/hooks/gate-git-diff.sh|blocked: this git diff would compare paths as plain files
+.claude/hooks/gate-git-diff.sh|blocked: git --output=FILE
+.claude/hooks/gate-git-diff.sh|blocked: an output redirection
+RUNBOOK_QUOTES
+  if [[ -z "${runbook_bad_quotes}" ]]; then
+    pass "every message the runbook quotes is still printed by the file it comes from"
+  else
+    fail "every message the runbook quotes is still printed by the file it comes from" "${runbook_bad_quotes}"
+  fi
+
+  # --- Schedules, gates and inputs the prose relies on -------------------------
+
+  assert_present "build.yml still runs daily at 10:05 UTC, as the runbook says" \
+    "${BUILD_WORKFLOW}" 'cron: "05 10 \* \* \*"'
+  assert_present "nightly-compliance.yml still runs daily at 05:40 UTC, as the runbook says" \
+    "${NIGHTLY_WORKFLOW}" 'cron: "40 5 \* \* \*"'
+  runbook_scheduled="$(grep -lE '^  schedule:' .github/workflows/*.y*ml | LC_ALL=C sort | tr '\n' ' ')"
+  assert_equal "build.yml and nightly-compliance.yml are the only scheduled workflows, as the runbook says" \
+    "${runbook_scheduled}" \
+    ".github/workflows/build.yml .github/workflows/nightly-compliance.yml "
+
+  assert_equal "build_push still needs lint and test, so a red lint or test publishes nothing" \
+    "$(cicd_job "${BUILD_WORKFLOW}" build_push | sed -nE 's/^    needs: (.+)$/\1/p')" \
+    "[lint, test]"
+  assert_equal "build_push's flavor matrix still has fail-fast: false, as the runbook says" \
+    "$(cicd_job "${BUILD_WORKFLOW}" build_push | grep -cE '^      fail-fast: false$')" "1"
+  assert_equal "the nightly signatures matrix still has fail-fast: false, as the runbook says" \
+    "$(cicd_job "${NIGHTLY_WORKFLOW}" signatures | grep -cE '^      fail-fast: false$')" "1"
+  assert_present "ai-fix.yml still takes the manual number input the runbook names" \
+    ".github/workflows/ai-fix.yml" '^      number:$'
+  assert_present "ai-fix.yml still acts only on the ai-fix-requested label" \
+    ".github/workflows/ai-fix.yml" "github\.event\.label\.name == 'ai-fix-requested'"
+  assert_present "zizmor.yaml still pins ZIZMOR_VERSION, which the runbook says stops a release turning main red" \
+    ".github/workflows/zizmor.yaml" '^  ZIZMOR_VERSION: '
+  assert_present "build.yml still passes PACMAN_CACHE_BUST, which the runbook says not to remove" \
+    "${BUILD_WORKFLOW}" 'PACMAN_CACHE_BUST='
+  assert_present "the build workflow's prune step still passes the retention floor the runbook defers to ci-cd.md for" \
+    "${BUILD_WORKFLOW}" '--min-versions-to-keep 30'
+  assert_absent "renovate.json does not set rebaseWhen to never, which the runbook warns against" \
+    "renovate.json" '"rebaseWhen"[[:space:]]*:[[:space:]]*"never"'
+
+  # --- Repository paths in backticks exist -------------------------------------
+
+  runbook_missing_paths=""
+  runbook_paths_checked=0
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  while IFS= read -r runbook_path; do
+    [[ -n "${runbook_path}" ]] || continue
+    runbook_paths_checked=$((runbook_paths_checked + 1))
+    [[ -e "${runbook_path#./}" ]] || runbook_missing_paths+="${runbook_path} "
+  done < <(grep -oE '`[A-Za-z0-9_./-]+`' "${RUNBOOK_DOC}" | tr -d '`' |
+    grep -E '^(\./)?((\.github|\.claude|docs|scripts|tests|system_files)/|\.coverage-thresholds\.json$)' | LC_ALL=C sort -u)
+  if ((runbook_paths_checked == 0)); then
+    fail "the runbook still names repository paths" "no backticked path found"
+  elif [[ -z "${runbook_missing_paths}" ]]; then
+    pass "every repository path the runbook puts in backticks exists (${runbook_paths_checked} checked)"
+  else
+    fail "every repository path the runbook puts in backticks exists" "missing: ${runbook_missing_paths}"
+  fi
+
+  # --- Links -------------------------------------------------------------------
+
+  assert_doc_links_resolve "${RUNBOOK_DOC}" \
+    "no relative links found; the hand-off to quality.md, ci-cd.md and the other pages is gone"
+
+  runbook_missing_links=""
+  while IFS= read -r want; do
+    grep -qF -- "](${want}" "${RUNBOOK_DOC}" || runbook_missing_links+="${want}; "
+  done <<'RUNBOOK_LINKS'
+../AGENTS.md
+../CLAUDE.md
+../SECURITY.md
+quality.md
+ci-cd.md
+risk-tiers.md
+branch-protection.md
+renovate.md
+review-rubric.md
+security/SECURITY-AI.md
+reflections/README.md
+RUNBOOK_LINKS
+  if [[ -z "${runbook_missing_links}" ]]; then
+    pass "the runbook still hands a reader to the pages that hold the detail"
+  else
+    fail "the runbook still hands a reader to the pages that hold the detail" "no link to: ${runbook_missing_links}"
+  fi
+
+fi
+
+# ---------------------------------------------------------------------------
 group "Dangling restructuring symlinks (AGENTS.md, docs/review-rubric.md, docs/security/SECURITY-AI.md: the paths a bind-mount must never target)"
 
 # Four documents hand an agent the list of paths a `--mount=type=bind` must not
