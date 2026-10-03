@@ -3935,6 +3935,18 @@ else
       "the page's tests/ search no longer names virsh, or its pattern drifted"
   fi
 
+  # Criterion 3 is measured by build.yml's tag rules, not by GitHub Releases, so
+  # the page has to carry the tag-rule command, and the five rules the README
+  # group's case statement names have to be what that command finds.
+  strategy_tag_cmd="git grep -nE '^[[:space:]]+type=(raw|sha|ref)' -- .github/workflows/build.yml"
+  if ! grep -qF -- "${strategy_tag_cmd}" "${STRATEGY_DOC}"; then
+    fail "${STRATEGY_DOC} measures the never-pruned tag criterion by build.yml's tag rules" \
+      "the page no longer carries: ${strategy_tag_cmd}"
+  else
+    assert_equal "${STRATEGY_DOC} measures the never-pruned tag criterion by build.yml's tag rules, which number five" \
+      "$(grep -cE '^[[:space:]]+type=(raw|sha|ref)' "${BUILD_WORKFLOW}")" "5"
+  fi
+
   # -- Links, and the way in -------------------------------------------------
   assert_doc_links_resolve "${STRATEGY_DOC}" \
     "no relative links found; the hand-off to README.md, CLAUDE.md and metrics.md is gone"

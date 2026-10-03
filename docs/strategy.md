@@ -49,15 +49,17 @@ line that runs `bootc upgrade` or `bootc switch`. No output means none does.
 git grep -nE 'bootc[[:space:]]+(upgrade|switch)' -- .github/workflows
 ```
 
-**Images are published under** tags that are never pruned: the releases the
-repository has published, and the tag rules the build workflow applies. No
-release output means there are none. The tag rules are the build workflow's
-`type=raw`, `type=sha` and `type=ref` lines: the moving `latest`, a date, and
-pull request tags. The date ones are pruned, so none is a release tag.
+**Images are published under** tags that are never pruned. The measure is the
+tag rules in the build workflow, the first command: its `type=raw`, `type=sha`
+and `type=ref` lines are the moving `latest`, dated tags, and pull request tags.
+The dated ones are pruned, so none is a release tag. A rule that is none of
+those is the thing to look for. The second command is context only: it lists
+GitHub Releases, which are not image tags in the registry, so an empty list
+does not by itself say what the registry holds.
 
 ```bash
-gh release list --repo Danathar/arch-bootc --limit 1000
 git grep -nE '^[[:space:]]+type=(raw|sha|ref)' -- .github/workflows/build.yml
+gh release list --repo Danathar/arch-bootc --limit 1000
 ```
 
 **Eight consecutive weeks of** `:latest` without a reported boot, upgrade or
@@ -122,7 +124,8 @@ open state read at that moment, not bounded by the range.
 | --- | --- |
 | Workflow lines that boot a VM | none |
 | Workflow lines that run `bootc upgrade` or `bootc switch` | none |
-| Releases published | none |
+| Image tag rules in `build.yml` | 5, all moving, dated or pull request tags |
+| GitHub Releases (context, not image tags) | none |
 | Pull requests merged, 2026-09-30 to 2026-10-02 | 14: `quality/` 6, `architect/` 3, `scanner/` 2, `fix/` 1, `guide/` 1, `renovate/` 1 |
 | Issues opened in that range | 8, of which 1 labelled `bug` |
 | Open issues labelled `needs-human` | none |
