@@ -55,6 +55,22 @@ status_previous() {
   printf '%s\n' "${previous}"
 }
 
+# The rollback deployment's composefs verity id from `bootc status
+# --format=json` output, which is the same id as the `composefs=` karg and the
+# directory name under state/deploy. Prints nothing (and succeeds) when bootc
+# reports no rollback, and fails when the input is not a bootc status document
+# at all, so the caller can tell "bootc says there is nothing to compare
+# against" apart from "bootc could not be asked".
+#
+# The field path (.status.rollback.composefs.verity) is part of the contract
+# pinned by BOOTC_VERSION in the Containerfile (HostStatus / BootEntryComposefs
+# in bootc's crates/lib/src/spec.rs); re-check it when bumping that pin.
+status_rollback_verity() {
+  jq -r '.status
+    | if type == "object" then (.rollback.composefs.verity // "")
+      else error("not a bootc status document") end' <<<"$1"
+}
+
 # Emit the +/-/! report for two `pacman -Q` listings. Both files must already be
 # sorted on the package name: join walks them in order and silently misses
 # pairings otherwise.
@@ -115,9 +131,9 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
 fi
 
 # Plain `sudo`, with no `--preserve-env=PATH`. Everything below this line runs
-# as root and reaches every tool it needs by bare name -- `ostree`, `pacman`,
-# `mount`, `umount`, `mountpoint`, `mktemp`, `rmdir`, `find`, `readlink`,
-# `sort`, `awk`, `join`, `tr` -- so whichever PATH survives the re-exec decides
+# as root and reaches every tool it needs by bare name -- `bootc`, `jq`,
+# `ostree`, `pacman`, `mount`, `umount`, `mountpoint`, `mktemp`, `rmdir`,
+# `find`, `readlink`, `sort`, `awk`, `join`, `tr` -- so whichever PATH survives the re-exec decides
 # which binaries root executes. Asking sudo to carry the caller's PATH across
 # that boundary is asking it to let an unprivileged environment choose them,
 # which is the one thing sudoers' `secure_path` exists to prevent.
@@ -159,12 +175,30 @@ if [[ -n "${composefs_id}" && -n "${composefs_root}" ]]; then
     exit 1
   fi
 
-  previous="$(find "${state_deploy}" -mindepth 1 -maxdepth 1 -type d -printf '%f %T@\n' \
-    | sort -k2,2nr \
-    | awk -v current="${current}" '$1!=current {print $1; exit}')"
-  if [[ -z "${previous}" ]]; then
-    echo "No previous deployment found under ${state_deploy}." >&2
-    exit 1
+  # Ask bootc which deployment is the rollback, the way the ostree branch below
+  # asks `ostree admin status`. Between `bootc upgrade` and the reboot the
+  # newest directory under state/deploy is the staged update, not the previous
+  # system, so modification times alone would compare against the future.
+  previous=""
+  if status_json="$(bootc status --format=json --format-version=1 2>/dev/null)" \
+    && previous="$(status_rollback_verity "${status_json}" 2>/dev/null)"; then
+    if [[ -z "${previous}" ]]; then
+      echo "bootc status reports no rollback deployment to compare against." >&2
+      exit 1
+    fi
+  else
+    # Only when bootc (or jq) could not be asked at all. Say so: before a
+    # reboot this guess picks the staged update.
+    echo "warning: could not read the rollback deployment from 'bootc status';" \
+      "using the newest other directory under ${state_deploy}, which is the" \
+      "staged update if one is pending." >&2
+    previous="$(find "${state_deploy}" -mindepth 1 -maxdepth 1 -type d -printf '%f %T@\n' \
+      | sort -k2,2nr \
+      | awk -v current="${current}" '$1!=current {print $1; exit}')"
+    if [[ -z "${previous}" ]]; then
+      echo "No previous deployment found under ${state_deploy}." >&2
+      exit 1
+    fi
   fi
   if [[ ! -e "${composefs_images}/${previous}" ]]; then
     echo "Previous deployment '${previous}' has no matching ${composefs_images} entry." >&2
