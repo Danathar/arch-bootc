@@ -380,11 +380,9 @@ test_status_rollback_verity_without_rollback_is_empty() {
 }
 
 test_status_rollback_verity_rejects_non_status_input() {
-  status_rollback_verity 'error: not json' >/dev/null 2>&1
-  [[ $? -ne 0 ]]
+  ! status_rollback_verity 'error: not json' >/dev/null 2>&1
   check "output that is not JSON fails rather than reading as no rollback" "$?"
-  status_rollback_verity '{"kind":"Something"}' >/dev/null 2>&1
-  [[ $? -ne 0 ]]
+  ! status_rollback_verity '{"kind":"Something"}' >/dev/null 2>&1
   check "JSON with no status object fails rather than reading as no rollback" "$?"
 }
 
