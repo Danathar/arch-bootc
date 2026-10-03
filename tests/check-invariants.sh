@@ -3962,6 +3962,329 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Agent task ledger (docs/agent-tasks/ is a README of traceability marks and dated ledgers of runnable gh and git commands)"
+
+# docs/agent-tasks/ answers "which agent task made this change". It is prose
+# around commands, and a reading of the history produced by those commands, so
+# what can rot is the same set of things the metrics snapshots above can:
+#
+#   - The commands. A jq program that stops parsing, or reads a field its own
+#     `gh --json` never requested, fails in the reader's terminal, or
+#     silently computes over null.
+#   - The pinning. A ledger's `gh pr list` must stop at the pull request the
+#     ledger says it read up to, every `git log` must name the commit it says
+#     it read, and every command must name the repository, or a rerun reads a
+#     different range, or a different repository.
+#   - The arithmetic. Each table partitions the same 105 signed pull requests
+#     and each prose sentence restates a cell, so there are several copies of a
+#     number with nothing keeping them equal.
+#   - The README's claims about the ledger, and the link from docs/metrics.md.
+#
+# It reads text only. The git commands in the ledger are not run here: CI checks
+# out one commit, so the history they read is not there.
+#
+# The extractors are the metrics group's own (metrics_fenced, metrics_jq_records,
+# metrics_gh_commands, metrics_program_fields), so a command is parsed the same
+# way in both places.
+
+TASKS_DIR="docs/agent-tasks"
+TASKS_README="${TASKS_DIR}/README.md"
+TASKS_REPO="Danathar/arch-bootc"
+
+# The pull requests and fields a ledger's programs run against. Every record
+# carries every field gh can return for them; tasks_fixture keeps only the ones
+# a command asked for, as gh does. Record 500 is past the ledger's pin and must
+# be ignored by every program, and records 3, 4, 6 and 7 are unsigned.
+tasks_prs='[
+  {"number":1,"author":{"login":"Danathar"},"state":"MERGED","headRefName":"quality/x",
+   "body":"Closes #5\n\n— hive: agent=quality backend=claude model=m","closingIssuesReferences":[{"number":5}]},
+  {"number":2,"author":{"login":"app/danathar-atomic-hive"},"state":"CLOSED","headRefName":"sec/y",
+   "body":"Follows up #7\n\n— hive: agent=sec-check backend=claude","closingIssuesReferences":[]},
+  {"number":3,"author":{"login":"app/renovate"},"state":"MERGED","headRefName":"renovate/z",
+   "body":"bump","closingIssuesReferences":[]},
+  {"number":4,"author":{"login":"Danathar"},"state":"MERGED","headRefName":"docs/q",
+   "body":"by hand","closingIssuesReferences":[]},
+  {"number":5,"author":{"login":"Danathar"},"state":"MERGED","headRefName":"sec-286-x",
+   "body":"— hive: backend=claude model=m","closingIssuesReferences":[]},
+  {"number":6,"author":{"login":"Danathar"},"state":"MERGED","headRefName":"sec/unsigned",
+   "body":"no signature","closingIssuesReferences":[]},
+  {"number":7,"author":{"login":"app/danathar-atomic-hive"},"state":"MERGED","headRefName":"ci/w",
+   "body":"unsigned app","closingIssuesReferences":[]},
+  {"number":500,"author":{"login":"Danathar"},"state":"MERGED","headRefName":"quality/late",
+   "body":"— hive: agent=quality backend=claude model=m","closingIssuesReferences":[{"number":9}]}
+]'
+tasks_known_fields="number author state headRefName body closingIssuesReferences"
+tasks_unknown_fields=""
+tasks_fixture() {
+  local field
+  for field in ${1//,/ }; do
+    [[ " ${tasks_known_fields} " == *" ${field} "* ]] || tasks_unknown_fields+="${field} "
+  done
+  jq -c --arg fields "$1" '($fields | split(",")) as $want
+    | map(with_entries(select(.key as $k | $want | index($k) != null)))' <<<"${tasks_prs}"
+}
+
+# What a ledger program must print for tasks_prs, keyed on a phrase that only
+# that program contains. Printed with sorted keys, because gh's jq sorts them.
+tasks_expected() {
+  case "$1" in
+    *'signed: ('*) printf '%s' '[{"author":"Danathar","signed":2,"total":4},{"author":"app/danathar-atomic-hive","signed":1,"total":2},{"author":"app/renovate","signed":0,"total":1}]' ;;
+    *'group_by(.state)'*) printf '%s' '[{"count":1,"state":"CLOSED"},{"count":2,"state":"MERGED"}]' ;;
+    *'scan("agent='*) printf '%s' '[{"count":1,"role":"agent=quality"},{"count":1,"role":"agent=sec-check"},{"count":1,"role":"none"}]' ;;
+    *'test("^[a-z]+/") | not'*) printf '%s' '[5]' ;;
+    *'split("/")[0]'*) printf '%s' '[{"count":1,"prefix":"quality"},{"count":1,"prefix":"sec"},{"count":1,"prefix":"sec-286-x"}]' ;;
+    *'(quality|sec|arch'*) printf '%s' '[6]' ;;
+    *'== "app/danathar-atomic-hive"'*) printf '%s' '[7]' ;;
+    *'test("#[0-9]+") | not'*) printf '%s' '[5]' ;;
+    *'test("#[0-9]+"))] | length'*) printf '%s' '1' ;;
+    *'length > 0'*) printf '%s' '1' ;;
+  esac
+}
+
+tasks_files=()
+tasks_ledgers=()
+tasks_newest=""
+shopt -s nullglob
+for tasks_file in "${TASKS_DIR}"/*; do
+  tasks_files+=("${tasks_file}")
+  [[ "${tasks_file}" == "${TASKS_README}" ]] || tasks_ledgers+=("${tasks_file}")
+done
+shopt -u nullglob
+
+if [[ ! -f "${TASKS_README}" ]]; then
+  fail "docs/agent-tasks/ has a README that says what the marks are" "${TASKS_README} is missing"
+else
+  assert_doc_links_resolve "${TASKS_README}" \
+    "no relative links found; the pointers to the ledgers and the repository brief are gone"
+  if ((${#tasks_ledgers[@]} == 0)); then
+    fail "docs/agent-tasks/ holds at least one dated ledger" "${TASKS_DIR} has only its README"
+  fi
+
+  # Every mark the README names is one it still describes by its literal text.
+  for tasks_mark in '— hive:' 'agent=' 'Signed-off-by:' 'Co-Authored-By' 'Hive-Run:' 'Closes #'; do
+    if grep -qF -- "${tasks_mark}" "${TASKS_README}"; then
+      pass "docs/agent-tasks/README.md still names the mark '${tasks_mark}'"
+    else
+      fail "docs/agent-tasks/README.md still names the mark '${tasks_mark}'" \
+        "the README no longer says what the reader should look for"
+    fi
+  done
+
+  # Every command in a document: it names the repository (a gh command), each
+  # jq program runs against exactly the fields its command requests, and reads
+  # no other. $1 is the document, $2 is "ledger" to also run the programs for
+  # their values.
+  tasks_check_commands() {
+    local doc="$1" kind="$2" fields program record out field fixture
+    local programs=0 broken="" unrequested="" valued=0 wrong="" expect command unnamed=""
+    tasks_unknown_fields=""
+    while IFS= read -r -d $'\004' record; do
+      fields="${record%%$'\003'*}"
+      program="${record#*$'\003'}"
+      [[ -n "${program}" ]] || continue
+      programs=$((programs + 1))
+      if [[ -z "${fields}" ]]; then
+        broken+="no --json fields requested for: ${program:0:50} | "
+        continue
+      fi
+      # Once in this shell first, so an unknown field is recorded: the capture
+      # below runs in a subshell, and what it appends is lost.
+      tasks_fixture "${fields}" >/dev/null
+      # `gh pr view` returns one object, `gh pr list` an array; a program that
+      # starts at `.` reads the object.
+      fixture="$(tasks_fixture "${fields}")"
+      [[ "${program}" == .* ]] && fixture="$(jq -c '.[0]' <<<"${fixture}")"
+      out="$(jq "${program}" <<<"${fixture}" 2>&1)" || broken+="[${fields}] ${out//$'\n'/ } | "
+      [[ -n "${out}" ]] || broken+="[${fields}] produced no output | "
+      while IFS= read -r field; do
+        [[ -n "${field}" ]] || continue
+        grep -qx -- "${field}" <<<"${fields//,/$'\n'}" ||
+          unrequested+="${field} (not in --json ${fields}) "
+      done < <(printf '%s' "${program}" | metrics_program_fields)
+      if [[ "${kind}" == ledger ]]; then
+        expect="$(tasks_expected "${program}")"
+        if [[ -n "${expect}" ]]; then
+          valued=$((valued + 1))
+          [[ "$(jq -cS "${program}" <<<"${fixture}" 2>&1)" == "${expect}" ]] ||
+            wrong+="${program:0:70}... | "
+        else
+          wrong+="no expected value for: ${program:0:70}... | "
+        fi
+      fi
+    done < <(metrics_jq_records "${doc}")
+    if ((programs == 0)); then
+      fail "${doc} still carries the commands it describes" "no gh ... --jq command found"
+    elif [[ -z "${broken}${unrequested}${tasks_unknown_fields}" ]]; then
+      pass "every jq program in ${doc} runs against the fields its command requests, and reads no other"
+    else
+      fail "every jq program in ${doc} runs against the fields its command requests, and reads no other" \
+        "${broken}${unrequested}${tasks_unknown_fields:+unknown field(s): ${tasks_unknown_fields}-- add them to tasks_prs}"
+    fi
+    if [[ "${kind}" == ledger ]]; then
+      if [[ -z "${wrong}" ]]; then
+        pass "every jq program in ${doc} gives its known answer on a fixture with signed, unsigned and out-of-range pull requests"
+      else
+        fail "every jq program in ${doc} gives its known answer on a fixture with signed, unsigned and out-of-range pull requests" "${wrong}"
+      fi
+      assert_equal "every jq program in ${doc} was held to a known answer" "${valued}" "${programs}"
+    fi
+    while IFS= read -r -d $'\004' command; do
+      command="${command//$'\n'/ }"
+      [[ "${command}" == *"--repo ${TASKS_REPO} "* ]] || unnamed+="${command:0:60} | "
+    done < <(metrics_gh_commands "${doc}")
+    if [[ -z "${unnamed}" ]]; then
+      pass "every gh command in ${doc} names ${TASKS_REPO}"
+    else
+      fail "every gh command in ${doc} names ${TASKS_REPO}" "no --repo ${TASKS_REPO}: ${unnamed}"
+    fi
+  }
+
+  tasks_check_commands "${TASKS_README}" readme
+
+  assert_present "docs/metrics.md links to the agent task ledgers" \
+    "${METRICS_DOC}" '\]\(agent-tasks/README\.md\)' \
+    "docs/metrics.md says who made a change is not measured there, and points here"
+fi
+
+# A cell of a Markdown table: the row whose first column is $2, column $3 (1-based, after the leading bar).
+tasks_cell() {
+  awk -F'|' -v row="$2" -v col="$3" '
+    { label = $2; gsub(/^ +| +$/, "", label); value = $(col + 1); gsub(/^ +| +$/, "", value) }
+    label == row { print value; exit }' "$1"
+}
+
+# Sum of column $3 over the rows of the first table under the heading starting $2.
+tasks_table_sum() {
+  awk -F'|' -v heading="$2" -v col="$3" '
+    /^#/ { in_section = (index($0, heading) == 1); in_table = 0; next }
+    in_section && /^\|/ { rows++; if (rows > 2) { v = $(col + 1); gsub(/ /, "", v); total += v }; next }
+    in_section && rows > 0 { exit }
+    END { print total + 0 }' "$1"
+}
+
+for tasks_ledger in "${tasks_ledgers[@]}"; do
+  if [[ ! "${tasks_ledger##*/}" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2})\.md$ ]]; then
+    fail "every file in docs/agent-tasks/ besides the README is a dated ledger named YYYY-MM-DD.md" "${tasks_ledger}"
+    continue
+  fi
+  tasks_date="${BASH_REMATCH[1]}"
+  [[ "${tasks_date}" > "${tasks_newest}" ]] && tasks_newest="${tasks_date}"
+
+  assert_equal "${tasks_ledger}'s title carries the date in its file name" \
+    "$(head -n 1 "${tasks_ledger}")" "# Agent task ledger — ${tasks_date}"
+  if [[ "${tasks_date}" > "$(date -u +%F)" ]]; then
+    fail "${tasks_ledger}'s date is not in the future" "dated ${tasks_date}"
+  else
+    pass "${tasks_ledger}'s date has passed"
+  fi
+  assert_doc_links_resolve "${tasks_ledger}" \
+    "no relative links found; the hand-off back to the README is gone"
+  assert_present "docs/agent-tasks/README.md lists ${tasks_ledger##*/}" \
+    "${TASKS_README}" "\]\(${tasks_date}\.md\)" \
+    "a ledger nothing links to is not found by anyone reading the README"
+
+  tasks_check_commands "${tasks_ledger}" ledger
+
+  # The pinning: the range the header states is the range every command reads.
+  tasks_header="$(tr '\n' ' ' <"${tasks_ledger}" | tr -s ' ')"
+  tasks_pr_limit=""
+  tasks_sha=""
+  if [[ "${tasks_header}" =~ pull\ requests\ up\ to\ \#([0-9]+)\ and\ \`main\`\ at\ \`([0-9a-f]{7,40})\` ]]; then
+    tasks_pr_limit="${BASH_REMATCH[1]}"
+    tasks_sha="${BASH_REMATCH[2]}"
+    pass "${tasks_ledger} states the pull request and commit it was read at"
+  else
+    fail "${tasks_ledger} states the pull request and commit it was read at" \
+      "no 'pull requests up to #N and \`main\` at \`SHA\`' in the opening paragraph"
+  fi
+  tasks_unpinned=""
+  tasks_gh=0
+  tasks_git=0
+  while IFS= read -r -d $'\004' tasks_command; do
+    tasks_gh=$((tasks_gh + 1))
+    tasks_command="${tasks_command//$'\n'/ }"
+    case "${tasks_command}" in
+      "gh pr list "*)
+        [[ -n "${tasks_pr_limit}" && "${tasks_command}" == *"select(.number <= ${tasks_pr_limit})"* ]] ||
+          tasks_unpinned+="not limited to PRs up to #${tasks_pr_limit:-?}: ${tasks_command:0:60} | "
+        [[ "${tasks_command}" == *"--limit 1000 "* ]] ||
+          tasks_unpinned+="no --limit 1000: ${tasks_command:0:60} | "
+        ;;
+      *) tasks_unpinned+="not a pinned gh pr list: ${tasks_command:0:60} | " ;;
+    esac
+  done < <(metrics_gh_commands "${tasks_ledger}")
+  while IFS= read -r tasks_command; do
+    [[ "${tasks_command}" == git\ * ]] || continue
+    tasks_git=$((tasks_git + 1))
+    [[ -n "${tasks_sha}" && "${tasks_command}" == "git log ${tasks_sha} "* ]] ||
+      tasks_unpinned+="not read at ${tasks_sha:-?}: ${tasks_command:0:60} | "
+  done < <(metrics_fenced bash "${tasks_ledger}")
+  if ((tasks_gh == 0 || tasks_git == 0)); then
+    fail "every command in ${tasks_ledger} is pinned to its range" \
+      "found ${tasks_gh} gh and ${tasks_git} git commands; the ledger reads both pull requests and commits"
+  elif [[ -z "${tasks_unpinned}" ]]; then
+    pass "every command in ${tasks_ledger} is pinned to its range"
+  else
+    fail "every command in ${tasks_ledger} is pinned to its range" "${tasks_unpinned}"
+  fi
+
+  # The arithmetic: one population of signed pull requests, partitioned four ways.
+  tasks_signed="$(tasks_cell "${tasks_ledger}" 'all' 3)"
+  tasks_all="$(tasks_cell "${tasks_ledger}" 'all' 2)"
+  tasks_by_author_total="$(awk -F'|' '/^\| `?(app\/)?[A-Za-z-]+`? \| [0-9]+ \| [0-9]+ \|$/ && $2 !~ /all/ { t += $3; s += $4 } END { print t + 0, s + 0 }' "${tasks_ledger}")"
+  if [[ "${tasks_signed}" =~ ^[0-9]+$ && "${tasks_all}" =~ ^[0-9]+$ ]]; then
+    assert_equal "${tasks_ledger}'s per-author rows add up to its all-authors row" \
+      "${tasks_by_author_total}" "${tasks_all} ${tasks_signed}"
+    assert_equal "${tasks_ledger}'s signed pull requests are the same population in the role table" \
+      "$(tasks_table_sum "${tasks_ledger}" '## Which role signed them' 2)" "${tasks_signed}"
+    assert_equal "${tasks_ledger}'s signed pull requests are the same population in the branch-prefix table" \
+      "$(tasks_table_sum "${tasks_ledger}" '## Which branch prefix the signed ones used' 2)" "${tasks_signed}"
+    assert_equal "${tasks_ledger}'s signed pull requests are the same population in the issue table" \
+      "$(tasks_table_sum "${tasks_ledger}" '## Which signed ones trace to an issue' 2)" "${tasks_signed}"
+    if [[ "${tasks_header}" =~ Of\ the\ ${tasks_signed}\ signed\ pull\ requests,\ ([0-9]+)\ merged\ and\ ([0-9]+)\ closed ]]; then
+      assert_equal "${tasks_ledger}'s merged and closed counts add up to its signed count" \
+        "$((BASH_REMATCH[1] + BASH_REMATCH[2]))" "${tasks_signed}"
+    else
+      fail "${tasks_ledger}'s merged and closed counts add up to its signed count" \
+        "no 'Of the ${tasks_signed} signed pull requests, N merged and M closed' sentence"
+    fi
+    tasks_maintainer="$(tasks_cell "${tasks_ledger}" "\`Danathar\`" 3)"
+    if [[ "${tasks_maintainer}" =~ ^[0-9]+$ ]] &&
+      [[ "${tasks_header}" == *"${tasks_maintainer} signed pull requests were opened as \`Danathar\`, so the app account alone misses $((tasks_maintainer * 100 / tasks_signed))% of them"* ]]; then
+      pass "${tasks_ledger}'s prose restates the maintainer-opened count and its percentage"
+    else
+      fail "${tasks_ledger}'s prose restates the maintainer-opened count and its percentage" \
+        "table says '${tasks_maintainer}' of ${tasks_signed}; the paragraph under the first table disagrees"
+    fi
+  else
+    fail "${tasks_ledger}'s author table has an 'all' row of whole counts" "all='${tasks_all}' signed='${tasks_signed}'"
+  fi
+done
+
+# The README's own restatement of the newest ledger: the number it uses to say
+# author is the wrong key, and the one commit that carries the trailers.
+if [[ -f "${TASKS_README}" && -n "${tasks_newest}" ]]; then
+  tasks_latest="${TASKS_DIR}/${tasks_newest}.md"
+  tasks_flat="$(tr '\n' ' ' <"${TASKS_README}" | tr -s ' ')"
+  tasks_limit="$(grep -oE 'pull requests up to #[0-9]+' "${tasks_latest}" | head -n 1 | grep -oE '[0-9]+$')"
+  tasks_maint="$(tasks_cell "${tasks_latest}" "\`Danathar\`" 3)"
+  tasks_all_signed="$(tasks_cell "${tasks_latest}" 'all' 3)"
+  if [[ "${tasks_flat}" == *"${tasks_maint} of the ${tasks_all_signed} signed pull requests up to #${tasks_limit}"* ]]; then
+    pass "docs/agent-tasks/README.md quotes the newest ledger's maintainer-opened count of signed pull requests"
+  else
+    fail "docs/agent-tasks/README.md quotes the newest ledger's maintainer-opened count of signed pull requests" \
+      "expected '${tasks_maint} of the ${tasks_all_signed} signed pull requests up to #${tasks_limit}' (from ${tasks_latest})"
+  fi
+  tasks_trailer_commit="$(grep -oE "The one \`Hive-Run:\` commit is \`[0-9a-f]+\`" "${tasks_latest}" | grep -oE '[0-9a-f]{7,}')"
+  if [[ -n "${tasks_trailer_commit}" && "${tasks_flat}" == *"\`${tasks_trailer_commit}\` for issue #388"* ]]; then
+    pass "docs/agent-tasks/README.md names the same Hive-Run commit as the newest ledger"
+  else
+    fail "docs/agent-tasks/README.md names the same Hive-Run commit as the newest ledger" \
+      "ledger says '${tasks_trailer_commit}'; README does not say it carries the trailers for issue #388"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 group "VM runbook (docs/vm-workflow.md is a hand copy of scripts/quickstart.sh's virt-install and of the guest-agent contract)"
 
 # docs/vm-workflow.md is the document a reader follows once a qcow2 exists. It
