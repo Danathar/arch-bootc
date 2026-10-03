@@ -8498,8 +8498,8 @@ if jq -e '(.tiers | type == "array") and (.rule | type == "object")' "${RISK_CON
     "${risk_config_ids}" "${risk_table_ids}"
   assert_equal "${RISK_DOC} has one section per tier in its table" \
     "${risk_heading_ids}" "${risk_table_ids}"
-  assert_equal "every tier in ${RISK_CONFIG} has exactly the keys id, name, reaches, evidence, evidence_commands, paths" \
-    "$(jq -r '[.tiers[] | keys | join(",")] | unique | join(";")' "${RISK_CONFIG}")" \
+  assert_equal "every tier in ${RISK_CONFIG} has exactly the keys id, name, reaches, evidence, evidence_commands, paths (T3 adds content_triggers)" \
+    "$(jq -r '[.tiers[] | del(.content_triggers) | keys | join(",")] | unique | join(";")' "${RISK_CONFIG}")" \
     "evidence,evidence_commands,id,name,paths,reaches"
 
   while IFS= read -r risk_id; do
@@ -8540,7 +8540,7 @@ if jq -e '(.tiers | type == "array") and (.rule | type == "object")' "${RISK_CON
     "$(jq -r '.rule.selection' "${RISK_CONFIG}")" "highest"
   assert_equal "${RISK_CONFIG} rounds up when two tiers look defensible" \
     "$(jq -r '.rule.when_unsure' "${RISK_CONFIG}")" "round-up"
-  for risk_key in text when_unsure_text; do
+  for risk_key in text when_unsure_text path_match_text; do
     risk_sentence="$(jq -r --arg key "${risk_key}" '.rule[$key]' "${RISK_CONFIG}")"
     if [[ -n "${risk_sentence}" && "${risk_sentence}" != null && "${risk_doc_flat}" == *"${risk_sentence}"* ]]; then
       pass "${RISK_DOC} still says: ${risk_sentence}"
@@ -8548,6 +8548,59 @@ if jq -e '(.tiers | type == "array") and (.rule | type == "object")' "${RISK_CON
       fail "${RISK_DOC} still says: ${risk_sentence}" "rule.${risk_key} in ${RISK_CONFIG} is not a sentence of the page"
     fi
   done
+
+  # The path claims are a floor. The page says "Classify by what the diff does"
+  # because no rule over file paths tells a Containerfile comment fix from a
+  # change to how bootc is fetched; a program that only matched `paths` would put
+  # a BOOTC_COMMIT edit in T2 and a signing edit in T1. So T3 also carries the
+  # page's content triggers as data. Each trigger's page tokens must still be in
+  # the page's T3 section, and its file tokens must still be in the files it
+  # names, so neither side can move without the other.
+  assert_equal "${RISK_CONFIG} treats the path match as a minimum, not a classification" \
+    "$(jq -r '.rule.path_match' "${RISK_CONFIG}")" "minimum"
+  assert_equal "only T3 carries content_triggers in ${RISK_CONFIG}" \
+    "$(jq -r '[.tiers[] | select(has("content_triggers")) | .id] | join(",")' "${RISK_CONFIG}")" "T3"
+  risk_t3_flat="$(risk_section T3 | risk_flat)"
+  risk_trigger_count=0
+  while IFS= read -r risk_trigger; do
+    [[ -z "${risk_trigger}" ]] && continue
+    risk_trigger_count=$((risk_trigger_count + 1))
+    risk_tcfg() { jq -r --arg id "${risk_trigger}" ".tiers[3].content_triggers[] | select(.id == \$id) | $1" "${RISK_CONFIG}"; }
+    risk_gone=""
+    while IFS= read -r risk_token; do
+      [[ -z "${risk_token}" ]] && continue
+      [[ "${risk_t3_flat}" == *"${risk_token}"* ]] || risk_gone+="'${risk_token}' "
+    done < <(risk_tcfg '.page_tokens[]')
+    assert_equal "T3 trigger ${risk_trigger}: every page token is still in the page's T3 section" "" "${risk_gone}"
+    risk_gone=""
+    while IFS= read -r risk_file; do
+      [[ -z "${risk_file}" ]] && continue
+      if [[ ! -f "${risk_file}" ]]; then
+        risk_gone+="${risk_file}(missing) "
+        continue
+      fi
+      git ls-files --error-unmatch -- "${risk_file}" >/dev/null 2>&1 || risk_gone+="${risk_file}(untracked) "
+    done < <(risk_tcfg '.files[]')
+    while IFS= read -r risk_token; do
+      [[ -z "${risk_token}" ]] && continue
+      risk_found=0
+      while IFS= read -r risk_file; do
+        # Active lines only, as assert_present does: a rationale comment that
+        # names the token survives deleting the code that uses it.
+        [[ -f "${risk_file}" ]] || continue
+        risk_active="$(grep -Ev '^[[:space:]]*#' "${risk_file}")"
+        grep -qF -- "${risk_token}" <<<"${risk_active}" && risk_found=1
+      done < <(risk_tcfg '.files[]')
+      ((risk_found)) || risk_gone+="'${risk_token}' "
+    done < <(risk_tcfg '.file_tokens[]')
+    assert_equal "T3 trigger ${risk_trigger}: its files are tracked and still hold its tokens" "" "${risk_gone}"
+  done < <(jq -r '.tiers[3].content_triggers[].id' "${RISK_CONFIG}")
+  check_triggers="$((risk_trigger_count > 0 ? 0 : 1))"
+  if ((check_triggers == 0)); then
+    pass "${RISK_CONFIG} has T3 content triggers"
+  else
+    fail "${RISK_CONFIG} has T3 content triggers" "tiers[3] has none, so content-only T3 changes match no tier"
+  fi
 else
   fail "${RISK_CONFIG} parses and has tiers and rule" "missing, not valid JSON, or tiers/rule have the wrong type"
 fi

@@ -12,13 +12,20 @@
     "tier section's first paragraph, its 'Plus' paragraphs and (T3) its bold-led bullets that",
     "contain a '/' or name a tracked root file; '*.md' and 'packages-*.txt' are the two",
     "root-level globs. Prose tokens that are not paths (BOOTC_VERSION, deny) are not claims.",
-    "Changing this file is T1 in docs/risk-tiers.md."
+    "Changing this file is T1 in docs/risk-tiers.md.",
+    "The path claims are a floor, not a classification: the page says no rule over file paths can",
+    "tell a Containerfile comment fix from a change to how bootc is fetched, and that a change is",
+    "classified by what the diff does. T3 therefore also carries content_triggers: what the page",
+    "puts in T3 by content, with the file each lives in. Each trigger names the page tokens it",
+    "quotes (checked against the page's T3 section) and the tokens it looks for in its files."
   ],
   "rule": {
     "selection": "highest",
     "text": "Take the highest tier matched by any file in the diff.",
     "when_unsure": "round-up",
-    "when_unsure_text": "When two tiers both look defensible, round up."
+    "when_unsure_text": "When two tiers both look defensible, round up.",
+    "path_match": "minimum",
+    "path_match_text": "Classify by what the diff does."
   },
   "tiers": [
     {
@@ -106,6 +113,94 @@
         ".claude/skills/**",
         ".cursor/rules/arch-bootc-safety.mdc",
         ".claude/hooks/gate-git-diff.sh"
+      ],
+      "content_triggers": [
+        {
+          "id": "root-login-model",
+          "page_tokens": [
+            "PermitRootLogin prohibit-password",
+            "pam_wheel.so use_uid",
+            "passwd --expire"
+          ],
+          "files": [
+            "Containerfile"
+          ],
+          "file_tokens": [
+            "PermitRootLogin prohibit-password",
+            "pam_wheel.so use_uid",
+            "passwd --expire"
+          ]
+        },
+        {
+          "id": "bootc-provenance",
+          "page_tokens": [
+            "BOOTC_VERSION",
+            "BOOTC_COMMIT",
+            "tag-to-commit verification"
+          ],
+          "files": [
+            "Containerfile"
+          ],
+          "file_tokens": [
+            "BOOTC_VERSION",
+            "BOOTC_COMMIT"
+          ]
+        },
+        {
+          "id": "package-freshness",
+          "page_tokens": [
+            "PACMAN_CACHE_BUST",
+            "ordering of package installation"
+          ],
+          "files": [
+            "Containerfile",
+            ".github/workflows/build.yml"
+          ],
+          "file_tokens": [
+            "PACMAN_CACHE_BUST"
+          ]
+        },
+        {
+          "id": "boot-path",
+          "page_tokens": [
+            "bootloader",
+            "initramfs/dracut",
+            "composefs backend"
+          ],
+          "files": [
+            "Containerfile"
+          ],
+          "file_tokens": [
+            "dracut",
+            "composefs"
+          ]
+        },
+        {
+          "id": "service-enablement-layout",
+          "page_tokens": [
+            "/usr/lib/systemd/system/<target>.wants/"
+          ],
+          "files": [
+            "Containerfile"
+          ],
+          "file_tokens": [
+            "/usr/lib/systemd/system/",
+            ".wants"
+          ]
+        },
+        {
+          "id": "published-artifacts",
+          "page_tokens": [
+            "the push, sign, and package-retention jobs"
+          ],
+          "files": [
+            ".github/workflows/build.yml"
+          ],
+          "file_tokens": [
+            "cosign sign -y",
+            "prune-package-versions.sh"
+          ]
+        }
       ]
     }
   ]
