@@ -8426,6 +8426,8 @@ RUNBOOK_SECTIONS
   done <<'RUNBOOK_STEPS'
 .github/workflows/zizmor.yaml|zizmor|Run zizmor
 .github/workflows/labeler.yml|label|Ensure every configured label exists
+.github/workflows/labeler.yml|label|Apply labels from changed paths
+.github/workflows/zizmor.yaml|zizmor|Install uv
 RUNBOOK_STEPS
   if [[ -z "${runbook_bad_steps}" ]]; then
     pass "the steps the runbook names outside its tables exist in their workflows"
@@ -8476,6 +8478,17 @@ RUNBOOK_QUOTES
   assert_equal "build.yml and nightly-compliance.yml are the only scheduled workflows, as the runbook says" \
     "${runbook_scheduled}" \
     ".github/workflows/build.yml .github/workflows/nightly-compliance.yml "
+  # The "scheduled run is missing" section queries each scheduled workflow on
+  # its own, by file, so one running cannot hide the other's absence. Derive
+  # the expected pair from the tree rather than restating it.
+  runbook_sched_cmds="$(grep -oE 'gh run list -R [A-Za-z0-9_./-]+ --workflow [A-Za-z0-9_.-]+ --event schedule' "${RUNBOOK_DOC}" |
+    sed -E 's/.*--workflow ([A-Za-z0-9_.-]+) --event schedule/\1/' | LC_ALL=C sort -u | tr '\n' ' ')"
+  assert_equal "the runbook queries every scheduled workflow's schedule runs, each by its own file" \
+    "${runbook_sched_cmds}" "$(tr ' ' '\n' <<<"${runbook_scheduled}" | sed -E 's#^\.github/workflows/##' | grep -v '^$' | LC_ALL=C sort | tr '\n' ' ')"
+  assert_present "the runbook's main-is-red command lists build.yml runs on main of every event" \
+    "${RUNBOOK_DOC}" 'gh run list -R [A-Za-z0-9_./-]+ --workflow build\.yml --branch main --limit [0-9]+$'
+  assert_equal "the runbook never filters main's builds by --event push, which would hide the scheduled and dispatched ones" \
+    "$(grep -cE -- '--branch main[^`]*--event push' "${RUNBOOK_DOC}")" "0"
 
   assert_equal "build_push still needs lint and test, so a red lint or test publishes nothing" \
     "$(cicd_job "${BUILD_WORKFLOW}" build_push | sed -nE 's/^    needs: (.+)$/\1/p')" \

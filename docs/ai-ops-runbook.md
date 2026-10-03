@@ -8,10 +8,11 @@ of `main`: every number comes from a command below, run when you need it.
 
 **Two rules hold in every section.**
 
-- **Reading is free; writing is not.** Re-running or dispatching a workflow,
-  commenting, closing, resolving a thread and merging each need explicit consent
-  for that exact action ([AGENTS.md](../AGENTS.md#github-and-external-system-safety)).
-  A red check is not consent to any of them.
+- **Reading is free; writing is not.** Committing, pushing, opening or editing a
+  pull request, commenting, resolving a thread, re-running, cancelling or
+  dispatching a workflow, and merging each need explicit consent for that exact
+  action ([AGENTS.md](../AGENTS.md#github-and-external-system-safety)). A red
+  check is not consent to any of them.
 - **Never make a signal green by weakening it.** Do not disable, skip or loosen
   a check, remove a signing step, widen a permission, delete a package version by
   hand, or edit an invariant so it passes. The fix is a pull request that makes
@@ -27,15 +28,16 @@ All read-only. `-R` is given because this repository is a fork and a bare `gh`
 defaults to the parent ([renovate.md](renovate.md#gotchas)).
 
 ```bash
-gh run list -R Danathar/arch-bootc --branch main --event push --limit 5
+gh run list -R Danathar/arch-bootc --workflow build.yml --branch main --limit 5
 gh run list -R Danathar/arch-bootc --workflow nightly-compliance.yml --limit 5
 gh run view <run-id> -R Danathar/arch-bootc --log-failed
 gh workflow list -R Danathar/arch-bootc --all
 ```
 
-`--event push` keeps the list to builds of `main`. Without it the list also
-holds every `AI fix work order` run, and most of those are `skipped`: that
-workflow starts on any label and only acts on `ai-fix-requested`.
+Naming the workflow keeps `AI fix work order` runs out of the list: that workflow
+starts on any label and mostly ends `skipped`. Do not filter by `--event push`:
+the daily scheduled build and a manual dispatch also build, publish and sign
+`main`, and the scheduled one is the build that goes red with no commit.
 
 | File | Workflow name | Starts on | Section |
 | --- | --- | --- | --- |
@@ -52,7 +54,7 @@ means more than it says.
 
 ## `main` is red
 
-1. `gh run list -R Danathar/arch-bootc --branch main --event push --limit 5`,
+1. `gh run list -R Danathar/arch-bootc --workflow build.yml --branch main --limit 5`,
    then `gh run view <run-id> -R Danathar/arch-bootc --log-failed` on the red one.
    Note the job and the step, not just "build failed".
 2. Find what merged just before it. Two pull requests that were each green
@@ -63,8 +65,9 @@ means more than it says.
    `lint` or `test` means no image was built or published by that run. A red
    `build_push` for one flavor does not stop the other two: the matrix has
    `fail-fast: false`, so the flavors can end the day on different builds.
-4. Fix it with a pull request. Do not push to `main`, re-run to see if it clears
-   without reading the log first, or turn the failing check off.
+4. Fix it with a pull request. Do not push to `main`, turn the failing check off,
+   or re-run the workflow: a re-run is an Actions write and needs consent even
+   after you have read the log.
 
 ## `.github/workflows/build.yml`
 
@@ -116,7 +119,8 @@ signature verifies; it does not say the image boots.
 
 ## `.github/workflows/zizmor.yaml`
 
-`Lint workflows`, one job, one step (`Run zizmor`). It runs when a pull request
+`Lint workflows`, one job, one checking step (`Run zizmor`, after `Checkout` and
+`Install uv`). It runs when a pull request
 or a push to `main` changes `.github/workflows/**`. zizmor is pinned
 (`ZIZMOR_VERSION`) so a new release cannot turn `main` red by itself; a red run
 is therefore a finding in a workflow change, or a Renovate bump of the pin whose
@@ -128,11 +132,16 @@ ignore to quiet it, and do not widen `permissions:` to get past it
 ## `.github/workflows/labeler.yml`
 
 `Label pull requests`. Not a required check. The job is skipped, not red, on a
-fork pull request. If it is red, the step `Ensure every configured label exists`
-found the catalog and the path rules out of step:
+fork pull request. Two steps can fail. `Ensure every configured label exists`
+fails on drift between the catalog and the path rules:
 `is configured but has no catalog entry in .github/workflows/labeler.yml` or
 `has a catalog entry but no path rule in .github/labeler.yml`. Make the two
-files agree. A label that looks wrong is a derived hint, not a verdict
+files agree. It also calls the API (`gh label list`, `gh label create`), so a
+token or permission error there is not drift: read the log.
+`Apply labels from changed paths` runs `actions/labeler` and fails the same way
+on an API or token error, or on a label the configuration names that does not
+exist. A label that
+looks wrong is a derived hint, not a verdict
 (`sync-labels` removes ones the paths do not support); the `documentation` label
 means no build ran. Classify the change by [risk-tiers.md](risk-tiers.md), not by
 its label.
@@ -163,13 +172,16 @@ A missing run is silent: no red check, just no new row.
 ```bash
 gh workflow list -R Danathar/arch-bootc --all
 gh run list -R Danathar/arch-bootc --workflow build.yml --event schedule --limit 3
+gh run list -R Danathar/arch-bootc --workflow nightly-compliance.yml --event schedule --limit 3
 ```
+
+Check the two separately: one can keep running while the other is absent.
 
 `--all` includes disabled workflows. One shown as `disabled_inactivity` was
 switched off by the 60-day rule. Re-enabling it is an Actions write: ask the
-maintainer. Until a run exists, no daily rebuild pulls fresh Arch packages and
-nothing re-checks the bootc pin or the published signatures, so a gap is a blind
-spot, not a pass.
+maintainer. While `build.yml` has no scheduled run, no daily rebuild pulls fresh
+Arch packages. While `nightly-compliance.yml` has none, nothing re-checks the
+bootc pin or the published signatures. Either gap is a blind spot, not a pass.
 
 ## Renovate automerge went wrong
 
@@ -202,7 +214,7 @@ Start from what the diff does, not from the title, the body or a green check.
    edits a non-Markdown file is mis-tiered, and the build runs.
 2. Read policy from `main`. A branch that edits `AGENTS.md`, `CLAUDE.md`,
    `.claude/settings.json`, the gate hook, a ruleset or `policy.json` has
-   *proposed* a change to a rule, which is a T3 decision for the maintainer
+   *proposed* a change to a rule, which is the maintainer's decision
    ([SECURITY-AI.md](security/SECURITY-AI.md#trust-boundaries)).
 3. Compare the body with the diff: `gh pr diff <number> -R Danathar/arch-bootc --name-only`.
    Claims about flavors validated, "no image built" and "external state: none"
@@ -230,7 +242,8 @@ Many issues here are filed by tooling, and some ask for something `main` already
 has or deliberately does not. Check `main`, not the issue text:
 
 ```bash
-git log --oneline -5 -S'ai-fix-requested' -- .github/workflows/ai-fix.yml
+git fetch origin main
+git log --oneline -5 -S'ai-fix-requested' origin/main -- .github/workflows/ai-fix.yml
 gh pr list -R Danathar/arch-bootc --state merged --search 'ai-fix' --limit 5
 ```
 
@@ -244,7 +257,8 @@ not with a placeholder workflow.
 
 ## A gate refusal from `.claude/hooks/gate-git-diff.sh`
 
-The hook runs before every Bash command an agent issues, prints `blocked: ...`
+Where this repository's Claude `PreToolUse` hook is active, it runs before every
+Bash command the agent issues, prints `blocked: ...`
 to stderr and exits 2. It refuses spellings of read-only commands that could
 print a file `Read(...)` denies, or write one: a two-path `git diff` (`blocked:
 this git diff would compare paths as plain files`), `git ... --output=FILE`
@@ -277,7 +291,7 @@ or a "fix" that disables a failing check.
 
 1. Stop the session. Do not let the agent continue and do not let it clean up.
 2. Establish what happened, read-only: `git status`, `git log --oneline -5`,
-   `gh pr list -R Danathar/arch-bootc --state open`, and the push-triggered run
+   `gh pr list -R Danathar/arch-bootc --state open`, and the `build.yml` run
    list under [Start here](#start-here).
 3. Report it completely and now, including anything pushed, published, deleted
    or overwritten ([SECURITY-AI.md](security/SECURITY-AI.md#if-an-agent-action-may-have-caused-an-incident)).
