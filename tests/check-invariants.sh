@@ -1009,6 +1009,10 @@ mkdir -p "${K}/7.2.7-arch1-1" "${K}/7.2.8-arch1-1/kernel" "${B}"
 : >"${K}/7.2.8-arch1-1/vmlinuz"
 : >"${B}/vmlinuz-linux"
 : >"${B}/initramfs-linux.img"
+# /boot is not always only files: a package can leave a directory there, and
+# the lint's nonempty-boot counts that too.
+mkdir -p "${B}/grub"
+: >"${B}/grub/grub.cfg"
 if PATH="${kernel_work}/bin:${PATH}" bash -c "${kernel_cmd}" >/dev/null 2>&1; then
   pass "after a kernel upgrade the kernel step succeeds"
 else
@@ -1044,9 +1048,46 @@ rm -rf "${K}/7.2.8-arch1-1"
 mkdir -p "${K}/extramodules"
 : >"${K}/extramodules/initramfs.img"
 : >"${K}/extramodules/zfs.ko"
+mkdir -p "${K}/dotted"
+: >"${K}/dotted/initramfs.img"
+: >"${K}/dotted/.keep"
 PATH="${kernel_work}/bin:${PATH}" bash -c "${kernel_cmd}" >/dev/null 2>&1
 assert_equal "a modules directory holding more than an initramfs is not removed" \
   "$(find "${K}/extramodules" -mindepth 1 -printf '%f\n' | sort | tr '\n' ' ')" "initramfs.img zfs.ko "
+assert_equal "a modules directory whose only other entry is a dotfile is not removed" \
+  "$(find "${K}/dotted" -mindepth 1 -printf '%f\n' | sort | tr '\n' ' ')" ".keep initramfs.img "
+
+# No kernel at all stops the build as two do. Past the count check, dracut
+# would be asked for an initramfs of an empty version and /boot would still be
+# emptied, so the image would build with nothing to boot.
+rm -rf "${K}" "${B}"
+mkdir -p "${K}/7.2.7-arch1-1" "${B}"
+: >"${K}/7.2.7-arch1-1/initramfs.img"
+: >"${B}/vmlinuz-linux"
+if PATH="${kernel_work}/bin:${PATH}" bash -c "${kernel_cmd}" >/dev/null 2>&1; then
+  fail "no kernel fails the kernel step"
+else
+  pass "no kernel fails the kernel step"
+fi
+assert_equal "with no kernel dracut is not run and /boot is left alone" \
+  "$(find "${K}" -mindepth 1 | grep -c .)/$(find "${B}" -mindepth 1 -printf '%f\n')" "0/vmlinuz-linux"
+
+# A dracut that fails stops the build. The step is one && chain, so a failure
+# that a `;` or `|| true` let through would leave the new kernel without the
+# initramfs bootc boots from, in an image that still built.
+rm -rf "${K}" "${B}"
+mkdir -p "${K}/7.2.8-arch1-1" "${B}" "${kernel_work}/failbin"
+: >"${K}/7.2.8-arch1-1/vmlinuz"
+: >"${B}/initramfs-linux.img"
+printf '#!/bin/sh\nexit 1\n' >"${kernel_work}/failbin/dracut"
+chmod +x "${kernel_work}/failbin/dracut"
+if PATH="${kernel_work}/failbin:${PATH}" bash -c "${kernel_cmd}" >/dev/null 2>&1; then
+  fail "a failing dracut fails the kernel step"
+else
+  pass "a failing dracut fails the kernel step"
+fi
+assert_equal "a failing dracut leaves /boot as it was" \
+  "$(find "${B}" -mindepth 1 -printf '%f\n')" "initramfs-linux.img"
 rm -rf "${kernel_work}"
 
 # /run and /tmp are tmpfs on a booted system, and every stage refills them
