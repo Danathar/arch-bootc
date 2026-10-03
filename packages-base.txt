@@ -38,3 +38,4 @@ man-pages
 zram-generator
 nodejs
 npm
+jq

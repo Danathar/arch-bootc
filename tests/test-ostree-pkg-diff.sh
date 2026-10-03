@@ -344,6 +344,50 @@ test_status_previous_single_deployment_is_empty() {
     "$(status_previous "${status}" arch aaaaaaaa.0)"
 }
 
+# --- status_rollback_verity ------------------------------------------------
+
+# `bootc status --format=json` for a composefs host with all three slots
+# filled, trimmed to the fields that matter plus enough around them to keep the
+# shape honest (HostStatus / BootEntry / BootEntryComposefs at BOOTC_VERSION).
+# Takes the three verity ids in staged, booted, rollback order.
+bootc_status_json() {
+  local staged="$1" booted="$2" rollback="$3"
+  entry() {
+    if [[ -z "$1" ]]; then
+      printf 'null'
+    else
+      printf '{"image":null,"cachedUpdate":null,"incompatible":false,"pinned":false,"ostree":null,"composefs":{"verity":"%s","bootType":"bls","bootloader":"systemd","bootDigest":null,"missingVerityAllowed":false}}' "$1"
+    fi
+  }
+  printf '{"apiVersion":"org.containers.bootc/v1","kind":"BootcHost","metadata":{"name":"host"},"spec":{"image":null},"status":{"staged":%s,"booted":%s,"rollback":%s,"rollbackQueued":false,"type":"bootcHost"}}\n' \
+    "$(entry "${staged}")" "$(entry "${booted}")" "$(entry "${rollback}")"
+}
+
+test_status_rollback_verity_picks_rollback_not_staged() {
+  local json
+  json="$(bootc_status_json stg333 new222 old111)"
+  assert_eq "the rollback slot is chosen, not the staged update" \
+    "old111" "$(status_rollback_verity "${json}")"
+}
+
+test_status_rollback_verity_without_rollback_is_empty() {
+  local json out
+  json="$(bootc_status_json stg333 new222 "")"
+  out="$(status_rollback_verity "${json}")"
+  check "a status with no rollback is still a readable status" "$?"
+  assert_empty "no rollback slot yields no id, even with an update staged" \
+    "${out}"
+}
+
+test_status_rollback_verity_rejects_non_status_input() {
+  status_rollback_verity 'error: not json' >/dev/null 2>&1
+  [[ $? -ne 0 ]]
+  check "output that is not JSON fails rather than reading as no rollback" "$?"
+  status_rollback_verity '{"kind":"Something"}' >/dev/null 2>&1
+  [[ $? -ne 0 ]]
+  check "JSON with no status object fails rather than reading as no rollback" "$?"
+}
+
 # --- emit_pkg_diff ---------------------------------------------------------
 
 test_emit_pkg_diff_reports_each_change_kind() {
@@ -557,6 +601,18 @@ fi
 exit 1
 STUB
 
+  # `bootc status` succeeds with the fixture a case wrote, and fails the way
+  # it does where bootc cannot be asked when no case wrote one -- which sends
+  # the composefs branch to its modification-time fallback.
+  write_stub "${dir}" bootc <<'STUB'
+printf '%s\n' "$*" >>"${stub_dir}/bootc.argv"
+if [[ -f "${stub_dir}/bootc.status" ]]; then
+  cat "${stub_dir}/bootc.status"
+  exit 0
+fi
+exit 1
+STUB
+
   # Fail-closed: inside the namespace EUID is 0, so the program must never
   # reach its sudo re-exec. If it does, this makes that visible as a failed
   # assertion instead of a password prompt.
@@ -698,6 +754,106 @@ test_program_composefs_diffs_previous_against_booted() {
   assert_contains "the images are mounted as erofs" "${first_mount}" "-t erofs"
   assert_eq "exactly two images are mounted" \
     "2" "$(wc -l <"${bin}/mount.argv")"
+  # No bootc.status fixture, so bootc could not be asked: the mtime fallback
+  # above has to say it guessed.
+  assert_contains "the fallback warns that it guessed the previous deployment" \
+    "${output}" "warning: could not read the rollback deployment from 'bootc status'"
+}
+
+test_program_composefs_compares_against_rollback_not_staged() {
+  # The window between `bootc upgrade` and the reboot: three deployments, and
+  # the staged update is the newest directory under state/deploy because bootc
+  # writes it at staging time. The rollback bootc reports is the oldest, so a
+  # modification-time pick would choose the staged one and compare the running
+  # system with the future.
+  local dir bin root cmdline output status
+  dir="$(case_dir composefs-staged-update)"
+  bin="${dir}/bin"
+  root="${dir}/sysroot"
+  write_program_stubs "${bin}"
+  write_composefs_layout "${root}" old111 new222 stg333
+  touch -d '2026-09-01T00:00:00' "${root}/state/deploy/old111"
+  touch -d '2026-09-02T00:00:00' "${root}/state/deploy/new222"
+  touch -d '2026-09-03T00:00:00' "${root}/state/deploy/stg333"
+  bootc_status_json stg333 new222 old111 >"${bin}/bootc.status"
+  write_db_listing "${root}/composefs/images/old111.listing" \
+    'kept 1.0' 'gone 2.0'
+  write_db_listing "${root}/composefs/images/new222.listing" \
+    'kept 1.0' 'added 3.0'
+  write_db_listing "${root}/composefs/images/stg333.listing" \
+    'kept 1.0' 'added 3.0' 'future 4.0'
+  cmdline="$(write_cmdline composefs-staged-cmdline \
+    'root=UUID=1234 composefs=new222 rw quiet')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
+    "OSTREE_SYSROOT=${root}")"
+  status=$?
+
+  assert_eq "a diff with an update staged exits 0" "0" "${status}"
+  assert_contains "bootc is asked for its status as JSON" \
+    "$(cat "${bin}/bootc.argv" 2>/dev/null)" "status --format=json"
+  assert_contains "the rollback image is mounted first, as the old side" \
+    "$(sed -n 1p "${bin}/mount.argv")" "old111"
+  assert_contains "the booted image is mounted second, as the new side" \
+    "$(sed -n 2p "${bin}/mount.argv")" "new222"
+  assert_not_contains "the staged update is never mounted" \
+    "$(cat "${bin}/mount.argv")" "stg333"
+  assert_contains "a package dropped since the rollback is reported as removed" \
+    "${output}" "- gone 2.0"
+  assert_not_contains "a package only the staged update has is not reported" \
+    "${output}" "future"
+  assert_not_contains "no fallback warning when bootc answered" \
+    "${output}" "warning:"
+}
+
+test_program_composefs_rejects_when_bootc_reports_no_rollback() {
+  # bootc answered and there is no rollback -- a first boot with an update
+  # already staged. The staged directory is the only other one on disk, so a
+  # fallback to modification times would pick it; the program has to refuse.
+  local dir bin root cmdline output status
+  dir="$(case_dir composefs-no-rollback)"
+  bin="${dir}/bin"
+  root="${dir}/sysroot"
+  write_program_stubs "${bin}"
+  write_composefs_layout "${root}" new222 stg333
+  bootc_status_json stg333 new222 "" >"${bin}/bootc.status"
+  cmdline="$(write_cmdline composefs-no-rollback-cmdline \
+    'root=UUID=1234 composefs=new222 rw')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
+    "OSTREE_SYSROOT=${root}")"
+  status=$?
+
+  assert_eq "no rollback from bootc exits 1" "1" "${status}"
+  assert_contains "the refusal says bootc reported no rollback" \
+    "${output}" "bootc status reports no rollback deployment to compare against."
+  assert_missing "nothing is mounted" "${bin}/mount.argv"
+}
+
+test_program_composefs_falls_back_when_bootc_output_is_not_status() {
+  # bootc ran but printed something that is not a status document (an error on
+  # stdout, a future format). That is "could not ask", not "no rollback".
+  local dir bin root cmdline output status
+  dir="$(case_dir composefs-bad-status)"
+  bin="${dir}/bin"
+  root="${dir}/sysroot"
+  write_program_stubs "${bin}"
+  write_composefs_layout "${root}" old111 new222
+  printf 'error: something went wrong\n' >"${bin}/bootc.status"
+  write_db_listing "${root}/composefs/images/old111.listing" 'gone 2.0'
+  write_db_listing "${root}/composefs/images/new222.listing" 'added 3.0'
+  cmdline="$(write_cmdline composefs-bad-status-cmdline \
+    'root=UUID=1234 composefs=new222 rw')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
+    "OSTREE_SYSROOT=${root}")"
+  status=$?
+
+  assert_eq "unreadable bootc output still diffs, exiting 0" "0" "${status}"
+  assert_contains "the fallback warning is printed" \
+    "${output}" "warning: could not read the rollback deployment"
+  assert_contains "the only other deployment is compared" \
+    "${output}" "- gone 2.0"
 }
 
 test_program_composefs_rejects_an_unknown_booted_image() {
@@ -1094,6 +1250,9 @@ main() {
     test_status_previous_falls_back_to_first_other_deployment \
     test_status_previous_ignores_other_stateroots \
     test_status_previous_single_deployment_is_empty \
+    test_status_rollback_verity_picks_rollback_not_staged \
+    test_status_rollback_verity_without_rollback_is_empty \
+    test_status_rollback_verity_rejects_non_status_input \
     test_emit_pkg_diff_reports_each_change_kind \
     test_emit_pkg_diff_identical_lists_are_silent \
     test_emit_pkg_diff_empty_old_list_is_all_additions \
@@ -1111,6 +1270,9 @@ main() {
   # The rest run the program itself, which needs a user and mount namespace.
   local program_tests=(
     test_program_composefs_diffs_previous_against_booted
+    test_program_composefs_compares_against_rollback_not_staged
+    test_program_composefs_rejects_when_bootc_reports_no_rollback
+    test_program_composefs_falls_back_when_bootc_output_is_not_status
     test_program_composefs_rejects_an_unknown_booted_image
     test_program_composefs_rejects_a_sole_deployment
     test_program_composefs_rejects_a_previous_without_an_image

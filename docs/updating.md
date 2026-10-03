@@ -183,6 +183,13 @@ After an update, run `ostree-pkg-diff` to see which packages were added,
 removed, or version-changed between the running deployment and the previous
 deployment. The command self-elevates with `sudo` when needed.
 
+"Previous" is the deployment `bootc status` lists as the rollback, so the
+comparison stays correct after `bootc rollback`. Between `bootc upgrade` and
+the reboot it still compares the running system with the one before it, not
+with the update that is staged for next boot. If `bootc status` cannot be read,
+the tool falls back to the newest other deployment on disk and prints a warning,
+because with an update pending that guess is the staged update.
+
 ```bash
 ostree-pkg-diff
 ```
