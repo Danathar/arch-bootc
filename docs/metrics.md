@@ -15,6 +15,9 @@ that produced it, pinned to a fixed range of pull requests and runs, and is
 left as it was read. A rerun reads the same range but its current state, so it
 can differ where something in the range has changed since.
 
+Who made a change, agent or maintainer, is not measured here;
+[`docs/agent-tasks/`](agent-tasks/README.md) keeps that record in the same dated shape.
+
 ## PR acceptance
 
 The headline metric: **of the pull requests opened against this repository, what
