@@ -96,6 +96,7 @@ fi
 method="GET"
 path=""
 jq_filter=""
+paginate=""
 i=1
 while ((i < ${#args[@]})); do
   case "${args[i]}" in
@@ -107,7 +108,7 @@ while ((i < ${#args[@]})); do
       i=$((i + 1))
       jq_filter="${args[i]}"
       ;;
-    --paginate) ;;
+    --paginate) paginate=1 ;;
     -*) ;;
     *)
       [[ -z "${path}" ]] && path="${args[i]}"
@@ -143,13 +144,33 @@ if [[ -n "${GH_STUB_LIST_FAIL:-}" ]]; then
   printf 'HTTP 502: Bad gateway\n' >&2
   exit 1
 fi
+# Without --paginate, gh returns the first page only: `per_page` versions, or
+# GitHub's default of 30. The listing API puts the newest first, so a caller
+# that dropped --paginate would see only recent versions and quietly delete
+# nothing older. The stub hands back that first page of the fixture so such a
+# caller fails the cases written newest-first with more than one page.
+page_size=""
+if [[ -z "${paginate}" ]]; then
+  page_size=30
+  if [[ "${path}" =~ [?\&]per_page=([0-9]+) ]]; then
+    page_size="${BASH_REMATCH[1]}"
+  fi
+fi
 # The prune script asks for `--jq '.[]'` and the fixture is already one version
 # per line, so by default the filter is not applied. The build-cache step asks
 # for a filter that shapes its own input, so with GH_STUB_APPLY_JQ set the
 # fixture is handed over the way gh does it: as one page, an array of the
 # versions, run through the caller's filter.
 if [[ -n "${GH_STUB_APPLY_JQ:-}" ]]; then
-  jq -sr "${jq_filter}" "${GH_STUB_VERSIONS}"
+  if [[ -n "${page_size}" ]]; then
+    jq -s --argjson n "${page_size}" '.[:$n]' "${GH_STUB_VERSIONS}" | jq -r "${jq_filter}"
+  else
+    jq -sr "${jq_filter}" "${GH_STUB_VERSIONS}"
+  fi
+  exit
+fi
+if [[ -n "${page_size}" ]]; then
+  head -n "${page_size}" "${GH_STUB_VERSIONS}"
   exit
 fi
 cat "${GH_STUB_VERSIONS}"
@@ -281,6 +302,20 @@ default_fixture
 output="$(run_script "${BASE_ARGS[@]}" --min-versions-to-keep 99)"
 assert_status "a floor above the version count exits 0" 0 "$?"
 assert_equal "a floor above the count leaves everything" "" "$(pruned_ids)"
+
+# More versions than fit on one page, newest first as the API lists them. With
+# a floor of 100, the five oldest are on the second page. Without --paginate
+# the script would read exactly the 100 it must keep and delete nothing.
+write_versions
+jq -cn '
+  range(105; 0; -1) | . as $n
+  | (1767225600 + $n * 3600 | todate) as $created
+  | {id: $n, name: "sha256:\($n)", created_at: $created,
+     metadata: {container: {tags: [$created[0:13] | gsub("[-T]"; "")]}}}
+' >"${VERSIONS}"
+output="$(run_script "${BASE_ARGS[@]}" --min-versions-to-keep 100)"
+assert_status "a listing longer than one page exits 0" 0 "$?"
+assert_equal "versions past the first page are read and pruned" "1 2 3 4 5" "$(pruned_ids)"
 
 # --- the latest guard -----------------------------------------------------
 #
@@ -1263,12 +1298,17 @@ printf '%s\n' "$*" >>"${CACHE_SLEEP_LOG}"
 STUB
 chmod +x "${CACHE_SLEEP_DIR}/sleep"
 
+# The body runs under a zone ten hours west of UTC (a POSIX TZ string, so no
+# zoneinfo is needed). Runners default to UTC, where a cutoff computed in local
+# time reads the same as one computed with `date -u`; here it lands ten hours
+# off, past the hour of margin the fixtures leave either side of the cut.
 run_cache_step() {
   local owner="$1" owner_type="$2"
   shift 2
   : >"${CACHE_SLEEPS}"
   env PATH="${CACHE_SLEEP_DIR}:${STUB_DIR}:${PATH}" \
     CACHE_SLEEP_LOG="${CACHE_SLEEPS}" \
+    TZ=HST10 \
     GH_STUB_APPLY_JQ=1 \
     GH_STUB_VERSIONS="${VERSIONS}" \
     GH_STUB_DELETED="${DELETED}" \
@@ -1298,6 +1338,20 @@ assert_equal "only the version older than seven days is removed" "11" "$(pruned_
 assert_contains "the build-cache step reports how many versions were past the cut" \
   "${output}" "buildcache: 1 version(s) created before"
 assert_contains "the build-cache step reports what it removed" "${output}" "buildcache: removed 1 version(s)"
+# The cutoff the step reports is the one it cut at: seven days before now, in
+# UTC. The window allows a minute for the clock to move during the run.
+cache_reported_cut=""
+if [[ "${output}" =~ created\ before\ ([^\;]+)\; ]]; then
+  cache_reported_cut="${BASH_REMATCH[1]}"
+fi
+cache_cut_low="$(iso_ago $((cache_cut + 60)))"
+cache_cut_high="$(iso_ago $((cache_cut - 60)))"
+cache_cut_in_window=1
+if [[ "${cache_reported_cut}" > "${cache_cut_low}" && "${cache_reported_cut}" < "${cache_cut_high}" ]]; then
+  cache_cut_in_window=0
+fi
+check "the reported cutoff is seven days ago in UTC" "${cache_cut_in_window}" \
+  "got '${cache_reported_cut}', expected between ${cache_cut_low} and ${cache_cut_high}"
 
 cache_boundary_fixture
 output="$(run_cache_step Danathar Organization)"
@@ -1328,6 +1382,33 @@ assert_equal "at most 300 versions go per run, the oldest first" \
 # step waits one second between deletes: 299 pauses for 300 deletes.
 cache_pauses="$(wc -l <"${CACHE_SLEEPS}") x $(sort -u "${CACHE_SLEEPS}" | paste -sd' ')"
 assert_equal "deletes are paced one second apart" "299 x 1" "${cache_pauses}"
+
+# More than one page, newest first as the API lists them: 120 fresh versions
+# fill the first page of 100, and the two stale ones are on the second. Only a
+# paginated listing reaches them. Without --paginate the step sees a page of
+# fresh versions, removes nothing and exits 0, while the real package keeps
+# its whole backlog: the failure this job exists to prevent, with a green run.
+write_versions
+jq -cn --argjson now "${cache_now}" --argjson cut "${cache_cut}" '
+  (range(1; 121) | {id: (2000 + .), created_at: ($now - . * 60 | todate),
+    metadata: {container: {tags: ["sha256-recent\(.)"]}}}),
+  ({id: 41, created_at: ($now - $cut - 3600 | todate), metadata: {container: {tags: ["sha256-old1"]}}}),
+  ({id: 42, created_at: ($now - $cut - 7200 | todate), metadata: {container: {tags: ["sha256-old2"]}}})
+' >"${VERSIONS}"
+output="$(run_cache_step Danathar User)"
+assert_status "a cache listing longer than one page exits 0" 0 "$?"
+assert_contains "stale versions past the first page are counted" \
+  "${output}" "buildcache: 2 version(s) created before"
+assert_equal "stale versions past the first page are removed" "41 42" "$(pruned_ids)"
+
+# An empty package (the listing has no lines at all) counts nothing as stale
+# and makes no delete.
+write_versions
+output="$(run_cache_step Danathar User)"
+assert_status "an empty cache package exits 0" 0 "$?"
+assert_contains "an empty cache package reports nothing past the cut" \
+  "${output}" "buildcache: 0 version(s) created before"
+assert_absent "an empty cache package makes no delete" "$(requested_paths)" "DELETE"
 
 # Nothing past the cut: a quiet day exits 0 and removes nothing.
 write_versions \
