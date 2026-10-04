@@ -204,7 +204,10 @@ the diff is:
   The monthly agent audit workflow reports which merged agent pull requests
   touched the paths in this section; its test joins its path list to this
   section, so naming a new T3 path here fails that test until the list has it
-  too. See [ci-cd.md](ci-cd.md#agent-audit-trail).
+  too. It also marks `Containerfile` and `.github/workflows/build.yml` as T3 by
+  content, because the root-login model and `bootc` provenance live in the
+  first and the publish and sign jobs in the second, and a path cannot say
+  which hunk changed. See [ci-cd.md](ci-cd.md#agent-audit-trail).
 - **The agent permission boundary** — `.claude/settings.json`,
   `.claude/hooks/**`, `.claude/skills/**` and
   `.cursor/rules/arch-bootc-safety.mdc`. The settings file is the

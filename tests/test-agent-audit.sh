@@ -243,8 +243,8 @@ assert_contains "a merge commit with no trailer is exempt and the row says all s
   "${summary}" "| 2 | 1 of 2 (merges exempt) | \`Containerfile\` (T3 by content) |"
 assert_absent "Renovate's pull request is not audited" "${summary}" "#104"
 assert_absent "a human pull request is not audited" "${summary}" "#105"
-assert_contains "a clean window says so" "${summary}" \
-  "Every Hive-app pull request carries its signature line and every commit its Signed-off-by trailer."
+assert_contains "a clean window says so, and that the one merge without a trailer was exempt" "${summary}" \
+  "Every Hive-app pull request carries its signature line and every non-merge commit its Signed-off-by trailer. 1 merge commit(s) without a trailer were exempt."
 assert_contains "the summary is also printed to the job log" "${output}" "### Agent audit trail: pull requests merged since 2026-09-01"
 assert_equal "only the three agent pull requests are fetched in detail" \
   "pr view 101 --repo Danathar/arch-bootc --json number,commits,files,changedFiles
@@ -389,6 +389,12 @@ for listed in "${t3_content[@]}"; do
     check "the T3-by-content file exists in the tree: ${listed}" 0
   else
     check "the T3-by-content file exists in the tree: ${listed}" 1 "no such path"
+  fi
+  if grep -qxF -- "${listed}" <<<"${doc_paths}"; then
+    check "the T3 section names the T3-by-content file: ${listed}" 0
+  else
+    check "the T3 section names the T3-by-content file: ${listed}" 1 \
+      "no backticked \`${listed}\` in docs/risk-tiers.md's T3 section"
   fi
 done
 

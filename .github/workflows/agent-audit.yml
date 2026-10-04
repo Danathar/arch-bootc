@@ -209,7 +209,8 @@ jobs:
                     end)
                   + [ "" ]
                   + (if ($rows | findings | length) == 0
-                      then [ "Every Hive-app pull request carries its signature line and every commit its Signed-off-by trailer." ]
+                      then [ "Every Hive-app pull request carries its signature line and every non-merge commit its Signed-off-by trailer."
+                             + (([$rows[].merges] | add) as $m | if $m > 0 then " \($m) merge commit(s) without a trailer were exempt." else "" end) ]
                       else [ "#### Findings", "" ] + ($rows | findings | map("- " + .))
                     end)
                   | join("\n")
