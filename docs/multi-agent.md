@@ -16,13 +16,15 @@ own. Anything that does is a command under
 
 ## Who works here
 
-A Hive agent signs what it files with a line at the end of the body:
+Most pull requests and issues a Hive agent files end with a line like this:
 
 ```text
 — hive: agent=<role> backend=claude model=<model> ...
 ```
 
-That line is the primary mark, on pull requests and on issues. The commit
+When it is present it is the clearest mark of the role, on pull requests and on
+issues. Some Hive pull requests carry no signature at all, so its absence does
+not prove a person wrote the change. The commit
 author, the `Signed-off-by:` trailer and the pull request's author vary, so
 [`docs/agent-tasks/`](agent-tasks/README.md) is the page that says how to read
 each of them back. A Hive agent's branches are named `<prefix>/<slug>`.
@@ -104,7 +106,8 @@ Three issue labels say an issue may already be handled or is waiting:
 Two agents can work on the same files at the same time. Three things keep that
 from going wrong.
 
-**Check what is already open.** An issue with an open pull request is taken.
+**Check what is already open.** An issue with an open pull request may be
+taken: open that pull request and check whether it really covers the issue.
 A file that an open pull request changes is contested. The second change
 should start from the first, or wait for it:
 

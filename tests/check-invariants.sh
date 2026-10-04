@@ -3757,6 +3757,223 @@ fi
 fi
 
 # ---------------------------------------------------------------------------
+group "Strategy page (docs/strategy.md measures the criteria README.md's Project status lists, with commands that must still count everything)"
+
+# docs/strategy.md says how far the project is from leaving beta by giving, for
+# each unticked box in README.md's Project status section, the command that
+# measures it. It holds no running numbers, so it cannot go stale the way a
+# snapshot does. It can go wrong in four quieter ways, and nothing read it:
+#
+#   - A box is added, removed or reordered in the README and the page keeps
+#     answering for the old list.
+#   - A `gh ... list` is left on gh's default limit of 30, or loses `--repo`, and
+#     reports a smaller repository than this one. docs/metrics.md records
+#     exactly this happening.
+#   - A label the commands filter on is renamed, and they return nothing, which
+#     the page tells the reader to read as "none waiting".
+#   - A link or anchor stops resolving.
+#
+# The page also says there is no report job. That is a claim about the tree, so
+# it is joined to .github/workflows/ the way docs/metrics.md's identical claim
+# is above.
+
+STRATEGY_DOC="docs/strategy.md"
+STRATEGY_REPO="Danathar/arch-bootc"
+
+if [[ ! -f "${STRATEGY_DOC}" ]]; then
+  fail "the strategy page exists" "${STRATEGY_DOC} is missing; README.md's documentation table links to it"
+else
+  # -- The criteria ----------------------------------------------------------
+  # The first four words of each box, in order, against the bold words that open
+  # each entry under "Measuring each criterion". The count is part of the
+  # comparison, so an added or deleted box fails here.
+  strategy_boxes="$(awk '
+    /^## Project status$/ { on = 1; next }
+    on && /^## / { exit }
+    on && /^- \[[ xX]\] / { sub(/^- \[[ xX]\] /, ""); print $1, $2, $3, $4 }
+  ' README.md)"
+  strategy_entries="$(awk '
+    /^## Measuring each criterion$/ { on = 1; next }
+    on && /^## / { exit }
+    on && /^\*\*[^*]+\*\*/ { print }
+  ' "${STRATEGY_DOC}" | sed -E 's/^\*\*([^*]+)\*\*.*/\1/')"
+  if [[ -z "${strategy_boxes}" || -z "${strategy_entries}" ]]; then
+    fail "${STRATEGY_DOC} has one entry for each criterion in README.md's Project status" \
+      "read ${#strategy_boxes} chars of boxes and ${#strategy_entries} chars of entries; one side is empty, so the comparison would pass by reading nothing"
+  else
+    assert_equal "${STRATEGY_DOC} has one entry for each criterion in README.md's Project status, in the same order" \
+      "${strategy_entries//$'\n'/ | }" "${strategy_boxes//$'\n'/ | }"
+  fi
+
+  # -- The commands ----------------------------------------------------------
+  strategy_cmds="$(awk '
+    /^```/ { if (in_block) { in_block = 0 } else { in_block = (substr($0, 4) == "bash") } ; next }
+    in_block' "${STRATEGY_DOC}")"
+  strategy_gh=0
+  strategy_git=0
+  strategy_cmd_failures=""
+  while IFS= read -r strategy_cmd; do
+    [[ -n "${strategy_cmd}" ]] || continue
+    case "${strategy_cmd}" in
+      "gh "*)
+        strategy_gh=$((strategy_gh + 1))
+        if [[ "${strategy_cmd}" != *" --repo ${STRATEGY_REPO} "* ]]; then
+          strategy_cmd_failures+="[no --repo ${STRATEGY_REPO}: ${strategy_cmd:0:60}] "
+        fi
+        if [[ "${strategy_cmd}" == "gh issue list "* || "${strategy_cmd}" == "gh pr list "* || "${strategy_cmd}" == "gh release list "* ]]; then
+          strategy_limit="$(sed -nE 's/.* --limit ([0-9]+)( .*|$)/\1/p' <<<"${strategy_cmd}")"
+          if [[ -z "${strategy_limit}" ]] || ((strategy_limit < 1000)); then
+            strategy_cmd_failures+="[--limit '${strategy_limit}' is below 1000 and truncates: ${strategy_cmd:0:60}] "
+          fi
+        fi
+        if [[ "${strategy_cmd}" == "gh issue list "* || "${strategy_cmd}" == "gh pr list "* ]] &&
+          [[ "${strategy_cmd}" != *" --state "* ]]; then
+          strategy_cmd_failures+="[no --state: ${strategy_cmd:0:60}] "
+        fi
+        # A search says the range it covers with a closed <start>..<end> pair, so
+        # a reading that stops growing can be reproduced later.
+        if [[ "${strategy_cmd}" == *" --search "* && "${strategy_cmd}" != *'--search "created:<start>..<end>"'* &&
+          "${strategy_cmd}" != *'--search "merged:<start>..<end>"'* ]]; then
+          strategy_cmd_failures+="[search not a closed <start>..<end> range: ${strategy_cmd:0:60}] "
+        fi
+        # Every label filtered on is one a form applies or docs/ci-cd.md names.
+        while IFS= read -r strategy_label; do
+          [[ -n "${strategy_label}" ]] || continue
+          if ! grep -qE -- "^[[:space:]]*-[[:space:]]+${strategy_label}[[:space:]]*$" .github/ISSUE_TEMPLATE/*.yml &&
+            ! grep -qF -- "\`${strategy_label}\`" docs/ci-cd.md; then
+            strategy_cmd_failures+="[label '${strategy_label}' is applied by no issue form and named in no part of docs/ci-cd.md] "
+          fi
+        done < <(grep -oE -- '--label [A-Za-z0-9_-]+' <<<"${strategy_cmd}" | sed 's/^--label //')
+        ;;
+      "git grep "*)
+        strategy_git=$((strategy_git + 1))
+        # Every pathspec after `--` that is a path has to exist; `:!` exclusions
+        # and quotes are not paths.
+        strategy_pathspecs="${strategy_cmd#* -- }"
+        for strategy_path in ${strategy_pathspecs}; do
+          strategy_path="${strategy_path//\'/}"
+          [[ "${strategy_path}" == ":"* ]] && continue
+          [[ -e "${strategy_path}" ]] || strategy_cmd_failures+="[no such path ${strategy_path}] "
+        done
+        ;;
+      *) strategy_cmd_failures+="[not a gh or git grep command: ${strategy_cmd:0:60}] " ;;
+    esac
+  done <<<"${strategy_cmds}"
+  if ((strategy_gh == 0 || strategy_git == 0)); then
+    fail "every command in ${STRATEGY_DOC} names ${STRATEGY_REPO}, a limit that sees everything, and paths that exist" \
+      "found ${strategy_gh} gh and ${strategy_git} git grep command(s); the page's commands are gone"
+  elif [[ -z "${strategy_cmd_failures}" ]]; then
+    pass "every command in ${STRATEGY_DOC} names ${STRATEGY_REPO}, a limit that sees everything, and paths that exist"
+  else
+    fail "every command in ${STRATEGY_DOC} names ${STRATEGY_REPO}, a limit that sees everything, and paths that exist" \
+      "${strategy_cmd_failures}"
+  fi
+
+  # The two workflow searches use the patterns README's group above reads the
+  # same facts with, written out there as `grep -nE -- '<pattern>' "${status_wf}"`.
+  # A page that drifts from them would report no boot job while that group sees
+  # one. Matched literally against the script, on text this group does not
+  # contain.
+  for strategy_pattern in \
+    'qemu-system|virt-install|virsh[[:space:]]|systemd-vmspawn|bcvk' \
+    'bootc[[:space:]]+(upgrade|switch)'; do
+    if grep -qF -- "git grep -nE '${strategy_pattern}' -- .github/workflows" "${STRATEGY_DOC}" &&
+      grep -qF -- "grep -nE -- '${strategy_pattern}' \"\${status_wf}\"" "${SCRIPT_DIR}/check-invariants.sh"; then
+      pass "${STRATEGY_DOC} searches the workflows for '${strategy_pattern}', as the README project-status group does"
+    else
+      fail "${STRATEGY_DOC} searches the workflows for '${strategy_pattern}', as the README project-status group does" \
+        "the page or the group above no longer carries this exact pattern"
+    fi
+  done
+
+  # The branch-prefix command is the one with real logic. Run its jq program on
+  # a fixture: the prefix is what is before the first slash, a name with none is
+  # its own prefix, and the largest group comes first.
+  strategy_jq="$(sed -nE "s/^gh pr list .* --json headRefName --jq '(.*)'\$/\\1/p" <<<"${strategy_cmds}")"
+  if [[ -z "${strategy_jq}" ]]; then
+    fail "${STRATEGY_DOC}'s merged-by-prefix command requests headRefName and groups it with a jq program" \
+      "no 'gh pr list ... --json headRefName --jq '...'' line found"
+  else
+    assert_equal "${STRATEGY_DOC}'s merged-by-prefix jq program groups branch names by prefix, largest first" \
+      "$(jq -c "${strategy_jq}" <<<'[{"headRefName":"quality/a"},{"headRefName":"renovate/x"},{"headRefName":"quality/b"},{"headRefName":"flat"}]' 2>&1)" \
+      '[{"prefix":"quality","count":2},{"prefix":"flat","count":1},{"prefix":"renovate","count":1}]'
+  fi
+
+  # -- The dated reading -----------------------------------------------------
+  strategy_reading="$(sed -nE 's/^### Reading on ([0-9]{4}-[0-9]{2}-[0-9]{2})$/\1/p' "${STRATEGY_DOC}")"
+  if [[ -z "${strategy_reading}" ]]; then
+    fail "${STRATEGY_DOC} dates the one reading it quotes" \
+      "no '### Reading on YYYY-MM-DD' heading; the table reads as current when it is not"
+  elif [[ "${strategy_reading}" > "$(date -u +%F)" ]]; then
+    fail "${STRATEGY_DOC}'s reading date is not in the future" "read on ${strategy_reading}"
+  else
+    # Both quoted ranges must end before the reading date, so they are over and
+    # a rerun cannot gain members.
+    strategy_range_bad=""
+    for strategy_kind in merged created; do
+      strategy_end="$(grep -oE -- "${strategy_kind}:[0-9]{4}-[0-9]{2}-[0-9]{2}\.\.[0-9]{4}-[0-9]{2}-[0-9]{2}" "${STRATEGY_DOC}" | sed -E 's/.*\.\.//' | sort -u)"
+      if [[ -z "${strategy_end}" || "$(wc -l <<<"${strategy_end}")" -ne 1 ]]; then
+        strategy_range_bad+="[${strategy_kind}: found '${strategy_end//$'\n'/ }'] "
+      elif [[ ! "${strategy_end}" < "${strategy_reading}" ]]; then
+        strategy_range_bad+="[${strategy_kind} range ends ${strategy_end}, not before ${strategy_reading}] "
+      fi
+    done
+    if [[ -z "${strategy_range_bad}" ]]; then
+      pass "${STRATEGY_DOC} dates its reading, and the merged and created ranges it quotes ended before that day"
+    else
+      fail "${STRATEGY_DOC} dates its reading, and the merged and created ranges it quotes ended before that day" \
+        "${strategy_range_bad}"
+    fi
+  fi
+
+  # The tests search is the same pattern as the workflow boot search above, so
+  # a tool the README group looks for is not missed here.
+  if grep -qF -- "git grep -nE 'virt-install|qemu-system|virsh[[:space:]]|systemd-vmspawn|bcvk' -- tests" "${STRATEGY_DOC}"; then
+    pass "${STRATEGY_DOC}'s search of tests/ for VM tools carries the same virsh-inclusive pattern"
+  else
+    fail "${STRATEGY_DOC}'s search of tests/ for VM tools carries the same virsh-inclusive pattern" \
+      "the page's tests/ search no longer names virsh, or its pattern drifted"
+  fi
+
+  # Criterion 3 is measured by build.yml's tag rules, not by GitHub Releases, so
+  # the page has to carry the tag-rule command, and the five rules the README
+  # group's case statement names have to be what that command finds.
+  strategy_tag_cmd="git grep -nE '^[[:space:]]+type=(raw|sha|ref)' -- .github/workflows/build.yml"
+  if ! grep -qF -- "${strategy_tag_cmd}" "${STRATEGY_DOC}"; then
+    fail "${STRATEGY_DOC} measures the never-pruned tag criterion by build.yml's tag rules" \
+      "the page no longer carries: ${strategy_tag_cmd}"
+  else
+    assert_equal "${STRATEGY_DOC} measures the never-pruned tag criterion by build.yml's tag rules, which number five" \
+      "$(grep -cE '^[[:space:]]+type=(raw|sha|ref)' "${BUILD_WORKFLOW}")" "5"
+  fi
+
+  # -- Links, and the way in -------------------------------------------------
+  assert_doc_links_resolve "${STRATEGY_DOC}" \
+    "no relative links found; the hand-off to README.md, CLAUDE.md and metrics.md is gone"
+  assert_present "README.md's documentation table lists ${STRATEGY_DOC}" \
+    "README.md" '^\|[[:space:]]*\[Strategy\]\(docs/strategy\.md\)[[:space:]]*\|'
+  strategy_status_link="$(awk '/^## Project status$/ { on = 1; next } on && /^## / { exit } on' README.md |
+    grep -cF -- '](docs/strategy.md)')"
+  assert_equal "README.md's Project status section links ${STRATEGY_DOC}" "${strategy_status_link}" "1"
+
+  # -- No report job ---------------------------------------------------------
+  strategy_writers="$(grep -lE -- 'strategy-report|docs/strategy\.md' .github/workflows/*.y*ml 2>/dev/null | tr '\n' ' ')"
+  if [[ -z "${strategy_writers}" && ! -e .github/workflows/strategy-report.yml ]]; then
+    pass "no workflow writes or reads ${STRATEGY_DOC}, as the page's 'Why there is no report job' section states"
+  else
+    fail "no workflow writes or reads ${STRATEGY_DOC}, as the page's 'Why there is no report job' section states" \
+      "${strategy_writers:-.github/workflows/strategy-report.yml exists}"
+  fi
+  if grep -qx -- '## Why there is no report job' "${STRATEGY_DOC}"; then
+    pass "${STRATEGY_DOC} still has its 'Why there is no report job' section"
+  else
+    fail "${STRATEGY_DOC} still has its 'Why there is no report job' section" "no such heading"
+  fi
+  assert_present "docs/metrics.md still declines a scheduled job, the reason ${STRATEGY_DOC} gives for having none" \
+    "${METRICS_DOC}" 'no scheduled job writing numbers'
+fi
+
+# ---------------------------------------------------------------------------
 group "Agent task ledger (docs/agent-tasks/ is a README of traceability marks and dated ledgers of runnable gh and git commands)"
 
 # docs/agent-tasks/ answers "which agent task made this change". It is prose
@@ -8836,6 +9053,309 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "AI operations runbook (docs/ai-ops-runbook.md names every workflow, quotes their messages and steps, and sends a reader to the pages that hold the detail)"
+
+# docs/ai-ops-runbook.md is what a maintainer opens when a workflow goes red or
+# an agent's output looks wrong. It is prose around things the tree owns: the
+# six workflow files, the steps and jobs it says go red, the messages those
+# steps print, the schedules behind "a scheduled run is missing", and the
+# refusals the PreToolUse gate prints. Each of those moves independently of the
+# page, and a runbook that names a step that was renamed or quotes a message
+# that was reworded fails exactly when someone is reading it under pressure.
+#
+# Asserted below:
+#
+#   - the page names every workflow file, and every workflow file it names exists;
+#   - each workflow has its own section, and the table's `name:` column is the
+#     workflow's declared name;
+#   - the nightly table is the nightly workflow's checking steps (those with a
+#     `run:` body), job by job, in file order;
+#   - the build table's `job` / `step` pairs are real jobs and real steps;
+#   - every message the page quotes is still printed by the file that prints it
+#     and still on the page;
+#   - the schedules, the `fail-fast: false` matrices, the `needs:` gate and the
+#     inputs and label the page relies on are still in the workflows;
+#   - every repository path the page puts in backticks exists;
+#   - every relative link and anchor resolves, and the pages it hands off to are
+#     all still linked.
+RUNBOOK_DOC="docs/ai-ops-runbook.md"
+
+if [[ ! -f "${RUNBOOK_DOC}" ]]; then
+  fail "the AI operations runbook exists" "${RUNBOOK_DOC} is missing; README.md's documentation table links to it"
+else
+
+  assert_present "README.md's documentation table links to the AI operations runbook" \
+    "README.md" '\]\(docs/ai-ops-runbook\.md\)'
+
+  # The page with its line breaks folded, so a quoted message wrapped across
+  # two lines is still one string.
+  runbook_flat="$(tr '\n' ' ' <"${RUNBOOK_DOC}" | tr -s ' ')"
+
+  # The checking steps of every job of one workflow, as `job|step`, in file
+  # order: the steps that carry a `run:` body. Steps that run an action
+  # (checkout, install cosign) check nothing themselves.
+  runbook_run_steps() {
+    awk '
+      /^jobs:$/ { in_jobs = 1; next }
+      /^[A-Za-z_]/ { in_jobs = 0 }
+      in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ { job = substr($0, 3, length($0) - 3); step = ""; next }
+      /^      - name: / { step = substr($0, 15); next }
+      /^        run:/ { if (step != "") { print job "|" step; step = "" } }
+    ' "$1"
+  }
+
+  # Every step name of one job, whether or not it has a `run:` body.
+  runbook_job_steps() {
+    awk -v job="$2" '
+      /^jobs:$/ { in_jobs = 1; next }
+      /^[A-Za-z_]/ { in_jobs = 0 }
+      in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ { current = substr($0, 3, length($0) - 3); next }
+      in_jobs && current == job && /^      - name: / { print substr($0, 15) }
+    ' "$1"
+  }
+
+  # A section's lines: from its `## ` heading to the next one.
+  runbook_section() {
+    awk -v want="## $1" '
+      $0 == want { inside = 1; next }
+      inside && /^## / { exit }
+      inside
+    ' "${RUNBOOK_DOC}"
+  }
+
+  # --- Every workflow is named, and every named workflow exists ----------------
+
+  runbook_tree_workflows="$(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | LC_ALL=C sort)"
+  runbook_named_workflows="$(grep -oE '\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml' "${RUNBOOK_DOC}" | LC_ALL=C sort -u)"
+  if [[ -z "${runbook_tree_workflows}" ]]; then
+    fail "the repository still has workflows for the runbook to describe" "no file under .github/workflows/"
+  else
+    runbook_unnamed="$(comm -23 <(printf '%s\n' "${runbook_tree_workflows}") <(printf '%s\n' "${runbook_named_workflows}") | tr '\n' ' ')"
+    runbook_ghosts="$(comm -13 <(printf '%s\n' "${runbook_tree_workflows}") <(printf '%s\n' "${runbook_named_workflows}") | tr '\n' ' ')"
+    assert_equal "every workflow under .github/workflows/ is named on the AI operations runbook" \
+      "${runbook_unnamed}" ""
+    assert_equal "every workflow the AI operations runbook names exists under .github/workflows/" \
+      "${runbook_ghosts}" ""
+
+    # Each one has a section of its own, and the table says what GitHub calls it.
+    while IFS= read -r runbook_wf; do
+      [[ -n "${runbook_wf}" ]] || continue
+      if grep -qxF -- "## \`${runbook_wf}\`" "${RUNBOOK_DOC}"; then
+        pass "the runbook has a section for ${runbook_wf}"
+      else
+        fail "the runbook has a section for ${runbook_wf}" "no '## \`${runbook_wf}\`' heading"
+      fi
+      runbook_declared="$(sed -nE 's/^name: (.+)$/\1/p' "${runbook_wf}" | head -n 1)"
+      assert_equal "the runbook's table gives ${runbook_wf}'s declared workflow name" \
+        "$(grep -F -- "| \`${runbook_wf}\` |" "${RUNBOOK_DOC}" | head -n 1 | awk -F'|' '{ gsub(/^ *`|` *$/, "", $3); print $3 }')" \
+        "${runbook_declared}"
+    done <<<"${runbook_tree_workflows}"
+  fi
+
+  # --- The incident sections the page promises exist ---------------------------
+
+  runbook_missing_sections=""
+  while IFS= read -r want; do
+    grep -qxF -- "## ${want}" "${RUNBOOK_DOC}" || runbook_missing_sections+="${want}; "
+  done <<'RUNBOOK_SECTIONS'
+Start here
+`main` is red
+A scheduled run is missing
+Renovate automerge went wrong
+An agent's pull request looks wrong
+An issue for work that is already done
+A gate refusal from `.claude/hooks/gate-git-diff.sh`
+An agent acted on text it read
+RUNBOOK_SECTIONS
+  if [[ -z "${runbook_missing_sections}" ]]; then
+    pass "the runbook still has a section for every situation it exists to cover"
+  else
+    fail "the runbook still has a section for every situation it exists to cover" \
+      "missing: ${runbook_missing_sections}"
+  fi
+
+  # --- The nightly table is the nightly workflow's checking steps --------------
+
+  runbook_nightly_tree="$(runbook_run_steps "${NIGHTLY_WORKFLOW}")"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  runbook_nightly_page="$(runbook_section '`.github/workflows/nightly-compliance.yml`' |
+    awk -F'|' '/^\| `/ { for (i = 2; i <= 3; i++) gsub(/^ *`|` *$/, "", $i); print $2 "|" $3 }')"
+  if [[ -z "${runbook_nightly_tree}" || -z "${runbook_nightly_page}" ]]; then
+    fail "the nightly table and the nightly workflow's checking steps are both readable" \
+      "tree='${runbook_nightly_tree//$'\n'/ ; }' page='${runbook_nightly_page//$'\n'/ ; }'"
+  else
+    assert_equal "the runbook's nightly table has one row per checking step of the nightly workflow, in order" \
+      "${runbook_nightly_page//$'\n'/ ; }" \
+      "${runbook_nightly_tree//$'\n'/ ; }"
+  fi
+
+  # --- The build table's job / step pairs are real -----------------------------
+
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  runbook_build_pairs="$(runbook_section '`.github/workflows/build.yml`' |
+    sed -nE 's/^\| `([A-Za-z_]+)` \/ `([^`]+)` \|.*/\1|\2/p')"
+  if [[ -z "${runbook_build_pairs}" ]]; then
+    fail "the runbook's build table still names job / step pairs" "no '| \`job\` / \`step\` |' row found"
+  else
+    runbook_bad_pairs=""
+    while IFS='|' read -r runbook_job runbook_step; do
+      # The prune step's name carries a matrix expression; the page says <flavor>.
+      runbook_step="${runbook_step//<flavor>/\$\{\{ matrix.flavor \}\}}"
+      grep -qxF -- "${runbook_step}" <<<"$(runbook_job_steps "${BUILD_WORKFLOW}" "${runbook_job}")" ||
+        runbook_bad_pairs+="${runbook_job} / ${runbook_step}; "
+    done <<<"${runbook_build_pairs}"
+    if [[ -z "${runbook_bad_pairs}" ]]; then
+      pass "every job / step the runbook's build table names is a step of that job in build.yml"
+    else
+      fail "every job / step the runbook's build table names is a step of that job in build.yml" \
+        "not found: ${runbook_bad_pairs}"
+    fi
+  fi
+
+  # Steps the prose of the other sections names, as `file|job|step`.
+  runbook_bad_steps=""
+  while IFS='|' read -r runbook_file runbook_job runbook_step; do
+    [[ -n "${runbook_file}" ]] || continue
+    grep -qxF -- "${runbook_step}" <<<"$(runbook_job_steps "${runbook_file}" "${runbook_job}")" ||
+      runbook_bad_steps+="${runbook_file} ${runbook_job}: ${runbook_step}; "
+    grep -qF -- "\`${runbook_step}\`" "${RUNBOOK_DOC}" ||
+      runbook_bad_steps+="${runbook_step} is no longer on the page; "
+  done <<'RUNBOOK_STEPS'
+.github/workflows/zizmor.yaml|zizmor|Run zizmor
+.github/workflows/labeler.yml|label|Ensure every configured label exists
+.github/workflows/labeler.yml|label|Apply labels from changed paths
+.github/workflows/zizmor.yaml|zizmor|Install uv
+RUNBOOK_STEPS
+  if [[ -z "${runbook_bad_steps}" ]]; then
+    pass "the steps the runbook names outside its tables exist in their workflows"
+  else
+    fail "the steps the runbook names outside its tables exist in their workflows" "${runbook_bad_steps}"
+  fi
+  # The page says `Log in to GHCR`, the first words of that step's name.
+  assert_present "the build_push step the runbook calls 'Log in to GHCR' still exists" \
+    "${BUILD_WORKFLOW}" '^      - name: Log in to GHCR'
+
+  # --- Quoted messages are still printed, and still quoted ---------------------
+
+  runbook_bad_quotes=""
+  while IFS='|' read -r runbook_file runbook_fragment; do
+    [[ -n "${runbook_file}" ]] || continue
+    grep -qF -- "${runbook_fragment}" "${runbook_file}" ||
+      runbook_bad_quotes+="${runbook_file} no longer prints '${runbook_fragment}'; "
+    grep -qF -- "${runbook_fragment}" <<<"${runbook_flat}" ||
+      runbook_bad_quotes+="the page no longer quotes '${runbook_fragment}'; "
+  done <<'RUNBOOK_QUOTES'
+.github/workflows/build.yml|unprivileged user + mount namespaces are still refused
+.github/workflows/build.yml|is missing or unreadable
+.github/workflows/nightly-compliance.yml|now resolves to
+.github/workflows/nightly-compliance.yml|no longer exists upstream
+.github/workflows/nightly-compliance.yml|supply-chain event
+.github/workflows/labeler.yml|is configured but has no catalog entry in .github/workflows/labeler.yml
+.github/workflows/labeler.yml|has a catalog entry but no path rule in .github/labeler.yml
+.github/workflows/ai-fix.yml|target must be a number
+scripts/prune-package-versions.sh|prune: FAILED on
+scripts/prune-package-versions.sh|tagged latest but outside the newest
+.claude/hooks/gate-git-diff.sh|blocked: this git diff would compare paths as plain files
+.claude/hooks/gate-git-diff.sh|blocked: git --output=FILE
+.claude/hooks/gate-git-diff.sh|blocked: an output redirection
+RUNBOOK_QUOTES
+  if [[ -z "${runbook_bad_quotes}" ]]; then
+    pass "every message the runbook quotes is still printed by the file it comes from"
+  else
+    fail "every message the runbook quotes is still printed by the file it comes from" "${runbook_bad_quotes}"
+  fi
+
+  # --- Schedules, gates and inputs the prose relies on -------------------------
+
+  assert_present "build.yml still runs daily at 10:05 UTC, as the runbook says" \
+    "${BUILD_WORKFLOW}" 'cron: "05 10 \* \* \*"'
+  assert_present "nightly-compliance.yml still runs daily at 05:40 UTC, as the runbook says" \
+    "${NIGHTLY_WORKFLOW}" 'cron: "40 5 \* \* \*"'
+  runbook_scheduled="$(grep -lE '^  schedule:' .github/workflows/*.y*ml | LC_ALL=C sort | tr '\n' ' ')"
+  assert_equal "build.yml and nightly-compliance.yml are the only scheduled workflows, as the runbook says" \
+    "${runbook_scheduled}" \
+    ".github/workflows/build.yml .github/workflows/nightly-compliance.yml "
+  # The "scheduled run is missing" section queries each scheduled workflow on
+  # its own, by file, so one running cannot hide the other's absence. Derive
+  # the expected pair from the tree rather than restating it.
+  runbook_sched_cmds="$(grep -oE 'gh run list -R [A-Za-z0-9_./-]+ --workflow [A-Za-z0-9_.-]+ --event schedule' "${RUNBOOK_DOC}" |
+    sed -E 's/.*--workflow ([A-Za-z0-9_.-]+) --event schedule/\1/' | LC_ALL=C sort -u | tr '\n' ' ')"
+  assert_equal "the runbook queries every scheduled workflow's schedule runs, each by its own file" \
+    "${runbook_sched_cmds}" "$(tr ' ' '\n' <<<"${runbook_scheduled}" | sed -E 's#^\.github/workflows/##' | grep -v '^$' | LC_ALL=C sort | tr '\n' ' ')"
+  assert_present "the runbook's main-is-red command lists build.yml runs on main of every event" \
+    "${RUNBOOK_DOC}" 'gh run list -R [A-Za-z0-9_./-]+ --workflow build\.yml --branch main --limit [0-9]+$'
+  assert_equal "the runbook never filters main's builds by --event push, which would hide the scheduled and dispatched ones" \
+    "$(grep -cE -- '--branch main[^`]*--event push' "${RUNBOOK_DOC}")" "0"
+
+  assert_equal "build_push still needs lint and test, so a red lint or test publishes nothing" \
+    "$(cicd_job "${BUILD_WORKFLOW}" build_push | sed -nE 's/^    needs: (.+)$/\1/p')" \
+    "[lint, test]"
+  assert_equal "build_push's flavor matrix still has fail-fast: false, as the runbook says" \
+    "$(cicd_job "${BUILD_WORKFLOW}" build_push | grep -cE '^      fail-fast: false$')" "1"
+  assert_equal "the nightly signatures matrix still has fail-fast: false, as the runbook says" \
+    "$(cicd_job "${NIGHTLY_WORKFLOW}" signatures | grep -cE '^      fail-fast: false$')" "1"
+  assert_present "ai-fix.yml still takes the manual number input the runbook names" \
+    ".github/workflows/ai-fix.yml" '^      number:$'
+  assert_present "ai-fix.yml still acts only on the ai-fix-requested label" \
+    ".github/workflows/ai-fix.yml" "github\.event\.label\.name == 'ai-fix-requested'"
+  assert_present "zizmor.yaml still pins ZIZMOR_VERSION, which the runbook says stops a release turning main red" \
+    ".github/workflows/zizmor.yaml" '^  ZIZMOR_VERSION: '
+  assert_present "build.yml still passes PACMAN_CACHE_BUST, which the runbook says not to remove" \
+    "${BUILD_WORKFLOW}" 'PACMAN_CACHE_BUST='
+  assert_present "the build workflow's prune step still passes the retention floor the runbook defers to ci-cd.md for" \
+    "${BUILD_WORKFLOW}" '--min-versions-to-keep 30'
+  assert_absent "renovate.json does not set rebaseWhen to never, which the runbook warns against" \
+    "renovate.json" '"rebaseWhen"[[:space:]]*:[[:space:]]*"never"'
+
+  # --- Repository paths in backticks exist -------------------------------------
+
+  runbook_missing_paths=""
+  runbook_paths_checked=0
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  while IFS= read -r runbook_path; do
+    [[ -n "${runbook_path}" ]] || continue
+    runbook_paths_checked=$((runbook_paths_checked + 1))
+    [[ -e "${runbook_path#./}" ]] || runbook_missing_paths+="${runbook_path} "
+  done < <(grep -oE '`[A-Za-z0-9_./-]+`' "${RUNBOOK_DOC}" | tr -d '`' |
+    grep -E '^(\./)?((\.github|\.claude|docs|scripts|tests|system_files)/|\.coverage-thresholds\.json$)' | LC_ALL=C sort -u)
+  if ((runbook_paths_checked == 0)); then
+    fail "the runbook still names repository paths" "no backticked path found"
+  elif [[ -z "${runbook_missing_paths}" ]]; then
+    pass "every repository path the runbook puts in backticks exists (${runbook_paths_checked} checked)"
+  else
+    fail "every repository path the runbook puts in backticks exists" "missing: ${runbook_missing_paths}"
+  fi
+
+  # --- Links -------------------------------------------------------------------
+
+  assert_doc_links_resolve "${RUNBOOK_DOC}" \
+    "no relative links found; the hand-off to quality.md, ci-cd.md and the other pages is gone"
+
+  runbook_missing_links=""
+  while IFS= read -r want; do
+    grep -qF -- "](${want}" "${RUNBOOK_DOC}" || runbook_missing_links+="${want}; "
+  done <<'RUNBOOK_LINKS'
+../AGENTS.md
+../CLAUDE.md
+../SECURITY.md
+quality.md
+ci-cd.md
+risk-tiers.md
+branch-protection.md
+renovate.md
+review-rubric.md
+security/SECURITY-AI.md
+reflections/README.md
+RUNBOOK_LINKS
+  if [[ -z "${runbook_missing_links}" ]]; then
+    pass "the runbook still hands a reader to the pages that hold the detail"
+  else
+    fail "the runbook still hands a reader to the pages that hold the detail" "no link to: ${runbook_missing_links}"
+  fi
+
+fi
+
+# ---------------------------------------------------------------------------
 group "Dangling restructuring symlinks (AGENTS.md, docs/review-rubric.md, docs/security/SECURITY-AI.md: the paths a bind-mount must never target)"
 
 # Four documents hand an agent the list of paths a `--mount=type=bind` must not
@@ -8982,6 +9502,215 @@ if [[ -n "$(git ls-files -- .claude/skills)" ]]; then
   pass ".claude/skills/ exists where the tier table says"
 else
   fail ".claude/skills/ exists where the tier table says" "no tracked file under .claude/skills/"
+fi
+
+# ---------------------------------------------------------------------------
+group "Risk tiers config (risk-config.json is docs/risk-tiers.md as data: tiers, reach, evidence, path claims, selection rule)"
+
+# docs/risk-tiers.md is read by people. risk-config.json holds the same four
+# tiers in a form a program can read -- per tier its id, name, what it reaches,
+# the extra evidence it asks for, the evidence commands the page shows, and the
+# repository paths the page assigns to it -- plus the rule for choosing among
+# them. It is only worth keeping if it cannot drift, so this group reads the
+# page and the file against each other and the file against the tree. Nothing
+# here changes the policy: the page stays the source and the file is its copy.
+#
+# A "path claim" is read from the same paragraphs the tier-completeness checks in
+# tests/test-pr-review-state.sh read: each tier section's first paragraph, its
+# "Plus" paragraphs and (T3) its bold-led bullets. Of the backticked tokens in
+# those, a token counts when it has no space, does not start with `/` (an
+# in-image path) and either contains a `/` or is exactly a tracked root-level
+# file; `*.md` (where the page says "anywhere") and `packages-*.txt` are the two
+# root globs. The rest are prose (`BOOTC_VERSION`, `deny`, `ai-fix.yml`) and are
+# not paths. The first
+# occurrence wins, so `cosign.pub` is listed once, under T3, where it first
+# appears.
+
+RISK_CONFIG="risk-config.json"
+RISK_DOC="docs/risk-tiers.md"
+RISK_ROOT_GLOBS=('packages-*.txt')
+
+risk_trim() { # text
+  local text="$1"
+  text="${text#"${text%%[![:space:]]*}"}"
+  printf '%s' "${text%"${text##*[![:space:]]}"}"
+}
+
+risk_section() { # tier id
+  awk -v want="## $1 — " 'index($0, want) == 1 { inside = 1; next } inside && /^## / { exit } inside' "${RISK_DOC}"
+}
+
+risk_assigning_paragraphs() { # tier id
+  risk_section "$1" | awk '
+    BEGIN { blank = 1 }
+    /^[[:space:]]*$/ { blank = 1; next }
+    blank { blank = 0; paragraph++; keep = (paragraph == 1 || /^Plus / || /^- \*\*/) }
+    keep'
+}
+
+risk_doc_paths() { # tier id
+  local section token
+  section="$(risk_assigning_paragraphs "$1")"
+  # shellcheck disable=SC2016 # the page's own backtick markup
+  while IFS= read -r token; do
+    [[ -z "${token}" || "${token}" == *" "* || "${token}" == /* ]] && continue
+    if [[ "${token}" == */* ]]; then
+      printf '%s\n' "${token}"
+    elif [[ "${token}" == *'*'* ]]; then
+      if [[ "${section}" == *"\`${token}\` anywhere"* ]] ||
+        [[ " ${RISK_ROOT_GLOBS[*]} " == *" ${token} "* ]]; then
+        printf '%s\n' "${token}"
+      fi
+    elif git ls-files --error-unmatch -- "${token}" >/dev/null 2>&1; then
+      printf '%s\n' "${token}"
+    fi
+  done < <(grep -oE '`[^`]+`' <<<"${section}" | tr -d '`' | awk '!seen[$0]++')
+}
+
+risk_doc_commands() { # tier id: the fenced command lines, comment after two or more spaces
+  risk_section "$1" | awk '/^```/ { fenced = !fenced; next } fenced' | sed -E 's/ {2,}# /\t/; s/[[:space:]]+$//'
+}
+
+risk_path_exists() { # path from the config
+  case "$1" in
+    */ | *'*'*) [[ -n "$(git ls-files -- "$1")" ]] ;;
+    *) git ls-files --error-unmatch -- "$1" >/dev/null 2>&1 ;;
+  esac
+}
+
+risk_flat() { tr '\n' ' ' | sed -E 's/\*\*//g; s/ +/ /g'; }
+
+if git ls-files --error-unmatch -- "${RISK_CONFIG}" >/dev/null 2>&1; then
+  pass "${RISK_CONFIG} is tracked"
+else
+  fail "${RISK_CONFIG} is tracked" "git does not track it, so a clean checkout has no machine-readable tiers"
+fi
+
+if jq -e '(.tiers | type == "array") and (.rule | type == "object")' "${RISK_CONFIG}" >/dev/null 2>&1; then
+  pass "${RISK_CONFIG} parses and has tiers and rule"
+
+  # The tier set, in order, against the page's table and its section headings.
+  # Order is part of the contract: "highest" means later in this list.
+  risk_table_ids="$(grep -oE '^\| \*\*T[0-9]\*\*' "${RISK_DOC}" | grep -oE 'T[0-9]')"
+  risk_heading_ids="$(grep -oE '^## T[0-9] — ' "${RISK_DOC}" | grep -oE 'T[0-9]')"
+  risk_config_ids="$(jq -r '.tiers[].id' "${RISK_CONFIG}")"
+  assert_equal "${RISK_CONFIG} lists the tiers of the ${RISK_DOC} table, in order" \
+    "${risk_config_ids}" "${risk_table_ids}"
+  assert_equal "${RISK_DOC} has one section per tier in its table" \
+    "${risk_heading_ids}" "${risk_table_ids}"
+  assert_equal "every tier in ${RISK_CONFIG} has exactly the keys id, name, reaches, evidence, evidence_commands, paths (T3 adds content_triggers)" \
+    "$(jq -r '[.tiers[] | del(.content_triggers) | keys | join(",")] | unique | join(";")' "${RISK_CONFIG}")" \
+    "evidence,evidence_commands,id,name,paths,reaches"
+
+  while IFS= read -r risk_id; do
+    [[ -z "${risk_id}" ]] && continue
+    risk_row="$(grep -E "^\| \*\*${risk_id}\*\* " "${RISK_DOC}")"
+    IFS='|' read -r _ risk_cell_name risk_cell_reach risk_cell_evidence _ <<<"${risk_row}"
+    risk_cell_name="$(risk_trim "${risk_cell_name}")"
+    risk_heading_name="$(grep -E "^## ${risk_id} — " "${RISK_DOC}")"
+    risk_cfg() { jq -r --arg id "${risk_id}" ".tiers[] | select(.id == \$id) | $1" "${RISK_CONFIG}"; }
+
+    assert_equal "${risk_id} name in ${RISK_CONFIG} is the table's" \
+      "$(risk_cfg .name)" "${risk_cell_name#*\*\* }"
+    assert_equal "${risk_id} name in ${RISK_CONFIG} is its section heading's" \
+      "$(risk_cfg .name)" "${risk_heading_name#"## ${risk_id} — "}"
+    assert_equal "${risk_id} 'reaches' in ${RISK_CONFIG} is the table's" \
+      "$(risk_cfg .reaches)" "$(risk_trim "${risk_cell_reach}")"
+    assert_equal "${risk_id} 'evidence' in ${RISK_CONFIG} is the table's" \
+      "$(risk_cfg .evidence)" "$(risk_trim "${risk_cell_evidence}")"
+    assert_equal "${risk_id} paths in ${RISK_CONFIG} are the page's path claims, in the page's order" \
+      "$(risk_cfg '.paths[]')" "$(risk_doc_paths "${risk_id}")"
+    assert_equal "${risk_id} evidence commands in ${RISK_CONFIG} are the page's fenced commands" \
+      "$(risk_cfg '.evidence_commands[] | [.command, .comment // empty] | join("\t")')" \
+      "$(risk_doc_commands "${risk_id}")"
+
+    risk_missing=""
+    while IFS= read -r risk_path; do
+      [[ -z "${risk_path}" ]] && continue
+      risk_path_exists "${risk_path}" || risk_missing+="${risk_path} "
+    done < <(risk_cfg '.paths[]')
+    assert_equal "every ${risk_id} path in ${RISK_CONFIG} is tracked in the tree" "" "${risk_missing}"
+  done <<<"${risk_table_ids}"
+
+  # The selection rule, as the page words it. "highest" is defined by the order
+  # asserted above; the two sentences are quoted so rewording one on either side
+  # fails here instead of leaving the file describing a rule the page dropped.
+  risk_doc_flat="$(risk_flat <"${RISK_DOC}")"
+  assert_equal "${RISK_CONFIG} selects the highest tier" \
+    "$(jq -r '.rule.selection' "${RISK_CONFIG}")" "highest"
+  assert_equal "${RISK_CONFIG} rounds up when two tiers look defensible" \
+    "$(jq -r '.rule.when_unsure' "${RISK_CONFIG}")" "round-up"
+  for risk_key in text when_unsure_text path_match_text; do
+    risk_sentence="$(jq -r --arg key "${risk_key}" '.rule[$key]' "${RISK_CONFIG}")"
+    if [[ -n "${risk_sentence}" && "${risk_sentence}" != null && "${risk_doc_flat}" == *"${risk_sentence}"* ]]; then
+      pass "${RISK_DOC} still says: ${risk_sentence}"
+    else
+      fail "${RISK_DOC} still says: ${risk_sentence}" "rule.${risk_key} in ${RISK_CONFIG} is not a sentence of the page"
+    fi
+  done
+
+  # The path claims are a floor. The page says "Classify by what the diff does"
+  # because no rule over file paths tells a Containerfile comment fix from a
+  # change to how bootc is fetched; a program that only matched `paths` would put
+  # a BOOTC_COMMIT edit in T2 and a signing edit in T1. So T3 also carries the
+  # page's content triggers as data. Each trigger's page tokens must still be in
+  # the page's T3 section, and its file tokens must still be in the files it
+  # names, so neither side can move without the other.
+  assert_equal "${RISK_CONFIG} treats the path match as a minimum, not a classification" \
+    "$(jq -r '.rule.path_match' "${RISK_CONFIG}")" "minimum"
+  assert_equal "only T3 carries content_triggers in ${RISK_CONFIG}" \
+    "$(jq -r '[.tiers[] | select(has("content_triggers")) | .id] | join(",")' "${RISK_CONFIG}")" "T3"
+  risk_t3_flat="$(risk_section T3 | risk_flat)"
+  risk_trigger_count=0
+  while IFS= read -r risk_trigger; do
+    [[ -z "${risk_trigger}" ]] && continue
+    risk_trigger_count=$((risk_trigger_count + 1))
+    risk_tcfg() { jq -r --arg id "${risk_trigger}" ".tiers[3].content_triggers[] | select(.id == \$id) | $1" "${RISK_CONFIG}"; }
+    risk_gone=""
+    while IFS= read -r risk_token; do
+      [[ -z "${risk_token}" ]] && continue
+      [[ "${risk_t3_flat}" == *"${risk_token}"* ]] || risk_gone+="'${risk_token}' "
+    done < <(risk_tcfg '.page_tokens[]')
+    assert_equal "T3 trigger ${risk_trigger}: every page token is still in the page's T3 section" "" "${risk_gone}"
+    risk_gone=""
+    while IFS= read -r risk_file; do
+      [[ -z "${risk_file}" ]] && continue
+      if [[ ! -f "${risk_file}" ]]; then
+        risk_gone+="${risk_file}(missing) "
+        continue
+      fi
+      git ls-files --error-unmatch -- "${risk_file}" >/dev/null 2>&1 || risk_gone+="${risk_file}(untracked) "
+    done < <(risk_tcfg '.files[]')
+    while IFS= read -r risk_token; do
+      [[ -z "${risk_token}" ]] && continue
+      risk_found=0
+      while IFS= read -r risk_file; do
+        # Active lines only, as assert_present does: a rationale comment that
+        # names the token survives deleting the code that uses it.
+        [[ -f "${risk_file}" ]] || continue
+        risk_active="$(grep -Ev '^[[:space:]]*#' "${risk_file}")"
+        grep -qF -- "${risk_token}" <<<"${risk_active}" && risk_found=1
+      done < <(risk_tcfg '.files[]')
+      ((risk_found)) || risk_gone+="'${risk_token}' "
+    done < <(risk_tcfg '.file_tokens[]')
+    assert_equal "T3 trigger ${risk_trigger}: its files are tracked and still hold its tokens" "" "${risk_gone}"
+  done < <(jq -r '.tiers[3].content_triggers[].id' "${RISK_CONFIG}")
+  check_triggers="$((risk_trigger_count > 0 ? 0 : 1))"
+  if ((check_triggers == 0)); then
+    pass "${RISK_CONFIG} has T3 content triggers"
+  else
+    fail "${RISK_CONFIG} has T3 content triggers" "tiers[3] has none, so content-only T3 changes match no tier"
+  fi
+else
+  fail "${RISK_CONFIG} parses and has tiers and rule" "missing, not valid JSON, or tiers/rule have the wrong type"
+fi
+
+# The file is itself a harness file, so the page has to say so by name.
+# shellcheck disable=SC2016 # the page's own backtick markup
+if grep -Fq '`risk-config.json`' <<<"$(risk_section T1)"; then
+  pass "${RISK_DOC} tiers ${RISK_CONFIG} as T1"
+else
+  fail "${RISK_DOC} tiers ${RISK_CONFIG} as T1" "no \`risk-config.json\` in its T1 section"
 fi
 
 # ---------------------------------------------------------------------------

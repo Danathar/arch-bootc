@@ -69,8 +69,10 @@ tools, and manual alternatives.
 |     [Branch protection](docs/branch-protection.md) |                          The ruleset that keeps `main` behind a pull request, the check it requires, and how to check it is live |
 |          [Multi-agent work](docs/multi-agent.md) |                                    Which Hive agents work here, how work reaches them, how they avoid each other, and who merges |
 | [AI security policy](docs/security/SECURITY-AI.md) |                          What agent-assisted changes defend, which inputs are untrusted, and the invariants that hold regardless |
+|    [AI operations runbook](docs/ai-ops-runbook.md) |                              What to do when a workflow goes red, a scheduled run goes missing, or an agent's output looks wrong |
 |                       [Security](SECURITY.md) |                                                                      How to privately report a vulnerability in the image build or CI/CD pipeline |
 |                         [Metrics](docs/metrics.md) |                                                PR acceptance, time to merge, and CI health — with the `gh` commands to recompute |
+|                       [Strategy](docs/strategy.md) |     How far the project is from leaving beta: the command that measures each stable-exit criterion, and what work is going there |
 |                   [Reflections](docs/reflections/) |                                  Durable write-ups of what went wrong here, how it was caught, and what would catch it next time |
 
 ## Contributing
@@ -117,6 +119,8 @@ It moves to stable when all of these hold:
       login regression.
 - [ ] The manual VM check in [CLAUDE.md](CLAUDE.md) is no longer the only
       place first-boot behaviour is verified.
+
+[Strategy](docs/strategy.md) gives the command that measures progress on each box, in this order.
 
 ## About this project
 
