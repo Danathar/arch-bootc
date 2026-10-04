@@ -759,9 +759,12 @@ until then the job fails on its first delete.
 
 The job's `run:` body is covered by `tests/test-prune-package-versions.sh`, which
 lifts it out of `build.yml` and runs it against the same stubbed `gh`. It pins the
-seven-day cut in both directions, the oldest-first order, the 300 cap, the owner
-scope, the stop on a failed delete, and that the package it lists is the last
-path segment of the `CACHE_IMAGE` that `build_push` writes.
+seven-day cut in both directions and in UTC, the oldest-first order, the 300
+cap, the owner scope, the stop on a failed delete, that the listing is read past
+its first page (the stub returns only the first page to a call without
+`--paginate`, as `gh` does, and the API lists the newest first), and that the
+package it lists is the last path segment of the `CACHE_IMAGE` that `build_push`
+writes.
 
 ## Per-package rechunking (`CHUNK_TAG`)
 

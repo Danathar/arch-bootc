@@ -407,8 +407,9 @@ Stated plainly so nobody mistakes silence for coverage:
   `Prepare environment` and `Delete old ${{ matrix.flavor }} package versions`
   out of `build.yml` and pins the package name, owner scope and retention floor
   the job passes, runs `cleanup_buildcache`'s
-  `Delete build-cache versions older than 7 days` and pins its seven-day cut,
-  oldest-first 300 cap, one-second pacing between deletes and package name,
+  `Delete build-cache versions older than 7 days` and pins its seven-day cut
+  in UTC, oldest-first 300 cap, one-second pacing between deletes, a listing
+  read past its first page and package name,
   and runs `build_push`'s own
   `Prepare environment` and `Get current date` against the same fixtures so
   the image reference and the cache package cannot drift apart between jobs;
