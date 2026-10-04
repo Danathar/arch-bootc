@@ -11,6 +11,12 @@
     "is T3 in docs/risk-tiers.md."
   ],
   "workflows": {
+    "agent-audit.yml": {
+      "workflow": null,
+      "jobs": {
+        "audit": {"contents": "read", "pull-requests": "read"}
+      }
+    },
     "ai-fix.yml": {
       "workflow": null,
       "jobs": {

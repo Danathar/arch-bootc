@@ -647,6 +647,10 @@ must be described as such.
   and the "Workflow token permissions" group in `tests/check-invariants.sh`
   fails when the two disagree. So a job cannot gain a scope unless the same pull
   request also changes the policy file, which is T3.
+  The monthly agent audit job is the one that reads pull requests back: its token
+  is `contents: read` and `pull-requests: read`, and it checks that agent pull
+  requests carry their signature line and sign-off
+  ([ci-cd.md](../ci-cd.md#agent-audit-trail)).
 - Secrets are never passed to a step that runs untrusted input, and never to an
   action that is not pinned by commit SHA.
 

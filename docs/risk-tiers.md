@@ -221,6 +221,14 @@ the diff is:
   a removed allow row) is still T3 by path; say in the pull request which
   direction it goes.
 
+The monthly agent audit workflow reports which merged agent pull requests
+touched the paths in this section; its test joins its path list to this
+section, so naming a new T3 path here fails that test until the list has it
+too. It also marks `Containerfile` and `.github/workflows/build.yml` as T3 by
+content, because the root-login model and `bootc` provenance live in the
+first and the publish and sign jobs in the second, and a path cannot say
+which hunk changed. See [ci-cd.md](ci-cd.md#agent-audit-trail).
+
 Evidence: everything T2 requires, plus evidence that exercises **the path this
 change touches**. That is not one thing, because T3 covers different kinds of
 change and the usual answer is only right for one of them.
