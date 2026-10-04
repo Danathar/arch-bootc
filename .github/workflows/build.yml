@@ -604,3 +604,109 @@ jobs:
             --package "${PACKAGE_NAME}" \
             --package-type container \
             --min-versions-to-keep 30
+
+  cleanup_buildcache:
+    name: Clean up old build-cache versions
+    needs: build_push
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-26.04
+    # Listing the package is one request per 100 versions and each delete is
+    # one more; while the backlog lasts that is about 125 pages plus 300
+    # deletes, a few minutes of API calls.
+    timeout-minutes: 15
+
+    # No checkout: the step below is self-contained and reads nothing from the
+    # tree.
+    permissions:
+      packages: write
+
+    steps:
+      # build_push pushes buildah layer-cache entries to one shared package,
+      # <owner>/buildcache (its CACHE_IMAGE), on every publish. Until this job
+      # nothing removed them: on 2026-10-04 the package held 12,221 versions,
+      # two months after it was created, and gained 116 to 379 a day.
+      #
+      # Almost all of them are dead within a day. PACMAN_CACHE_BUST changes
+      # every UTC day, so every layer from the `pacman -Syu` step down gets a
+      # new cache key daily and older entries are never hit again. The few
+      # layers above the bust keep their key, and pruning them by age costs
+      # one cheap rebuild a week: a missing entry is only a cache miss, and
+      # buildah rebuilds the layer and pushes it again.
+      #
+      # So this prunes by age, not by count. scripts/prune-package-versions.sh
+      # keeps the newest N tagged images, which is the wrong rule here: every
+      # cache entry is tagged with a content hash, and at a few hundred new
+      # entries a day any fixed N is either less than a day of cache or a
+      # number that has to track the publish rate.
+      #
+      # Entries created more than 7 days ago go, oldest first, at most 300 per
+      # run. GITHUB_TOKEN gets 1,000 REST requests an hour per repository,
+      # shared with cleanup_packages, and 300 deletes plus the listing stays
+      # well inside that even with both jobs in the same hour. At about four
+      # publishes a day the backlog clears in roughly nine days; after that
+      # each run removes only what aged out since the last one. The first
+      # failed delete stops the run rather than spending the rest of the cap
+      # on the same error (a missing Admin grant fails every one of them).
+      #
+      # GitHub refuses to delete a package's last remaining version. Each
+      # publish pushes fresh entries before this job runs, so that can only
+      # bite after a week with no successful cache push (`Populate build
+      # cache` is continue-on-error), and then the red job is the signal.
+      #
+      # As with the flavor packages, the buildcache package's own "Manage
+      # Actions access" setting on ghcr.io must grant this repository the
+      # Admin role before GITHUB_TOKEN can delete its versions.
+      #
+      # tests/test-prune-package-versions.sh runs this body against a stubbed
+      # `gh` and checks CACHE_PACKAGE against what build_push writes.
+      - name: Delete build-cache versions older than 7 days
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          OWNER_TYPE: ${{ github.event.repository.owner.type }}
+          # The last path segment of build_push's CACHE_IMAGE.
+          CACHE_PACKAGE: buildcache
+        run: |
+          set -euo pipefail
+          max_age_days=7
+          max_deletes=300
+
+          case "${OWNER_TYPE,,}" in
+            user) scope="users/${OWNER}" ;;
+            organization) scope="orgs/${OWNER}" ;;
+            *)
+              echo "error: unknown owner type '${OWNER_TYPE}'" >&2
+              exit 2
+              ;;
+          esac
+          versions_path="${scope}/packages/container/${CACHE_PACKAGE}/versions"
+          # ISO 8601 in UTC, the form the API returns, so the two compare as
+          # plain strings.
+          cutoff="$(date -u -d "${max_age_days} days ago" +%Y-%m-%dT%H:%M:%SZ)"
+
+          # A listing that fails stops the job here rather than reading as an
+          # empty package.
+          listing="$(gh api --paginate "${versions_path}?per_page=100" \
+            --jq '.[] | [.created_at, (.id | tostring)] | @tsv')"
+
+          stale="$(printf '%s\n' "${listing}" | awk -F'\t' -v cutoff="${cutoff}" \
+            'NF == 2 && $1 < cutoff { n++ } END { print n + 0 }')"
+          echo "buildcache: ${stale} version(s) created before ${cutoff}; removing at most ${max_deletes}, oldest first"
+
+          # Oldest first, capped in awk rather than with `head`: under pipefail,
+          # head closing the pipe early would fail the whole substitution.
+          doomed="$(printf '%s\n' "${listing}" | LC_ALL=C sort \
+            | awk -F'\t' -v cutoff="${cutoff}" -v max="${max_deletes}" \
+              'NF == 2 && $1 < cutoff && n < max { print $2; n++ }')"
+
+          removed=0
+          while IFS= read -r id; do
+            [[ -n "${id}" ]] || continue
+            if ! gh api --method DELETE "${versions_path}/${id}" >/dev/null; then
+              echo "buildcache: FAILED to delete version ${id} after removing ${removed}; stopping" >&2
+              exit 1
+            fi
+            removed=$((removed + 1))
+          done <<<"${doomed}"
+
+          echo "buildcache: removed ${removed} version(s)"

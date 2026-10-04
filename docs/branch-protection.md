@@ -85,6 +85,8 @@ job belongs here unless every pull request gets it.
 - `Build and push image` runs only in `build.yml`, and its matrix reports it as
   `Build and push image (base)`, `(kde)` and `(xfce)`.
 - `Clean up old package versions` is skipped on every pull request by its `if:`.
+- `Clean up old build-cache versions` is skipped on every pull request by its
+  `if:`.
 - `Apply path labels` classifies a change rather than checking it, and its `if:`
   skips pull requests from forks.
 - `Scan workflows with zizmor` runs only when `.github/workflows/**` changes.

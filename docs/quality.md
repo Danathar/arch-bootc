@@ -406,9 +406,12 @@ Stated plainly so nobody mistakes silence for coverage:
   other: `tests/test-prune-package-versions.sh` lifts `cleanup_packages`'s
   `Prepare environment` and `Delete old ${{ matrix.flavor }} package versions`
   out of `build.yml` and pins the package name, owner scope and retention floor
-  the job passes, and runs `build_push`'s own `Prepare environment` and
-  `Get current date` against the same fixtures so the two copies of the image
-  reference cannot drift apart; `tests/test-nightly-compliance.sh` runs
+  the job passes, runs `cleanup_buildcache`'s
+  `Delete build-cache versions older than 7 days` and pins its seven-day cut,
+  oldest-first 300 cap and package name, and runs `build_push`'s own
+  `Prepare environment` and `Get current date` against the same fixtures so
+  the image reference and the cache package cannot drift apart between jobs;
+  `tests/test-nightly-compliance.sh` runs
   `bootc-pin`'s tag peel, the `signatures` job's
   `Verify the published image against cosign.pub`, and the four `build_push`
   steps a published signature is split across —

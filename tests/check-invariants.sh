@@ -9378,6 +9378,7 @@ RUNBOOK_STEPS
   done <<'RUNBOOK_QUOTES'
 .github/workflows/build.yml|unprivileged user + mount namespaces are still refused
 .github/workflows/build.yml|is missing or unreadable
+.github/workflows/build.yml|buildcache: FAILED to delete version
 .github/workflows/nightly-compliance.yml|now resolves to
 .github/workflows/nightly-compliance.yml|no longer exists upstream
 .github/workflows/nightly-compliance.yml|supply-chain event

@@ -95,6 +95,7 @@ fi
 
 method="GET"
 path=""
+jq_filter=""
 i=1
 while ((i < ${#args[@]})); do
   case "${args[i]}" in
@@ -104,6 +105,7 @@ while ((i < ${#args[@]})); do
       ;;
     --jq)
       i=$((i + 1))
+      jq_filter="${args[i]}"
       ;;
     --paginate) ;;
     -*) ;;
@@ -140,6 +142,15 @@ fi
 if [[ -n "${GH_STUB_LIST_FAIL:-}" ]]; then
   printf 'HTTP 502: Bad gateway\n' >&2
   exit 1
+fi
+# The prune script asks for `--jq '.[]'` and the fixture is already one version
+# per line, so by default the filter is not applied. The build-cache step asks
+# for a filter that shapes its own input, so with GH_STUB_APPLY_JQ set the
+# fixture is handed over the way gh does it: as one page, an array of the
+# versions, run through the caller's filter.
+if [[ -n "${GH_STUB_APPLY_JQ:-}" ]]; then
+  jq -sr "${jq_filter}" "${GH_STUB_VERSIONS}"
+  exit
 fi
 cat "${GH_STUB_VERSIONS}"
 STUB
@@ -1201,6 +1212,142 @@ assert_status "the Containerfile declares the build-arg this body feeds" 0 \
     grep -qE "^ARG ${cache_bust_name}=" "${REPO_ROOT}/Containerfile"
     printf '%s' "$?"
   )"
+
+# --- the build-cache retention job ------------------------------------------
+#
+# `build_push` pushes layer-cache entries to one shared package on every
+# publish, and `cleanup_buildcache` is what keeps it from growing forever. It
+# does not use the script above: its rule is age, not a count of tagged images,
+# because every cache entry is tagged and a few hundred arrive a day. The rule
+# is a `run:` body in `build.yml`, so the body is lifted out and run here
+# against the same stubbed `gh`, this time with the stub applying the body's
+# own `--jq` filter to the fixture the way gh applies it to each page.
+#
+# What is pinned: the package is the one `build_push` writes its cache to, the
+# age cut is seven days in both directions, the oldest go first and at most 300
+# go per run, the owner scope follows the event's owner type, and a failed
+# listing or a failed delete is a red job rather than a quiet one. Fixture
+# times are relative to the real clock with an hour of margin either side of
+# the cut, because the body reads the clock itself.
+
+CACHE_JOB="cleanup_buildcache"
+CACHE_STEP="Delete build-cache versions older than 7 days"
+
+cache_run="$(workflow_step_run "${BUILD_WORKFLOW}" "${CACHE_JOB}" "${CACHE_STEP}")"
+assert_extracted "the build-cache step's body is still where this file looks for it" "${cache_run}"
+# shellcheck disable=SC2016
+assert_absent "the build-cache step's body is plain shell" "${cache_run}" '${{'
+
+# The seam with the build job: the package this step lists is the last path
+# segment of the CACHE_IMAGE every flavor's build pushes to. A rename on either
+# side alone would leave this job pruning a package that 404s while the real
+# cache keeps growing.
+cache_package="$(workflow_step_env "${BUILD_WORKFLOW}" "${CACHE_JOB}" "${CACHE_STEP}" CACHE_PACKAGE)"
+built_cache_image="$(printf '%s' "${cache_images}" | sort -u | tr -d '\n')"
+assert_equal "the build-cache job prunes the package build_push pushes its cache to" \
+  "${built_cache_image##*/}" "${cache_package}"
+
+cache_now="$(date -u +%s)"
+cache_cut=$((7 * 86400))
+iso_ago() { date -u -d "@$((cache_now - $1))" +%Y-%m-%dT%H:%M:%SZ; }
+
+run_cache_step() {
+  local owner="$1" owner_type="$2"
+  shift 2
+  env PATH="${STUB_DIR}:${PATH}" \
+    GH_STUB_APPLY_JQ=1 \
+    GH_STUB_VERSIONS="${VERSIONS}" \
+    GH_STUB_DELETED="${DELETED}" \
+    GH_STUB_REQUESTED="${REQUESTED}" \
+    GH_TOKEN=stub-token \
+    OWNER="${owner}" \
+    OWNER_TYPE="${owner_type}" \
+    CACHE_PACKAGE="${cache_package}" \
+    "$@" "${BASH}" -c "${cache_run}" 2>&1
+}
+
+# One version either side of the cut and one fresh one, newest first as the
+# API lists them.
+cache_boundary_fixture() {
+  write_versions \
+    "$(make_version 13 "$(iso_ago 3600)" sha256-c)" \
+    "$(make_version 12 "$(iso_ago $((cache_cut - 3600)))" sha256-b)" \
+    "$(make_version 11 "$(iso_ago $((cache_cut + 3600)))" sha256-a)"
+}
+
+cache_boundary_fixture
+output="$(run_cache_step Danathar User)"
+assert_status "the build-cache step exits 0 for a user-owned package" 0 "$?"
+assert_contains "the build-cache step lists the cache package under the user scope" \
+  "$(requested_paths)" "GET users/Danathar/packages/container/buildcache/versions?per_page=100"
+assert_equal "only the version older than seven days is removed" "11" "$(pruned_ids)"
+assert_contains "the build-cache step reports how many versions were past the cut" \
+  "${output}" "buildcache: 1 version(s) created before"
+assert_contains "the build-cache step reports what it removed" "${output}" "buildcache: removed 1 version(s)"
+
+cache_boundary_fixture
+output="$(run_cache_step Danathar Organization)"
+assert_status "the build-cache step exits 0 for an organization-owned package" 0 "$?"
+assert_contains "an organization-owned cache package is listed under the org scope" \
+  "$(requested_paths)" "GET orgs/Danathar/packages/container/buildcache/versions?per_page=100"
+assert_equal "the age cut is the same under the org scope" "11" "$(pruned_ids)"
+
+# 302 versions past the cut and two fresh ones. A larger id is an older
+# version here, so a body that ordered by id rather than by creation time, or
+# compared ids as numbers where it should compare timestamps, takes the wrong
+# 300. The cap leaves exactly the two youngest stale versions, ids 1 and 2.
+write_versions
+jq -cn --argjson now "${cache_now}" --argjson cut "${cache_cut}" '
+  (range(1; 303) | {id: ., created_at: ($now - $cut - 3600 - . * 60 | todate),
+    metadata: {container: {tags: ["sha256-stale\(.)"]}}}),
+  ({id: 1001, created_at: ($now - 60 | todate), metadata: {container: {tags: ["sha256-fresh1"]}}}),
+  ({id: 1002, created_at: ($now - 120 | todate), metadata: {container: {tags: ["sha256-fresh2"]}}})
+' >"${VERSIONS}"
+output="$(run_cache_step Danathar User)"
+assert_status "the build-cache step exits 0 over its per-run cap" 0 "$?"
+assert_contains "every stale version is counted, not only the ones removed" \
+  "${output}" "buildcache: 302 version(s) created before"
+assert_equal "at most 300 versions go per run, the oldest first" \
+  "$(seq 3 302 | tr '\n' ' ' | sed 's/ $//')" "$(pruned_ids)"
+
+# Nothing past the cut: a quiet day exits 0 and removes nothing.
+write_versions \
+  "$(make_version 31 "$(iso_ago 60)" sha256-d)" \
+  "$(make_version 32 "$(iso_ago $((cache_cut - 3600)))" sha256-e)"
+output="$(run_cache_step Danathar User)"
+assert_status "a cache with nothing older than seven days exits 0" 0 "$?"
+assert_equal "a cache with nothing older than seven days loses nothing" "" "$(pruned_ids)"
+assert_contains "a quiet run says it removed nothing" "${output}" "buildcache: removed 0 version(s)"
+
+# An owner type the body does not know is a usage error before any request:
+# guessing a scope would delete from, or 404 on, the wrong owner.
+cache_boundary_fixture
+output="$(run_cache_step Danathar Bot)"
+assert_status "an unknown owner type is an error" 2 "$?"
+assert_contains "an unknown owner type is named" "${output}" "unknown owner type 'Bot'"
+assert_equal "an unknown owner type makes no request" "" "$(requested_paths)"
+
+# A listing that fails is a failed job, not an empty package.
+cache_boundary_fixture
+output="$(run_cache_step Danathar User GH_STUB_LIST_FAIL=1)"
+cache_status=$?
+check "a failed cache listing fails the step" "$((cache_status == 0))" "exit ${cache_status}"
+assert_absent "a failed cache listing deletes nothing" "$(requested_paths)" "DELETE"
+
+# A failed delete stops the run: the next ids are not attempted, because the
+# usual cause (no Admin grant on the package) fails every one of them and each
+# attempt spends the hourly budget cleanup_packages also needs.
+write_versions \
+  "$(make_version 23 "$(iso_ago $((cache_cut + 3600)))" sha256-f)" \
+  "$(make_version 22 "$(iso_ago $((cache_cut + 7200)))" sha256-g)" \
+  "$(make_version 21 "$(iso_ago $((cache_cut + 10800)))" sha256-h)"
+output="$(run_cache_step Danathar User GH_STUB_FAIL_IDS=22)"
+assert_status "a failed delete fails the step" 1 "$?"
+assert_equal "the versions before the failure are removed" "21" "$(pruned_ids)"
+assert_absent "no delete is attempted after the failure" "$(requested_paths)" "/versions/23|"
+assert_contains "a failed delete names the version and what was already removed" \
+  "${output}" "buildcache: FAILED to delete version 22 after removing 1"
+
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
   printf 'FAILED %d of %d assertion(s)\n' "${failures}" "${tests_run}" >&2
