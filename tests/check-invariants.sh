@@ -8796,6 +8796,263 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Multi-agent page (docs/multi-agent.md: who works here, how work reaches an agent, and what keeps agents apart)"
+
+# docs/multi-agent.md describes machinery it does not own: a ruleset, three
+# workflows, a label config, the README's Hive policy and renovate.json. Each
+# of those can change without anyone opening the page, and nothing else reads
+# it, so a ruleset made strict or a workflow that starts running a model would
+# leave an agent being told something false.
+#
+# What is checked here is what the tree can show:
+#
+#   - the sentences about the ruleset (strictness, the one required check, no
+#     bypass, no approval) against .github/rulesets/main.json;
+#   - the sentences about what this repository does not run, against every
+#     workflow: nothing pushes, opens or merges a pull request, no model name or
+#     credential appears, and SIGNING_SECRET is the only secret;
+#   - the label list against .github/labeler.yml, and the claim that no
+#     workflow applies `hold` or `needs-human`;
+#   - the intake path (ai-fix-requested -> ai-fix.yml -> a comment) against
+#     ai-fix.yml, and the merge policy against the README and renovate.json;
+#   - every repository path and relative link the page names, so a rename
+#     fails here rather than leaving a dead pointer.
+#
+# What the tree cannot show is the roster itself (who the agents are, their
+# branch prefixes and signatures) and the labels that live on GitHub. Those
+# are read from pull request and issue history, and the page gives the command.
+
+MA_DOC="docs/multi-agent.md"
+MA_RULESET=".github/rulesets/main.json"
+MA_AI_FIX=".github/workflows/ai-fix.yml"
+MA_LABELER_WORKFLOW=".github/workflows/labeler.yml"
+MA_LABELER_CONFIG=".github/labeler.yml"
+
+if [[ ! -f "${MA_DOC}" ]]; then
+  fail "the multi-agent page exists" "${MA_DOC} is missing"
+elif ! jq -e '.rules | type == "array"' "${MA_RULESET}" >/dev/null 2>&1; then
+  fail "the multi-agent page can be joined to the ruleset" \
+    "${MA_RULESET} is missing, is not JSON, or has no .rules array"
+else
+  pass "the multi-agent page exists"
+
+  # The page with line breaks collapsed, so a sentence that wraps still matches.
+  ma_flat="$(tr '\n' ' ' <"${MA_DOC}" | tr -s ' ')"
+
+  ma_says() { # description fixed-text
+    if grep -Fq -- "$2" <<<"${ma_flat}"; then
+      pass "$1"
+    else
+      fail "$1" "${MA_DOC} no longer says: $2"
+    fi
+  }
+
+  ma_rs() {
+    jq -r "$1" "${MA_RULESET}"
+  }
+
+  # --- The sections an agent is sent to ----------------------------------------
+
+  # Named rather than discovered: a renamed heading must fail here, not leave
+  # the anchors below pointing nowhere.
+  for ma_heading in \
+    "Who works here" \
+    "How work reaches an agent" \
+    "Staying out of each other's way" \
+    "Who merges" \
+    "What every agent shares" \
+    "What this repository does not run" \
+    "What is in flight right now"; do
+    if grep -qxF "## ${ma_heading}" "${MA_DOC}"; then
+      pass "the multi-agent page has the '${ma_heading}' section"
+    else
+      fail "the multi-agent page has the '${ma_heading}' section" "no '## ${ma_heading}' heading in ${MA_DOC}"
+    fi
+  done
+  ma_says "the page's own anchor for the live view resolves" "](#what-is-in-flight-right-now)"
+
+  # --- The roster ---------------------------------------------------------------
+
+  # The README names three roles beyond the finders; each needs a row, or the
+  # roster would describe a fleet smaller than the policy it sits under.
+  for ma_role in reviewer architect strategist; do
+    assert_present "README.md names the ${ma_role} role" README.md "\\*\\*${ma_role}\\*\\*"
+    if grep -Eq "^\\| ${ma_role} " "${MA_DOC}"; then
+      pass "the roster has a ${ma_role} row"
+    else
+      fail "the roster has a ${ma_role} row" "no table row starting '| ${ma_role} ' in ${MA_DOC}"
+    fi
+  done
+  # Every signed role's row names the signature field that role writes.
+  ma_bad_rows=""
+  while IFS='|' read -r _ ma_role_cell ma_sig_cell _; do
+    ma_role_cell="$(tr -d ' ' <<<"${ma_role_cell}")"
+    ma_sig_cell="$(tr -d ' `' <<<"${ma_sig_cell}")"
+    case "${ma_sig_cell}" in
+      agent=*) [[ "${ma_sig_cell}" == "agent=${ma_role_cell}" ]] || ma_bad_rows+="${ma_role_cell}:${ma_sig_cell} " ;;
+    esac
+  done < <(grep -E '^\| [a-z-]+ +\| `agent=' "${MA_DOC}")
+  assert_equal "each signed role's signature names its own role" "${ma_bad_rows}" ""
+  ma_says "the page shows the shape of the signature line" '— hive: agent=<role> backend=claude'
+  # The two pages that explain the marks must not disagree. The trace page owns
+  # them; this page names the signature line as primary and links there.
+  ma_says "the page sends a reader to the trace page for the other marks" "](agent-tasks/README.md)"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  assert_present "the trace page exists and describes the signature line" docs/agent-tasks/README.md '`— hive:`'
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  assert_absent "the page does not claim the bot trailer or author marks every agent change" "${MA_DOC}" \
+    'trailer for `danathar-atomic-hive|author is `app/danathar-atomic-hive`'
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  if grep -Eq '^\| dashboard +\| `agent=dashboard`' "${MA_DOC}"; then
+    pass "the roster has a dashboard row, the signer of the ACMM issues"
+  else
+    fail "the roster has a dashboard row, the signer of the ACMM issues" "no dashboard row in ${MA_DOC}"
+  fi
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ma_says "the page names the acmm/ branch prefix among the non-Hive ones" '`acmm/` branches'
+
+  # --- The ruleset --------------------------------------------------------------
+
+  ma_strict="$(ma_rs '.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy')"
+  # The page says a pull request need not be tested against the latest `main`.
+  # That sentence is false the day this flips, so it is asserted, not echoed.
+  assert_equal "the page's claim that the required check is not strict holds" "${ma_strict}" "false"
+  ma_says "the page quotes the strict setting the ruleset has" \
+    "\`strict_required_status_checks_policy\` to \`${ma_strict}\`"
+  ma_contexts="$(ma_rs '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context')"
+  assert_equal "the ruleset requires the one check the page says" "$(grep -c . <<<"${ma_contexts}")" "1"
+  while IFS= read -r ma_context; do
+    [[ -n "${ma_context}" ]] || continue
+    ma_says "the page names the required check '${ma_context}'" "\`${ma_context}\`"
+  done <<<"${ma_contexts}"
+  assert_equal "nothing may bypass the ruleset, as the page says" "$(ma_rs '.bypass_actors // [] | length')" "0"
+  ma_says "the page says no actor can bypass" "It has no bypass actor"
+  assert_equal "a pull request needs no approval, as the page says" \
+    "$(ma_rs '.rules[] | select(.type == "pull_request") | .parameters.required_approving_review_count')" "0"
+  ma_says "the page says the ruleset needs no approval" "It needs no approval"
+  ma_says "the page's live-setting command selects the required-checks rule" \
+    '.type == "required_status_checks"'
+
+  # --- How work reaches an agent ------------------------------------------------
+
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ma_says "the page names the label that starts a work order" '`ai-fix-requested`'
+  assert_present "ai-fix.yml acts only on the ai-fix-requested label" "${MA_AI_FIX}" \
+    "github\\.event\\.label\\.name == 'ai-fix-requested'"
+  assert_present "ai-fix.yml answers by posting a comment" "${MA_AI_FIX}" 'gh issue comment'
+  assert_present "ai-fix.yml reads review state through scripts/pr-review-state.sh" "${MA_AI_FIX}" \
+    '\./scripts/pr-review-state\.sh'
+  assert_present "labeler.yml labels only pull requests from this repository" "${MA_LABELER_WORKFLOW}" \
+    "github\\.event\\.pull_request\\.head\\.repo\\.full_name == github\\.repository"
+
+  # The path labels the page lists, against the keys of the label config.
+  ma_config_labels="$(grep -oE '^[a-z][a-z/_-]*:' "${MA_LABELER_CONFIG}" | tr -d ':' | LC_ALL=C sort | tr '\n' ' ')"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ma_doc_labels="$(grep -oE '`(area/[a-z-]+|documentation)`' <<<"${ma_flat}" | tr -d '`' | LC_ALL=C sort -u | tr '\n' ' ')"
+  assert_equal "the path labels the page lists are the ones labeler.yml defines" \
+    "${ma_doc_labels}" "${ma_config_labels}"
+  # The page says no workflow applies `hold` or `needs-human`. A path-label
+  # config key with either name would be a workflow applying it.
+  assert_absent "labeler.yml defines no hold or needs-human label" "${MA_LABELER_CONFIG}" \
+    '^(hold|needs-human):'
+  assert_absent_in "no workflow applies a hold label" '\bhold\b' "${workflows[@]}"
+  assert_absent_in "no workflow applies a needs-human label" 'needs-human' "${workflows[@]}"
+  ma_says "the page says Hive applies hold and no workflow here does" \
+    "Hive applies \`hold\`. No workflow in this repository does."
+
+  # --- Staying out of each other's way -----------------------------------------
+
+  ma_repo="$(grep -oE 'github\.com/[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+\.git' README.md | head -n 1 | sed -E 's|github\.com/||; s|\.git$||')"
+  assert_equal "every gh command on the page names this repository" \
+    "$(grep -oE -- '--repo [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/' <<<"${ma_flat}" |
+      sed -E 's|^--repo ||; s|^repos/||; s|/$||' | LC_ALL=C sort -u | tr '\n' ' ')" \
+    "${ma_repo} "
+  assert_present "renovate.json rebases only a conflicting branch, as the page says" renovate.json \
+    '"rebaseWhen": "conflicted"'
+  ma_says "the page says Renovate rebases only when a branch conflicts" "it rebases a branch only when it conflicts"
+  # shellcheck disable=SC2016 # the backticks are AGENTS.md's own markup
+  assert_present "AGENTS.md keeps main clean, as the page says" AGENTS.md 'Keep `main` clean'
+
+  # --- Who merges ----------------------------------------------------------------
+
+  ma_readme_heading="$(grep -m1 '^## Maintained with Hive' README.md | sed 's/^## //')"
+  ma_readme_anchor="$(tr '[:upper:]' '[:lower:]' <<<"${ma_readme_heading}" | sed -E 's/[^a-z0-9 -]//g; s/ /-/g')"
+  if [[ -n "${ma_readme_heading}" ]]; then
+    pass "README.md has a 'Maintained with Hive' section"
+  else
+    fail "README.md has a 'Maintained with Hive' section" "no '## Maintained with Hive' heading"
+  fi
+  ma_says "the page links to the README's Hive section by its current anchor" \
+    "](../README.md#${ma_readme_anchor})"
+  # shellcheck disable=SC2016 # the backticks are the README's own markup
+  assert_present "the README says an agent pull request gets a hold label" README.md \
+    'gets a `hold` label'
+  assert_present "the README says no agent pull request merges on its own" README.md \
+    'no agent pull request merges on its own'
+  assert_equal "renovate.json automerges by default" \
+    "$(jq -r '[.packageRules[] | select((.matchUpdateTypes // []) | index("major")) | select(.matchPackageNames == null) | .automerge] | first' renovate.json)" "true"
+  assert_equal "renovate.json does not automerge a major bootc-dev/bootc bump" \
+    "$(jq -r '[.packageRules[] | select(.matchPackageNames == ["bootc-dev/bootc"]) | select(.matchUpdateTypes == ["major"]) | .automerge] | first' renovate.json)" "false"
+  ma_says "the page says a major bootc-dev/bootc bump does not automerge" \
+    "a major \`bootc-dev/bootc\` bump"
+
+  # --- What this repository does not run ----------------------------------------
+
+  # Active lines only (assert_absent_in skips comments), because ai-fix.yml's
+  # header explains the decision using the very words searched for here.
+  assert_absent_in "no workflow commits or pushes" '\bgit (commit|push)\b' "${workflows[@]}"
+  assert_absent_in "no workflow opens, edits or merges a pull request" \
+    '\bgh pr (create|edit|merge|review|close)\b|\bgh api\b.*(pulls|merge)' "${workflows[@]}"
+  assert_absent_in "no workflow runs a model or names a model credential" \
+    '[Aa]nthropic|ANTHROPIC|claude-code|CLAUDE_CODE|[Oo]pen[Aa][Ii]|OPENAI|[Cc]opilot|[Gg]emini|GEMINI' "${workflows[@]}"
+  assert_equal "SIGNING_SECRET is the only secret any workflow reads" \
+    "$(cat "${workflows[@]}" | grep -Ev '^[[:space:]]*#' | grep -oE 'secrets\.[A-Za-z_]+' | LC_ALL=C sort -u | tr '\n' ' ')" \
+    "secrets.SIGNING_SECRET "
+  ma_says "the page names SIGNING_SECRET as the only secret" "The only secret is \`SIGNING_SECRET\`"
+  if grep -Fq 'No model' "${MA_AI_FIX}" && grep -Fq 'credentials exist in this' "${MA_AI_FIX}"; then
+    pass "ai-fix.yml's header still gives the reason the page cites"
+  else
+    fail "ai-fix.yml's header still gives the reason the page cites" \
+      "${MA_AI_FIX} no longer says no model credentials exist in this repository's CI"
+  fi
+
+  # --- Every path and link the page names ---------------------------------------
+
+  ma_missing=""
+  # Backticked repository paths: relative to the repository root.
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  while IFS= read -r ma_path; do
+    [[ -e "${ma_path}" ]] || ma_missing+="${ma_path} "
+  done < <(grep -oE '`[A-Za-z0-9_.][A-Za-z0-9_./-]*\.(md|yml|json|sh)`' "${MA_DOC}" | tr -d '`' | LC_ALL=C sort -u)
+  assert_equal "every repository path the page names exists" "${ma_missing}" ""
+
+  # Link targets: relative to docs/, where the page lives. Fragments that point
+  # into another page are checked against that page's headings.
+  ma_dead=""
+  while IFS= read -r ma_target; do
+    ma_file="${ma_target%%#*}"
+    ma_frag=""
+    [[ "${ma_target}" == *'#'* ]] && ma_frag="${ma_target#*#}"
+    [[ -z "${ma_file}" ]] && ma_file="multi-agent.md"
+    if [[ ! -e "docs/${ma_file}" ]]; then
+      ma_dead+="${ma_target} "
+    elif [[ -n "${ma_frag}" && "${ma_file}" == *.md ]]; then
+      ma_found=""
+      while IFS= read -r ma_h; do
+        ma_slug="$(sed -E 's/^#+ +//' <<<"${ma_h}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9 -]//g; s/ /-/g')"
+        [[ "${ma_slug}" == "${ma_frag}" ]] && ma_found=1
+      done < <(grep -E '^#{1,6} ' "docs/${ma_file}")
+      [[ -n "${ma_found}" ]] || ma_dead+="${ma_target} "
+    fi
+  done < <(grep -oE '\]\([^)]+\)' "${MA_DOC}" | sed -E 's/^\]\(//; s/\)$//' | grep -Ev '^(https?:|mailto:)' | LC_ALL=C sort -u)
+  assert_equal "every link on the page resolves, fragment included" "${ma_dead}" ""
+
+  # --- Reachable from the front door ---------------------------------------------
+
+  assert_present "README.md's documentation table links to the page" README.md '\]\(docs/multi-agent\.md\)'
+fi
+
+# ---------------------------------------------------------------------------
 group "AI operations runbook (docs/ai-ops-runbook.md names every workflow, quotes their messages and steps, and sends a reader to the pages that hold the detail)"
 
 # docs/ai-ops-runbook.md is what a maintainer opens when a workflow goes red or
