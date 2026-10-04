@@ -47,6 +47,7 @@ the daily scheduled build and a manual dispatch also build, publish and sign
 | `.github/workflows/zizmor.yaml` | `Lint workflows` | Changes under `.github/workflows/**`, manual | [zizmor](#githubworkflowszizmoryaml) |
 | `.github/workflows/labeler.yml` | `Label pull requests` | PR opened, reopened, pushed to, ready for review | [Labeler](#githubworkflowslabeleryml) |
 | `.github/workflows/ai-fix.yml` | `AI fix work order` | An issue or PR labelled, manual | [Work order](#githubworkflowsai-fixyml) |
+| `.github/workflows/agent-audit.yml` | `Agent audit trail` | Monthly on the 1st, 05:23 UTC, manual | [Agent audit](#githubworkflowsagent-audityml) |
 
 What each signal proves, and what it cannot see, is in
 [quality.md](quality.md#the-dashboard). Read that before deciding a green check
@@ -160,10 +161,27 @@ review. If the review state looks wrong, run
 is read-only and reports unresolved threads and the checks at the current head.
 Detail: [ci-cd.md](ci-cd.md#githubworkflowsai-fixyml).
 
+## `.github/workflows/agent-audit.yml`
+
+`Agent audit trail`, one job (`audit`), one step
+(`Audit merged agent pull requests`). It reads merged pull requests and writes
+the run summary; it changes nothing. Red with
+`agent pull request(s) merged since` means a Hive-app pull request has no
+`— hive:` line, or a non-merge commit has no `Signed-off-by` trailer: the run
+summary has one row per agent pull request and names which. The merged history
+cannot be fixed by a new commit, so report the pull request; do not rewrite
+`main` and do not edit the workflow to exempt it. `reached the` (the 500 cap),
+`since must be` (a bad `since` input) and `audit it by hand` (the API truncated
+a pull request's commits or files) are refusals, not findings: dispatch a
+narrower window, or check that pull request yourself. A T3 path in a row is a
+place to look first, not a failure. Detail:
+[ci-cd.md](ci-cd.md#agent-audit-trail).
+
 ## A scheduled run is missing
 
-`build.yml` (daily 10:05 UTC) and `nightly-compliance.yml` (daily 05:40 UTC) are
-the only scheduled workflows. GitHub disables scheduled workflows in a public
+`build.yml` (daily 10:05 UTC), `nightly-compliance.yml` (daily 05:40 UTC) and
+`agent-audit.yml` (monthly on the 1st, 05:23 UTC) are the only scheduled
+workflows. GitHub disables scheduled workflows in a public
 repository after 60 days with no repository activity, and a forked repository
 starts with them disabled
 ([GitHub's page](https://docs.github.com/en/actions/managing-workflow-runs/disabling-and-enabling-a-workflow)).
@@ -173,15 +191,18 @@ A missing run is silent: no red check, just no new row.
 gh workflow list -R Danathar/arch-bootc --all
 gh run list -R Danathar/arch-bootc --workflow build.yml --event schedule --limit 3
 gh run list -R Danathar/arch-bootc --workflow nightly-compliance.yml --event schedule --limit 3
+gh run list -R Danathar/arch-bootc --workflow agent-audit.yml --event schedule --limit 3
 ```
 
-Check the two separately: one can keep running while the other is absent.
+Check each separately: one can keep running while another is absent.
 
 `--all` includes disabled workflows. One shown as `disabled_inactivity` was
 switched off by the 60-day rule. Re-enabling it is an Actions write: ask the
 maintainer. While `build.yml` has no scheduled run, no daily rebuild pulls fresh
 Arch packages. While `nightly-compliance.yml` has none, nothing re-checks the
-bootc pin or the published signatures. Either gap is a blind spot, not a pass.
+bootc pin or the published signatures. While `agent-audit.yml` has none, nothing
+reads back the agent pull requests' signature lines and sign-offs. Any of these
+gaps is a blind spot, not a pass.
 
 ## Renovate automerge went wrong
 

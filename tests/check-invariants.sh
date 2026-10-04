@@ -9307,6 +9307,7 @@ RUNBOOK_SECTIONS
 .github/workflows/labeler.yml|label|Ensure every configured label exists
 .github/workflows/labeler.yml|label|Apply labels from changed paths
 .github/workflows/zizmor.yaml|zizmor|Install uv
+.github/workflows/agent-audit.yml|audit|Audit merged agent pull requests
 RUNBOOK_STEPS
   if [[ -z "${runbook_bad_steps}" ]]; then
     pass "the steps the runbook names outside its tables exist in their workflows"
@@ -9335,6 +9336,10 @@ RUNBOOK_STEPS
 .github/workflows/labeler.yml|is configured but has no catalog entry in .github/workflows/labeler.yml
 .github/workflows/labeler.yml|has a catalog entry but no path rule in .github/labeler.yml
 .github/workflows/ai-fix.yml|target must be a number
+.github/workflows/agent-audit.yml|agent pull request(s) merged since
+.github/workflows/agent-audit.yml|reached the
+.github/workflows/agent-audit.yml|since must be
+.github/workflows/agent-audit.yml|audit it by hand
 scripts/prune-package-versions.sh|prune: FAILED on
 scripts/prune-package-versions.sh|tagged latest but outside the newest
 .claude/hooks/gate-git-diff.sh|blocked: this git diff would compare paths as plain files
@@ -9353,10 +9358,12 @@ RUNBOOK_QUOTES
     "${BUILD_WORKFLOW}" 'cron: "05 10 \* \* \*"'
   assert_present "nightly-compliance.yml still runs daily at 05:40 UTC, as the runbook says" \
     "${NIGHTLY_WORKFLOW}" 'cron: "40 5 \* \* \*"'
+  assert_present "agent-audit.yml still runs monthly on the 1st at 05:23 UTC, as the runbook says" \
+    ".github/workflows/agent-audit.yml" 'cron: "23 5 1 \* \*"'
   runbook_scheduled="$(grep -lE '^  schedule:' .github/workflows/*.y*ml | LC_ALL=C sort | tr '\n' ' ')"
-  assert_equal "build.yml and nightly-compliance.yml are the only scheduled workflows, as the runbook says" \
+  assert_equal "agent-audit.yml, build.yml and nightly-compliance.yml are the only scheduled workflows, as the runbook says" \
     "${runbook_scheduled}" \
-    ".github/workflows/build.yml .github/workflows/nightly-compliance.yml "
+    ".github/workflows/agent-audit.yml .github/workflows/build.yml .github/workflows/nightly-compliance.yml "
   # The "scheduled run is missing" section queries each scheduled workflow on
   # its own, by file, so one running cannot hide the other's absence. Derive
   # the expected pair from the tree rather than restating it.

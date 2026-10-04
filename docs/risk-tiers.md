@@ -201,13 +201,6 @@ the diff is:
   workflow job's `GITHUB_TOKEN` may do. A change to a job's `permissions:`
   block has to change this file too, so widening a token is never a T1 edit
   that happens to sit in a workflow.
-  The monthly agent audit workflow reports which merged agent pull requests
-  touched the paths in this section; its test joins its path list to this
-  section, so naming a new T3 path here fails that test until the list has it
-  too. It also marks `Containerfile` and `.github/workflows/build.yml` as T3 by
-  content, because the root-login model and `bootc` provenance live in the
-  first and the publish and sign jobs in the second, and a path cannot say
-  which hunk changed. See [ci-cd.md](ci-cd.md#agent-audit-trail).
 - **The agent permission boundary** — `.claude/settings.json`,
   `.claude/hooks/**`, `.claude/skills/**` and
   `.cursor/rules/arch-bootc-safety.mdc`. The settings file is the
@@ -227,6 +220,14 @@ the diff is:
   cannot be reviewed by its own result. Narrowing the boundary (a new refusal,
   a removed allow row) is still T3 by path; say in the pull request which
   direction it goes.
+
+The monthly agent audit workflow reports which merged agent pull requests
+touched the paths in this section; its test joins its path list to this
+section, so naming a new T3 path here fails that test until the list has it
+too. It also marks `Containerfile` and `.github/workflows/build.yml` as T3 by
+content, because the root-login model and `bootc` provenance live in the
+first and the publish and sign jobs in the second, and a path cannot say
+which hunk changed. See [ci-cd.md](ci-cd.md#agent-audit-trail).
 
 Evidence: everything T2 requires, plus evidence that exercises **the path this
 change touches**. That is not one thing, because T3 covers different kinds of
