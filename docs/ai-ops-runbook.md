@@ -72,8 +72,8 @@ means more than it says.
 
 ## `.github/workflows/build.yml`
 
-Four jobs: `lint`, `test`, `build_push` (three flavors) and `cleanup_packages`
-(three flavors, `main` only). Pull-request builds skip rechunk, push and sign, so
+Five jobs: `lint`, `test`, `build_push` (three flavors), `cleanup_packages`
+(three flavors, `main` only) and `cleanup_buildcache` (`main` only). Pull-request builds skip rechunk, push and sign, so
 a green PR means the image builds, not that it boots or upgrades
 ([AGENTS.md](../AGENTS.md#review-ci-and-publication)).
 
@@ -88,6 +88,7 @@ a green PR means the image builds, not that it boots or upgrades
 | `build_push` / `Push To GHCR` | The push failed after retries, or `is missing or unreadable` for the auth file | The `Log in to GHCR` step writes that file; fix it there. Do not put the credential on a command line |
 | `build_push` / `Sign container image` | Signing failed after the push | The push runs first, so the tags are already published unsigned. Do not remove the step: signing fails closed. The nightly `signatures` job will report `latest` until a later run signs |
 | `cleanup_packages` / `Delete old <flavor> package versions` | The prune script failed, e.g. the package has not granted this repository the Admin role | Read the `prune: FAILED on` line. Never delete a version by hand ([ci-cd.md](ci-cd.md#pruning-old-package-versions)). A line `tagged latest but outside the newest` is the `latest` guard working; report it |
+| `cleanup_buildcache` / `Delete build-cache versions older than 7 days` | Listing or deleting a `buildcache` version failed, e.g. that package has not granted this repository the Admin role | Read the `buildcache: FAILED to delete version` line. A deleted cache entry is only a cache miss, so nothing published is at risk, but never delete a version by hand ([ci-cd.md](ci-cd.md#pruning-old-build-cache-versions)) |
 
 A failure on `main` soon after an automerged update to `chunkah`,
 `sigstore/cosign-installer` or the `cosign-release` version is the one a PR

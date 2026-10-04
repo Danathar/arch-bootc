@@ -726,6 +726,43 @@ the job passes is 30. A dropped `,,` or a changed floor is not a loud failure in
 production — the first prunes a package that 404s, the second succeeds while
 deleting versions nobody asked to delete — so both are asserted here.
 
+## Pruning old build-cache versions
+
+`build_push` also pushes buildah layer-cache entries, for all three flavors, to
+one shared package, `buildcache`, so a later build can reuse layers instead of
+rebuilding them. Nothing removed those entries until `build.yml`'s
+`cleanup_buildcache` job: on 2026-10-04 the package held 12,221 versions and was
+gaining a few hundred a day.
+
+Almost none of them can be used again after a day. `PACMAN_CACHE_BUST` changes
+every UTC day, so every layer from the `pacman -Syu` step down gets a new cache
+key daily. So the job prunes by **age**, not by count: it deletes versions
+created more than 7 days ago, oldest first, at most 300 per run.
+`scripts/prune-package-versions.sh` is the wrong tool for this package. It keeps
+the newest N tagged images, every cache entry is tagged, and at a few hundred new
+entries a day any fixed N is either less than a day of cache or has to track the
+publish rate.
+
+The cap exists because `GITHUB_TOKEN` gets 1,000 REST requests an hour per
+repository, and `cleanup_packages` needs some of them in the same hour. At about
+four publishes a day the existing backlog clears in roughly nine days. The first
+failed delete stops the run, so a missing permission does not spend the rest of
+the budget on the same error. Deletes are also paced one second apart: GitHub's
+secondary rate limit charges a DELETE 5 of the 900 points it allows a minute,
+so an unpaced loop is refused after about 180 deletes and the run stops red.
+
+Deleting a cache entry cannot break a build or an installed system. buildah
+treats a missing entry as a cache miss, rebuilds the layer, and pushes it again.
+Like the flavor packages, `buildcache` must grant this repository the Admin role
+under its own Package settings on ghcr.io before the job can delete anything;
+until then the job fails on its first delete.
+
+The job's `run:` body is covered by `tests/test-prune-package-versions.sh`, which
+lifts it out of `build.yml` and runs it against the same stubbed `gh`. It pins the
+seven-day cut in both directions, the oldest-first order, the 300 cap, the owner
+scope, the stop on a failed delete, and that the package it lists is the last
+path segment of the `CACHE_IMAGE` that `build_push` writes.
+
 ## Per-package rechunking (`CHUNK_TAG`)
 
 Each published target stage (`base`, `kde` and `xfce`: every `FROM base-core AS`

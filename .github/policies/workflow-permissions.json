@@ -29,7 +29,8 @@
         "lint": {"contents": "read"},
         "test": {"contents": "read"},
         "build_push": {"contents": "read", "packages": "write"},
-        "cleanup_packages": {"contents": "read", "packages": "write"}
+        "cleanup_packages": {"contents": "read", "packages": "write"},
+        "cleanup_buildcache": {"packages": "write"}
       }
     },
     "docs-tests.yml": {
