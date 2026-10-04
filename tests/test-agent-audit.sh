@@ -187,6 +187,10 @@ run_audit() {
   local since="$1"
   : >"${GH_LOG}"
   : >"${SUMMARY}"
+  # The step has no `shell:` key, so Actions runs it as `bash -e {0}`: errexit
+  # comes from the runner, pipefail only from the step's own `set` line. The
+  # harness passes what the runner passes and no more, so nothing here passes
+  # because the harness set an option the step does not.
   (
     cd -- "${RUN_DIR}" || exit 99
     rm -f -- ./*.json
@@ -197,7 +201,7 @@ run_audit() {
       REPO="Danathar/arch-bootc" \
       SINCE="${since}" \
       GITHUB_STEP_SUMMARY="${SUMMARY}" \
-      "${BASH}" --noprofile --norc -eo pipefail -c "${audit_run}"
+      "${BASH}" --noprofile --norc -e -c "${audit_run}"
   )
 }
 
@@ -462,7 +466,8 @@ view_pr 422 "$(one_commit 9999999aaaa "fix: q" "${SIGNED}")" '[
   {"path": "system_files/usr/lib/systemd/system/example.service"},
   {"path": "system_files/usr/lib/systemd/system/x.wants.bak/y"},
   {"path": "system_files/usr/lib/systemd/system/a/b.wants/c"},
-  {"path": "x/system_files/usr/lib/systemd/system/m.target.wants/n"}
+  {"path": "x/system_files/usr/lib/systemd/system/m.target.wants/n"},
+  {"path": "system_files/usr/lib/systemd/system/multi-userxwants/r"}
 ]'
 run_audit "2026-09-01" >/dev/null 2>&1
 assert_contains "systemd paths outside a .wants/ directory are not T3" "$(cat "${SUMMARY}")" "| 1 | all | none |"
@@ -535,6 +540,11 @@ for bad in "yesterday" "2026-9-1" "2026-09-01T00:00:00Z" "2026-09-01 --state ope
   assert_equal "a malformed since '${bad}' reaches no API call" "" "$(cat "${GH_LOG}")"
 done
 
+# The shape is checked before the date is: a word is refused as not a date at
+# all, not as an impossible one.
+output="$(run_audit "yesterday" 2>&1)"
+assert_contains "a word since is refused by its shape" "${output}" "::error::since must be YYYY-MM-DD, got 'yesterday'"
+
 # A blank since is the last 31 days, computed by the step itself.
 reset_fixtures
 stage_list '[]'
@@ -566,6 +576,85 @@ else
   check "an unreadable pull request fails the run instead of auditing nothing" 1 "exit 0"
 fi
 assert_equal "an unreadable pull request leaves no summary" "" "$(cat "${SUMMARY}")"
+
+# --- Near misses in the record ---------------------------------------------
+#
+# A body that is nothing but the signature line is agent-written: the line
+# starts the body, so there is no newline before it.
+reset_fixtures
+stage_list "$(jq -s '.' < <(pr_entry 701 "Danathar" "${SIG_LINE}"))"
+view_pr 701 "$(one_commit 7070707aaaa "fix: t" "${SIGNED}")" "${NO_FILES}"
+run_audit "2026-09-01" >/dev/null 2>&1
+assert_status "a body that is only the signature line is audited and clean" 0 "$?"
+summary="$(cat "${SUMMARY}")"
+assert_contains "a body that is only the signature line counts as agent-written" "${summary}" \
+  "1 of the 1 pull requests merged in the window were written by an agent."
+assert_contains "its row reads the signature" "${summary}" "| [#701](https://example.test/pull/701) PR 701 |"
+assert_contains "a clean window with no merge commit says so" "${summary}" \
+  "Every Hive-app pull request carries its signature line and every non-merge commit its Signed-off-by trailer."
+assert_absent "a clean window with no merge commit counts no exempt merge" "${summary}" "merge commit(s)"
+
+# A key is a whole word: `subagent=` and `submodel=` are not `agent=` and
+# `model=`, even when they come first. A signature missing a key says so, and
+# a pipe in a key's value is escaped like a pipe in a title.
+reset_fixtures
+stage_list "$(jq -s '.' < <(
+  pr_entry 711 "${HIVE_APP}" $'x\n\n— hive: subagent=wrong submodel=wrong backend=claude model=right agent=quality'
+  pr_entry 712 "${HIVE_APP}" $'x\n\n— hive: agent=solo'
+  pr_entry 713 "${HIVE_APP}" $'x\n\n— hive: backend=a|b model=m agent=q'
+))"
+view_pr 711 "$(one_commit 7171717aaaa "fix: u" "${SIGNED}")" "${NO_FILES}"
+view_pr 712 "$(one_commit 7272727aaaa "fix: v" "${SIGNED}")" "${NO_FILES}"
+view_pr 713 "$(one_commit 7373737aaaa "fix: w" "${SIGNED}")" "${NO_FILES}"
+run_audit "2026-09-01" >/dev/null 2>&1
+summary="$(cat "${SUMMARY}")"
+assert_contains "a key is not read out of a longer key that ends in it" "${summary}" "| claude / right (quality) |"
+assert_contains "a signature with no backend or model says which are missing" "${summary}" "| ? / no model (solo) |"
+assert_contains "a pipe in a signature value does not split the row" "${summary}" '| a\|b / m (q) |'
+
+# A pull request GitHub reports with no merger still gets a row that says so.
+reset_fixtures
+stage_list "$(jq -s '.' < <(pr_entry 721 "${HIVE_APP}" $'x\n\n'"${SIG_LINE}" | jq '.mergedBy = null'))"
+view_pr 721 "$(one_commit 7474747aaaa "fix: x" "${SIGNED}")" "${NO_FILES}"
+run_audit "2026-09-01" >/dev/null 2>&1
+assert_contains "a missing merger is reported as unknown" "$(cat "${SUMMARY}")" "| ${HIVE_APP} | unknown |"
+
+# Several T3 paths in one row are listed apart, each with its own label.
+reset_fixtures
+stage_list "$(jq -s '.' < <(pr_entry 731 "${HIVE_APP}" $'x\n\n'"${SIG_LINE}"))"
+view_pr 731 "$(one_commit 7575757aaaa "fix: y" "${SIGNED}")" '[{"path": "cosign.pub"}, {"path": "Containerfile"}]'
+run_audit "2026-09-01" >/dev/null 2>&1
+# shellcheck disable=SC2016  # the backticks are the report's own markup
+assert_contains "two touched T3 paths are separated by a comma" "$(cat "${SUMMARY}")" \
+  '| `cosign.pub`, `Containerfile` (T3 by content) |'
+
+# Every partial pull request is named, not only the first.
+reset_fixtures
+stage_list "$(jq -s '.' < <(
+  pr_entry 741 "${HIVE_APP}" $'x\n\n'"${SIG_LINE}"
+  pr_entry 742 "${HIVE_APP}" $'x\n\n'"${SIG_LINE}"
+))"
+view_pr 741 "$(one_commit 7676767aaaa "fix: z" "${SIGNED}")" '[{"path": "a"}]' 150
+view_pr 742 "$(one_commit 7777777bbbb "fix: z" "${SIGNED}")" '[{"path": "a"}]' 120
+output="$(run_audit "2026-09-01" 2>&1)"
+assert_status "two partial pull requests are refused" 2 "$?"
+assert_contains "the refusal names both" "${output}" "::error::#741,#742 list fewer commits or files"
+
+# A merge commit whose message mentions Signed-off-by in prose has no trailer,
+# so its parents are read and it is exempt like any other merge.
+reset_fixtures
+stage_list "$(jq -s '.' < <(pr_entry 751 "${HIVE_APP}" $'x\n\n'"${SIG_LINE}"))"
+view_pr 751 "$(jq -s '.' < <(
+  commit_entry 7878787aaaa "fix: a" "${SIGNED}"
+  commit_entry 7979797aaaa "Update the branch" "Every commit here needs Signed-off-by: lines except this merge"
+))" "${NO_FILES}"
+printf '2\n' >"${FIXTURES}/parents-7979797aaaa"
+run_audit "2026-09-01" >/dev/null 2>&1
+assert_status "a merge that mentions the trailer in prose is exempt" 0 "$?"
+assert_contains "the row counts it as an exempt merge" "$(cat "${SUMMARY}")" "| 2 | 1 of 2 (merges exempt) |"
+assert_equal "its parents are read" \
+  "api repos/Danathar/arch-bootc/commits/7979797aaaa --jq .parents | length" \
+  "$(grep '^api' "${GH_LOG}")"
 
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
