@@ -3111,6 +3111,54 @@ assert_present "ostree-pkg-diff prefers the deployment ostree itself marks as th
   "${PKG_DIFF}" '\\\(rollback\\\)' \
   "docs/updating.md: 'between the running deployment and the previous deployment'"
 
+# On a composefs install "previous" is not the newest directory under
+# state/deploy -- between `bootc upgrade` and the reboot that is the staged
+# update (#448). The program asks `bootc status --format=json` for the
+# rollback and reads it with jq. If jq is not in the image that lookup fails
+# exactly the way "bootc could not be asked" does, and the program drops back
+# to the modification-time guess with a warning: the #448 report again, on
+# every machine, with nothing red. ostree-pkg-diff ships to every flavor
+# through `COPY system_files/ /`, so the base list is the one that has to
+# carry it.
+pkg_diff_jq="$(grep -En '(^|[^[:alnum:]_-])jq[[:space:]]' "${PKG_DIFF}" | grep -v '^[0-9]*:[[:space:]]*#')"
+if [[ -z "${pkg_diff_jq}" ]]; then
+  pass "ostree-pkg-diff calls no jq, so packages-base.txt need not install it"
+elif grep -qx 'jq' packages-base.txt; then
+  pass "jq, which ostree-pkg-diff reads bootc's rollback with, is in packages-base.txt"
+else
+  fail "jq, which ostree-pkg-diff reads bootc's rollback with, is in packages-base.txt" \
+    "${PKG_DIFF} calls jq (line ${pkg_diff_jq%%:*}) and no jq line is in packages-base.txt; without it every composefs run falls back to the newest directory"
+fi
+
+# docs/updating.md's paragraph under "Comparing packages between deployments"
+# makes two promises about that lookup, and each is a line of the program.
+pkg_diff_section="$(awk '/^## Comparing packages between deployments/ { on = 1; next } on && /^## / { on = 0 } on' "${UPDATING_DOC}" |
+  tr '\n' ' ' | tr -s '[:space:]' ' ')"
+# shellcheck disable=SC2016
+if [[ "${pkg_diff_section}" == *'"Previous" is the deployment `bootc status` lists as the rollback'* ]]; then
+  pass "docs/updating.md says ostree-pkg-diff compares against the rollback bootc status lists"
+else
+  fail "docs/updating.md says ostree-pkg-diff compares against the rollback bootc status lists" \
+    "the 'Comparing packages between deployments' section no longer says which deployment is 'previous'"
+fi
+# shellcheck disable=SC2016
+assert_present "ostree-pkg-diff asks bootc status for JSON and reads the rollback slot from it" \
+  "${PKG_DIFF}" 'bootc status --format=json' \
+  "docs/updating.md: '\"Previous\" is the deployment \`bootc status\` lists as the rollback'"
+assert_present "ostree-pkg-diff reads the composefs verity of bootc's rollback, not of the staged or booted slot" \
+  "${PKG_DIFF}" '\.rollback\.composefs\.verity'
+if [[ "${pkg_diff_section}" == *'falls back to the newest other deployment on disk and prints a warning'* ]]; then
+  pass "docs/updating.md says the fallback to the newest deployment prints a warning"
+else
+  fail "docs/updating.md says the fallback to the newest deployment prints a warning" \
+    "the 'Comparing packages between deployments' section no longer describes the fallback"
+fi
+# The warning goes to stderr: stdout is the +/-/! report a reader may pipe or
+# save, and a guess announced there would read as a package line.
+assert_present "ostree-pkg-diff's modification-time fallback warns on stderr that it guessed" \
+  "${PKG_DIFF}" '"staged update if one is pending\." >&2' \
+  "docs/updating.md: 'falls back to the newest other deployment on disk and prints a warning'"
+
 # ---------------------------------------------------------------------------
 group "Cross-document links (docs/updating.md hands the reader to the Renovate reference)"
 

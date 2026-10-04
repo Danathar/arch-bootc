@@ -788,8 +788,12 @@ test_program_composefs_compares_against_rollback_not_staged() {
   status=$?
 
   assert_eq "a diff with an update staged exits 0" "0" "${status}"
-  assert_contains "bootc is asked for its status as JSON" \
-    "$(cat "${bin}/bootc.argv" 2>/dev/null)" "status --format=json"
+  # The whole argv, not a substring: --format-version=1 selects the document
+  # shape status_rollback_verity reads, and without it bootc answers in
+  # whatever version is its default at BOOTC_VERSION.
+  assert_eq "bootc is asked for its status as format-version 1 JSON, once" \
+    "status --format=json --format-version=1" \
+    "$(cat "${bin}/bootc.argv" 2>/dev/null)"
   assert_contains "the rollback image is mounted first, as the old side" \
     "$(sed -n 1p "${bin}/mount.argv")" "old111"
   assert_contains "the booted image is mounted second, as the new side" \
@@ -825,6 +829,11 @@ test_program_composefs_rejects_when_bootc_reports_no_rollback() {
   assert_eq "no rollback from bootc exits 1" "1" "${status}"
   assert_contains "the refusal says bootc reported no rollback" \
     "${output}" "bootc status reports no rollback deployment to compare against."
+  # Stopped there, not by the image-file check further down: with the exit
+  # gone an empty id resolves to the images directory itself, and that later
+  # guard refuses with its own message.
+  assert_not_contains "the refusal comes before any image is resolved" \
+    "${output}" "Unable to resolve composefs image files."
   assert_missing "nothing is mounted" "${bin}/mount.argv"
 }
 
