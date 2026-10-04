@@ -747,7 +747,9 @@ The cap exists because `GITHUB_TOKEN` gets 1,000 REST requests an hour per
 repository, and `cleanup_packages` needs some of them in the same hour. At about
 four publishes a day the existing backlog clears in roughly nine days. The first
 failed delete stops the run, so a missing permission does not spend the rest of
-the budget on the same error.
+the budget on the same error. Deletes are also paced one second apart: GitHub's
+secondary rate limit charges a DELETE 5 of the 900 points it allows a minute,
+so an unpaced loop is refused after about 180 deletes and the run stops red.
 
 Deleting a cache entry cannot break a build or an installed system. buildah
 treats a missing entry as a cache miss, rebuilds the layer, and pushes it again.

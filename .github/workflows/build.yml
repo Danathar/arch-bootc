@@ -612,7 +612,7 @@ jobs:
     runs-on: ubuntu-26.04
     # Listing the package is one request per 100 versions and each delete is
     # one more; while the backlog lasts that is about 125 pages plus 300
-    # deletes, a few minutes of API calls.
+    # deletes paced one second apart, about six minutes.
     timeout-minutes: 15
 
     # No checkout: the step below is self-contained and reads nothing from the
@@ -699,9 +699,14 @@ jobs:
             | awk -F'\t' -v cutoff="${cutoff}" -v max="${max_deletes}" \
               'NF == 2 && $1 < cutoff && n < max { print $2; n++ }')"
 
+          # One delete a second. GitHub's secondary rate limit charges a DELETE
+          # 5 of the 900 points it allows a minute, so an unpaced loop gets a
+          # 403/429 after about 180 deletes, and the stop-on-failure below
+          # turns every large-backlog run red. 60 a minute stays well inside.
           removed=0
           while IFS= read -r id; do
             [[ -n "${id}" ]] || continue
+            ((removed == 0)) || sleep 1
             if ! gh api --method DELETE "${versions_path}/${id}" >/dev/null; then
               echo "buildcache: FAILED to delete version ${id} after removing ${removed}; stopping" >&2
               exit 1

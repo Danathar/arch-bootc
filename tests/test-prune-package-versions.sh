@@ -1251,10 +1251,24 @@ cache_now="$(date -u +%s)"
 cache_cut=$((7 * 86400))
 iso_ago() { date -u -d "@$((cache_now - $1))" +%Y-%m-%dT%H:%M:%SZ; }
 
+# The step paces its deletes with `sleep`. A stub records each pause instead
+# of waiting, so the 300-delete case runs in no time and the pacing itself can
+# be checked.
+CACHE_SLEEP_DIR="${WORK_DIR}/sleep-stub"
+CACHE_SLEEPS="${WORK_DIR}/sleeps"
+mkdir -p "${CACHE_SLEEP_DIR}"
+cat >"${CACHE_SLEEP_DIR}/sleep" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${CACHE_SLEEP_LOG}"
+STUB
+chmod +x "${CACHE_SLEEP_DIR}/sleep"
+
 run_cache_step() {
   local owner="$1" owner_type="$2"
   shift 2
-  env PATH="${STUB_DIR}:${PATH}" \
+  : >"${CACHE_SLEEPS}"
+  env PATH="${CACHE_SLEEP_DIR}:${STUB_DIR}:${PATH}" \
+    CACHE_SLEEP_LOG="${CACHE_SLEEPS}" \
     GH_STUB_APPLY_JQ=1 \
     GH_STUB_VERSIONS="${VERSIONS}" \
     GH_STUB_DELETED="${DELETED}" \
@@ -1309,6 +1323,11 @@ assert_contains "every stale version is counted, not only the ones removed" \
   "${output}" "buildcache: 302 version(s) created before"
 assert_equal "at most 300 versions go per run, the oldest first" \
   "$(seq 3 302 | tr '\n' ' ' | sed 's/ $//')" "$(pruned_ids)"
+# GitHub's secondary rate limit allows about 180 DELETEs a minute, so 300
+# back-to-back deletes would be refused part-way and stop the run red. The
+# step waits one second between deletes: 299 pauses for 300 deletes.
+cache_pauses="$(wc -l <"${CACHE_SLEEPS}") x $(sort -u "${CACHE_SLEEPS}" | paste -sd' ')"
+assert_equal "deletes are paced one second apart" "299 x 1" "${cache_pauses}"
 
 # Nothing past the cut: a quiet day exits 0 and removes nothing.
 write_versions \
