@@ -145,6 +145,7 @@ printf '%s\n' "$*" >>"${GH_STUB_LOG}"
 case "${1:-} ${2:-}" in
   "pr list") cat "${GH_STUB_FIXTURES}/list.json" ;;
   "pr view") cat "${GH_STUB_FIXTURES}/view-${3}.json" ;;
+  "api repos/"*) cat "${GH_STUB_FIXTURES}/parents-${2##*/}" 2>/dev/null || printf '1\n' ;;
   *)
     printf 'unexpected gh invocation: %s\n' "$*" >&2
     exit 90
@@ -177,8 +178,8 @@ commit_entry() {
 # for list.json, then number=commits-json=files-json triples through view_pr.
 stage_list() { printf '%s\n' "$1" >"${FIXTURES}/list.json"; }
 view_pr() {
-  jq -n --argjson n "$1" --argjson commits "$2" --argjson files "$3" \
-    '{number: $n, commits: $commits, files: $files}' >"${FIXTURES}/view-$1.json"
+  jq -n --argjson n "$1" --argjson commits "$2" --argjson files "$3" --argjson changed "${4:-null}" \
+    '{number: $n, commits: $commits, files: $files, changedFiles: ($changed // ($files | length))}' >"${FIXTURES}/view-$1.json"
 }
 reset_fixtures() { rm -f -- "${FIXTURES}"/*; }
 
@@ -226,6 +227,7 @@ view_pr 103 "$(jq -s '.' < <(
   commit_entry ccccccc4444 "fix: d" "${SIGNED}"
   commit_entry ccccccc5555 "Merge remote-tracking branch 'origin/main' into x" ""
 ))" '[{"path": "Containerfile"}]'
+printf '2\n' >"${FIXTURES}/parents-ccccccc5555"
 
 output="$(run_audit "2026-09-01" 2>&1)"
 status=$?
@@ -238,16 +240,16 @@ assert_contains "the Hive-app pull request is listed with its backend, model and
 assert_contains "a signature without an agent key still reports backend and model" \
   "${summary}" "| Danathar | Danathar | omp / anthropic/claude-fable-5-1 (no agent) | 2 | all | \`scripts/quickstart.sh\` |"
 assert_contains "a merge commit with no trailer is exempt and the row says all signed" \
-  "${summary}" "| 2 | all | \`Containerfile\` (T3 by content) |"
+  "${summary}" "| 2 | 1 of 2 (merges exempt) | \`Containerfile\` (T3 by content) |"
 assert_absent "Renovate's pull request is not audited" "${summary}" "#104"
 assert_absent "a human pull request is not audited" "${summary}" "#105"
 assert_contains "a clean window says so" "${summary}" \
   "Every Hive-app pull request carries its signature line and every commit its Signed-off-by trailer."
 assert_contains "the summary is also printed to the job log" "${output}" "### Agent audit trail: pull requests merged since 2026-09-01"
 assert_equal "only the three agent pull requests are fetched in detail" \
-  "pr view 101 --repo Danathar/arch-bootc --json number,commits,files
-pr view 102 --repo Danathar/arch-bootc --json number,commits,files
-pr view 103 --repo Danathar/arch-bootc --json number,commits,files" \
+  "pr view 101 --repo Danathar/arch-bootc --json number,commits,files,changedFiles
+pr view 102 --repo Danathar/arch-bootc --json number,commits,files,changedFiles
+pr view 103 --repo Danathar/arch-bootc --json number,commits,files,changedFiles" \
   "$(grep '^pr view' "${GH_LOG}")"
 assert_equal "the list is a merged-state search from the window's start, capped at 500, for this repository" \
   "pr list --repo Danathar/arch-bootc --state merged --limit 500 --search merged:>=2026-09-01 --json number,title,author,mergedAt,mergedBy,body,url" \
@@ -433,6 +435,74 @@ run_audit "2026-09-01" >/dev/null 2>&1
 assert_status "a pull request touching look-alike paths exits 0" 0 "$?"
 assert_contains "no look-alike path is reported as T3" "$(cat "${SUMMARY}")" "| 1 | all | none |"
 
+# The documented boot/service-enablement layout, mapped to the files this tree
+# really holds under it: every one is reported, and neighbours are not.
+t3_section_flat="$(tr '\n' ' ' <<<"${t3_section}" | tr -s '[:space:]' ' ')"
+# shellcheck disable=SC2016  # the backticks are the page's own markup, matched literally
+assert_contains "docs/risk-tiers.md still names the service-enablement layout" \
+  "${t3_section_flat}" '`/usr/lib/systemd/system/<target>.wants/`'
+mapfile -t wants_real < <(cd "${REPO_ROOT}" && find system_files/usr/lib/systemd/system -path '*.wants/*' | LC_ALL=C sort)
+assert_extracted "the tree holds files under a systemd .wants/ directory" "${wants_real[*]:-}"
+reset_fixtures
+stage_list "$(jq -s '.' < <(pr_entry 421 "${HIVE_APP}" $'x\n\n'"${SIG_LINE}"))"
+view_pr 421 "$(one_commit 8888888aaaa "fix: p" "${SIGNED}")" "$(printf '%s\n' "${wants_real[@]}" | jq -R '{path: .}' | jq -s '.')"
+run_audit "2026-09-01" >/dev/null 2>&1
+for wants_file in "${wants_real[@]}"; do
+  assert_contains "a real service-enablement path is reported as T3: ${wants_file}" "$(cat "${SUMMARY}")" "\`${wants_file}\`"
+done
+reset_fixtures
+stage_list "$(jq -s '.' < <(pr_entry 422 "${HIVE_APP}" $'x\n\n'"${SIG_LINE}"))"
+view_pr 422 "$(one_commit 9999999aaaa "fix: q" "${SIGNED}")" '[
+  {"path": "system_files/usr/lib/systemd/system/example.service"},
+  {"path": "system_files/usr/lib/systemd/system/x.wants.bak/y"},
+  {"path": "system_files/usr/lib/systemd/system/a/b.wants/c"},
+  {"path": "x/system_files/usr/lib/systemd/system/m.target.wants/n"}
+]'
+run_audit "2026-09-01" >/dev/null 2>&1
+assert_contains "systemd paths outside a .wants/ directory are not T3" "$(cat "${SUMMARY}")" "| 1 | all | none |"
+
+# --- Merge commits and partial reads -----------------------------------------
+# A commit is a merge when it has more than one parent, whatever its headline
+# says: a person's "Merge the two helpers" or "Merge cleanup into main" with no
+# trailer is a finding, and a merge headlined "Update the thing" is exempt.
+reset_fixtures
+stage_list "$(jq -s '.' < <(pr_entry 431 "${HIVE_APP}" $'x\n\n'"${SIG_LINE}"))"
+view_pr 431 "$(jq -s '.' < <(
+  commit_entry aaaaaaa6666 "Merge the two helpers" "no trailer"
+  commit_entry bbbbbbb7777 "Merge cleanup into main" ""
+  commit_entry ccccccc8888 "Update the thing" ""
+  commit_entry fffffff1111 "ok" "${SIGNED}"
+))" "${NO_FILES}"
+printf '2\n' >"${FIXTURES}/parents-ccccccc8888"
+run_audit "2026-09-01" >/dev/null 2>&1
+assert_status "unsigned commits headlined 'Merge ...' with one parent fail the run" 1 "$?"
+summary="$(cat "${SUMMARY}")"
+assert_contains "both are named and the two-parent commit is not" "${summary}" \
+  "- #431: commits aaaaaaa, bbbbbbb carry no Signed-off-by trailer"
+assert_contains "the signed column counts real trailers across every commit" "${summary}" "| 4 | **1 of 4** |"
+assert_equal "parents are asked only for the commits that lack a trailer" \
+  "api repos/Danathar/arch-bootc/commits/aaaaaaa6666 --jq .parents | length
+api repos/Danathar/arch-bootc/commits/bbbbbbb7777 --jq .parents | length
+api repos/Danathar/arch-bootc/commits/ccccccc8888 --jq .parents | length" \
+  "$(grep '^api' "${GH_LOG}")"
+
+# A pull request holding more than the API returns is refused, not read as clean.
+reset_fixtures
+stage_list "$(jq -s '.' < <(pr_entry 441 "${HIVE_APP}" $'x\n\n'"${SIG_LINE}"))"
+view_pr 441 "$(one_commit 1010101aaaa "fix: r" "${SIGNED}")" '[{"path": "a"}]' 150
+output="$(run_audit "2026-09-01" 2>&1)"
+assert_status "a pull request with more files than were listed is refused" 2 "$?"
+assert_contains "the refusal names the pull request" "${output}" "::error::#441 list fewer commits or files"
+assert_equal "a refused pull request writes nothing to the summary" "" "$(cat "${SUMMARY}")"
+reset_fixtures
+stage_list "$(jq -s '.' < <(pr_entry 451 "${HIVE_APP}" $'x\n\n'"${SIG_LINE}"))"
+view_pr 451 "$(jq -n --argjson c "$(commit_entry 2020202aaaa "fix: s" "${SIGNED}")" '[range(100) | $c]')" "${NO_FILES}"
+output="$(run_audit "2026-09-01" 2>&1)"
+assert_status "a pull request with 100 commits (the API's ceiling) is refused" 2 "$?"
+view_pr 451 "$(jq -n --argjson c "$(commit_entry 2020202aaaa "fix: s" "${SIGNED}")" '[range(99) | $c]')" "${NO_FILES}"
+run_audit "2026-09-01" >/dev/null 2>&1
+assert_status "a pull request with 99 commits is audited" 0 "$?"
+
 # --- Refusals ----------------------------------------------------------------
 reset_fixtures
 stage_list "$(jq -n '[range(500) | {number: ., title: "t", url: "u", author: {login: "x"}, mergedAt: "2026-09-20T12:00:00Z", mergedBy: {login: "y"}, body: ""}]')"
@@ -451,11 +521,11 @@ assert_status "499 merged pull requests is audited, not refused" 0 "$?"
 assert_contains "the audit counts all 499" "$(cat "${SUMMARY}")" "0 of the 499 pull requests"
 
 # shellcheck disable=SC2016  # a literal command substitution, which must not run
-for bad in "yesterday" "2026-9-1" "2026-09-01T00:00:00Z" "2026-09-01 --state open" '$(id)'; do
+for bad in "yesterday" "2026-9-1" "2026-09-01T00:00:00Z" "2026-09-01 --state open" '$(id)' "2026-13-45" "2026-02-30" "2026-00-10"; do
   output="$(run_audit "${bad}" 2>&1)"
   status=$?
   assert_status "a malformed since '${bad}' is refused" 2 "${status}"
-  assert_contains "the refusal for '${bad}' says what a date looks like" "${output}" "since must be YYYY-MM-DD"
+  assert_contains "the refusal for '${bad}' says what a date looks like" "${output}" "since must be"
   assert_equal "a malformed since '${bad}' reaches no API call" "" "$(cat "${GH_LOG}")"
 done
 

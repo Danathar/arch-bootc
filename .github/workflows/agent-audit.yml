@@ -66,6 +66,10 @@ jobs:
               exit 2
               ;;
           esac
+          if [ "$(date -u -d "$SINCE" +%F 2>/dev/null)" != "$SINCE" ]; then
+            echo "::error::since must be a real date, got '$SINCE'"
+            exit 2
+          fi
 
           # `gh pr list` returns the newest N and says nothing about the rest,
           # so a window that fills the cap is refused rather than audited in
@@ -91,10 +95,28 @@ jobs:
           # `gh pr list` for them alongside the list trips GitHub's GraphQL
           # node ceiling on any window this repository fills in a few weeks.
           jq -r '.[].number' agents.json | while read -r number; do
-            gh pr view "$number" --repo "$REPO" --json number,commits,files
+            gh pr view "$number" --repo "$REPO" --json number,commits,files,changedFiles
           done | jq -s 'map({(.number | tostring): .}) | add // {}' > details.json
 
-          jq --arg since "$SINCE" --arg total "$total" --slurpfile details details.json '
+          # `gh pr view` returns at most 100 commits and 100 files. A pull
+          # request past either would be audited in part and read as clean, so
+          # it is refused like a window past the cap.
+          partial="$(jq -r 'to_entries[] | select((.value.files | length) < .value.changedFiles or (.value.commits | length) >= 100) | "#\(.key)"' details.json | paste -sd, -)"
+          if [ -n "$partial" ]; then
+            echo "::error::$partial list fewer commits or files than the pull request holds (the API returns at most 100 of each); audit it by hand"
+            exit 2
+          fi
+
+          # A merge commit is exempt from the trailer rule, as the DCO app
+          # exempts it, and the only honest test is its parent count. `gh pr
+          # view` does not return parents, so they are read for each commit
+          # that lacks a trailer and no other.
+          jq -r '.[].commits[] | select(.messageBody | test("(^|\n)Signed-off-by: ") | not) | .oid' details.json | sort -u |
+            while read -r oid; do
+              printf '%s %s\n' "$oid" "$(gh api "repos/$REPO/commits/$oid" --jq '.parents | length')"
+            done | jq -Rn '[inputs | split(" ") | {(.[0]): (.[1] | tonumber)}] | add // {}' > parents.json
+
+          jq --arg since "$SINCE" --arg total "$total" --slurpfile details details.json --slurpfile parents parents.json '
             def signature: (.body // "") | split("\n") | map(select(startswith("— hive:"))) | first;
             def field($key): ((. // "") | capture("(^|\\s)\($key)=(?<v>\\S+)") | .v) // null;
             # The T3 paths docs/risk-tiers.md names that exist in the tree: a
@@ -119,7 +141,13 @@ jobs:
             # and sign jobs in build.yml). A path cannot say which hunk, so
             # they are reported as such rather than as T3.
             def t3content: ["Containerfile", ".github/workflows/build.yml"];
-            def t3: . as $p | any(t3paths[]; . as $t | if endswith("/") then ($p | startswith($t)) else $p == $t end);
+            def t3: . as $p | any(t3paths[]; . as $t | if endswith("/") then ($p | startswith($t)) else $p == $t end)
+              or ($p | test("^system_files/usr/lib/systemd/system/[^/]+\\.wants/"));
+            # A merge commit is one with more than one parent. `gh pr view` does
+            # not return parents, so they were read above for each commit that
+            # lacks a trailer; a commit not in that map has a trailer and is
+            # not asked about.
+            def ismerge: ($parents[0][.oid] // 1) > 1;
             def row:
               . as $pr
               | ($details[0][$pr.number | tostring]) as $d
@@ -138,11 +166,12 @@ jobs:
                   backend: ($sig | field("backend")),
                   model: ($sig | field("model")),
                   commits: ($d.commits | length),
+                  signed_n: ([$d.commits[] | select(.messageBody | test("(^|\n)Signed-off-by: "))] | length),
                   unsigned: [$d.commits[]
-                    | select((.messageHeadline | startswith("Merge ")) | not)
+                    | select(ismerge | not)
                     | select(.messageBody | test("(^|\n)Signed-off-by: ") | not)
                     | .oid[:7]],
-                  merges: [$d.commits[] | select(.messageHeadline | startswith("Merge "))] | length,
+                  merges: [$d.commits[] | select(ismerge)] | length,
                   t3: [$d.files[].path | select(t3)],
                   t3content: [$d.files[].path | select(IN(t3content[]))]
                 };
@@ -159,9 +188,9 @@ jobs:
               [ (.t3[] | "`\(.)`"), (.t3content[] | "`\(.)` (T3 by content)") ]
               | if length == 0 then "none" else join(", ") end;
             def signed:
-              (.commits - (.unsigned | length) - .merges) as $ok
-              | if (.unsigned | length) == 0 then "all"
-                else "**\($ok) of \($ok + (.unsigned | length))**" end;
+              if (.unsigned | length) == 0 and .merges == 0 then "all"
+              elif (.unsigned | length) == 0 then "\(.signed_n) of \(.commits) (merges exempt)"
+              else "**\(.signed_n) of \(.commits)**" end;
             map(row)
             | . as $rows
             | {

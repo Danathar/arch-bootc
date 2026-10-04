@@ -606,7 +606,8 @@ with an optional `since` date (`YYYY-MM-DD`). Dropping the `schedule:` trigger
 and keeping the manual one is a three-line change.
 
 The record is a `— hive:` signature line at the bottom of the pull request
-description (agent, backend and model) and a `Signed-off-by` trailer on every
+description (it may carry `agent=`, `backend=`, `model=` and `effort=`; any can be
+absent, and the row shows what is missing rather than failing) and a `Signed-off-by` trailer on every
 commit. Nothing checked either after the merge: the DCO app is not a required
 check in the ruleset ([branch-protection.md](branch-protection.md)), and an
 omp-backed run pushes under the maintainer's own login, so the author alone
@@ -625,10 +626,11 @@ touched.
 | Finding | Result |
 | --- | --- |
 | A Hive-app pull request with no `— hive:` line | Fails the run |
-| A commit with no `Signed-off-by` trailer | Fails the run; a merge commit whose headline starts `Merge ` is exempt, as the DCO app exempts it |
-| A path in [T3](risk-tiers.md) | Reported in the row, not failed: an agent may touch one behind review |
+| A commit with no `Signed-off-by` trailer | Fails the run. A merge commit (more than one parent, read with `gh api repos/…/commits/<oid>` for each commit that lacks a trailer) is exempt, as the DCO app exempts it; a commit headlined `Merge …` with one parent is not. The Signed-off column counts real trailers across every commit |
+| A path in [T3](risk-tiers.md), including anything under a `system_files/usr/lib/systemd/system/*.wants/` directory (service enablement) | Reported in the row, not failed: an agent may touch one behind review |
 | `Containerfile`, `.github/workflows/build.yml` | Reported as "T3 by content": the root-login model and `bootc` provenance live in the first, the publish and sign jobs in the second, and a path cannot say which hunk changed |
 | A window of 500 or more merged pull requests | Refused with exit 2 rather than audited in part |
+| A `since` that is not a real calendar date, or an agent pull request with 100 commits or with fewer files listed than it changed (the API returns at most 100 of each) | Refused with exit 2 |
 
 A pull request that merely quotes `— hive:` mid-line is neither selected nor
 counted as signed; the line must start the line. A human pull request without

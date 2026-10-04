@@ -1559,7 +1559,11 @@ else
     '[null,{"audit":{"contents":"read","pull-requests":"read"}}]'
   assert_absent "the audit workflow runs no action" "${AUDIT_WORKFLOW}" '^[[:space:]]*-?[[:space:]]*uses:'
   assert_absent "the audit workflow runs no gh verb that writes or dispatches" \
-    "${AUDIT_WORKFLOW}" '(gh[[:space:]]+(issue|release|workflow|run|label|secret|variable|repo)\b|gh[[:space:]]+pr[[:space:]]+(merge|comment|edit|close|review|ready|reopen|create)|gh[[:space:]]+api\b|--method|-X[[:space:]])'
+    "${AUDIT_WORKFLOW}" '(gh[[:space:]]+(issue|release|workflow|run|label|secret|variable|repo)\b|gh[[:space:]]+pr[[:space:]]+(merge|comment|edit|close|review|ready|reopen|create)|--method|--input|--field|--raw-field|-[XfF][[:space:]])'
+  # shellcheck disable=SC2016  # the expected text is the workflow's own, unexpanded
+  assert_equal "the audit's only gh api call reads one commit" \
+    "$(grep -hoE 'gh api [^)]*' "${AUDIT_WORKFLOW}" | sed -E 's/ --jq .*//')" \
+    'gh api "repos/$REPO/commits/$oid"'
   assert_present "the audit's test is the one docs/ci-cd.md names" \
     "tests/test-agent-audit.sh" 'agent-audit\.yml'
   # shellcheck disable=SC2016  # the backticks are the page's own markup, matched literally
