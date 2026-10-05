@@ -244,10 +244,16 @@ exit "${rc}"
 '
 
 # shellcheck disable=SC2016 # a script for /bin/sh to expand, not this shell
+# STUB_ID_UID=fail makes `id` fail outright, for the case that asks what the
+# guard does when it cannot learn who is asking.
 ID_STUB='#!/bin/sh
 if [ "$1" != "-u" ]; then
   printf "stub id: unsupported invocation: %s\n" "$*" >&2
   exit 64
+fi
+if [ "${STUB_ID_UID}" = fail ]; then
+  printf "stub id: cannot find name for user ID\n" >&2
+  exit 1
 fi
 printf "%s\n" "${STUB_ID_UID}"
 '
@@ -720,6 +726,216 @@ test_fish_guard_matches_the_posix_one() {
     "$(run_fish_guard_stubbed "${other}" fish-other 1001)"
 }
 
+# --- group 3b: each step of the walk, in both shells -------------------------
+#
+# The cases above say what the guard decides about the shapes a prefix takes
+# today. These pin the parts of the walk none of them reach: a link target that
+# climbs with `..`, a directory symlink part-way down the path, the hop limit,
+# an entry point that is a directory, and an `id` that fails. Every case runs
+# against both files, because each of them was found by changing one file's
+# walk and watching the whole suite stay green.
+
+# Run the guard of one shell against `base`. With only a base it runs on the
+# real filesystem; with a stub tag and a caller uid it runs under the stubs,
+# reading that tag's owner table.
+guard_status() {
+  local shell="$1" base="$2" tag="${3:-}" uid="${4:-}"
+  if [[ -z "${tag}" ]]; then
+    if [[ "${shell}" == sh ]]; then
+      run_sh_guard "${base}"
+    else
+      run_fish_guard "${base}"
+    fi
+    return
+  fi
+  # Each shell gets its own stub directory and call log.
+  cp -- "$(owners_file "${tag}")" "$(owners_file "${tag}-${shell}")"
+  if [[ "${shell}" == sh ]]; then
+    run_sh_guard_stubbed "${base}" "${tag}-${shell}" "${uid}"
+  else
+    run_fish_guard_stubbed "${base}" "${tag}-${shell}" "${uid}"
+  fi
+}
+
+# expect_guard trusted|refused <description> <shell> <base> [<tag> <uid>]
+expect_guard() {
+  local expect="$1" desc="$2" shell="$3"
+  shift 3
+  if [[ "${shell}" == fish ]]; then
+    desc="${desc} (fish)"
+    if ! command -v fish >/dev/null 2>&1; then
+      skip "${desc}" "fish is not installed"
+      return
+    fi
+  fi
+  if [[ "${expect}" == trusted ]]; then
+    assert_trusted "${desc}" "$(guard_status "${shell}" "$@")"
+  else
+    assert_refused "${desc}" "$(guard_status "${shell}" "$@")"
+  fi
+}
+
+# The owner table for a case where every entry is root's, `/` included, since
+# some of these walks go all the way up to it.
+all_root_owners() {
+  local tag="$1"
+  shift
+  {
+    printf '/ 0\n'
+    walked_paths "$@" | while read -r path; do printf '%s 0\n' "${path}"; done
+  } >"$(owners_file "${tag}")"
+}
+
+test_a_link_that_climbs_out_of_the_prefix_is_judged_where_it_lands() {
+  # bin/brew -> ../../../../brew climbs past the base directory, which is the
+  # trust anchor and is never checked going down. The directory above it is
+  # reached only by `..`, so the check in the `..` branch is all that judges it.
+  # UID 1000 owning that directory means UID 1000 can swap the brew inside it.
+  local root="${WORK_DIR}/climb"
+  local base="${root}/base"
+  mkdir -p "${root}"
+  printf '#!/bin/sh\nexit 0\n' >"${root}/brew"
+  chmod 755 "${root}/brew"
+  make_prefix "${base}" elsewhere ../../../../brew
+
+  all_root_owners climb-trusted "${base}" "${root}/brew"
+  {
+    cat "$(owners_file climb-trusted)"
+    printf '%s 1000\n' "${root}"
+  } >"$(owners_file climb-untrusted)"
+
+  local shell
+  for shell in sh fish; do
+    expect_guard trusted "root follows a link that climbs out of the prefix to a root-owned file" \
+      "${shell}" "${base}" climb-trusted 0
+    expect_guard refused "root refuses a link that climbs into a directory UID 1000 owns" \
+      "${shell}" "${base}" climb-untrusted 0
+  done
+}
+
+test_an_absolute_link_that_climbs_back_to_the_root_resolves() {
+  # `/top/../top/...`: the `..` lands on `/` itself, where trimming the last
+  # component leaves an empty path. The walk has to read that as `/`, or a
+  # legitimate root-owned link is refused.
+  local base="${WORK_DIR}/to-root"
+  local target="${WORK_DIR}/to-root-target"
+  local top="${WORK_DIR#/}"
+  top="${top%%/*}"
+  printf '#!/bin/sh\nexit 0\n' >"${target}"
+  chmod 755 "${target}"
+  make_prefix "${base}" elsewhere "/${top}/..${target}"
+  all_root_owners to-root "${base}" "${target}"
+
+  local shell
+  for shell in sh fish; do
+    expect_guard trusted "root follows an absolute link whose .. reaches /" \
+      "${shell}" "${base}" to-root 0
+  done
+}
+
+test_an_absolute_link_is_walked_from_the_root() {
+  # The fish half of the absolute-target case. An absolute target has to reset
+  # the walk to `/`; appended to the current directory instead, it names a path
+  # that does not exist and a root-owned install is refused.
+  local base="${WORK_DIR}/absolute"
+  local target="${WORK_DIR}/absolute-target"
+  printf '#!/bin/sh\nexit 0\n' >"${target}"
+  chmod 755 "${target}"
+  make_prefix "${base}" elsewhere "${target}"
+  all_root_owners absolute "${base}" "${target}"
+
+  local shell
+  for shell in sh fish; do
+    expect_guard trusted "root trusts a root-owned link to an absolute root-owned target" \
+      "${shell}" "${base}" absolute 0
+  done
+}
+
+test_a_directory_symlink_part_way_down_is_followed() {
+  # linuxbrew/.linuxbrew -> store, then bin/brew under it. The link's target has
+  # to go in front of what is left of the path, not after it or instead of it.
+  local base="${WORK_DIR}/dir-link"
+  mkdir -p "${base}/linuxbrew/store/bin"
+  printf '#!/bin/sh\nexit 0\n' >"${base}/linuxbrew/store/bin/brew"
+  chmod 755 "${base}/linuxbrew/store/bin/brew"
+  ln -s store "${base}/linuxbrew/.linuxbrew"
+
+  local shell
+  for shell in sh fish; do
+    expect_guard trusted "a prefix reached through a directory symlink is trusted" \
+      "${shell}" "${base}"
+  done
+}
+
+# A bin/brew that reaches a real file after `hops` symlinks, the first being
+# bin/brew itself.
+make_link_chain() {
+  local base="$1" hops="$2"
+  local bin="${base}/linuxbrew/.linuxbrew/bin"
+  mkdir -p "${bin}"
+  printf '#!/bin/sh\nexit 0\n' >"${bin}/brew-real"
+  chmod 755 "${bin}/brew-real"
+  local n next="brew-real"
+  for ((n = hops - 1; n >= 1; n--)); do
+    ln -s "${next}" "${bin}/hop-${n}"
+    next="hop-${n}"
+  done
+  ln -s "${next}" "${bin}/brew"
+}
+
+test_the_walk_follows_forty_links_and_no_more() {
+  # 40 is the kernel's own limit on symlinks in one lookup (MAXSYMLINKS), so a
+  # path the guard trusts is one the kernel can still open. One more is a loop
+  # as far as either is concerned, and refused.
+  make_link_chain "${WORK_DIR}/hops-40" 40
+  make_link_chain "${WORK_DIR}/hops-41" 41
+  local shell
+  for shell in sh fish; do
+    expect_guard trusted "a bin/brew reached through 40 symlinks is trusted" \
+      "${shell}" "${WORK_DIR}/hops-40"
+    expect_guard refused "a bin/brew reached through 41 symlinks is refused" \
+      "${shell}" "${WORK_DIR}/hops-41"
+  done
+}
+
+test_a_directory_named_brew_is_refused() {
+  # A directory is executable (searchable) too, so `-x` alone says yes to it.
+  local base="${WORK_DIR}/brew-is-dir"
+  mkdir -p "${base}/linuxbrew/.linuxbrew/bin/brew"
+  local shell
+  for shell in sh fish; do
+    expect_guard refused "a bin/brew that is a directory is refused" "${shell}" "${base}"
+  done
+}
+
+test_a_non_executable_entry_point_is_refused_by_fish() {
+  local base="${WORK_DIR}/not-exec-fish"
+  make_prefix "${base}" plain
+  expect_guard refused "a bin/brew that is not executable is refused" fish "${base}"
+}
+
+test_a_user_trusts_a_root_owned_prefix_in_fish() {
+  local base="${WORK_DIR}/root-prefix-fish"
+  make_prefix "${base}" regular
+  all_root_owners root-prefix-fish "${base}"
+  expect_guard trusted "an ordinary user trusts a prefix owned entirely by root" \
+    fish "${base}" root-prefix-fish 1000
+}
+
+test_the_guard_refuses_when_it_cannot_tell_who_is_asking() {
+  # With no uid to compare against, an empty answer from `stat` would match an
+  # empty caller. The guard stops at a failed `id` rather than carry on with
+  # nothing, so even a wholly root-owned prefix is refused.
+  local base="${WORK_DIR}/no-id"
+  make_prefix "${base}" regular
+  all_root_owners no-id "${base}"
+  local shell
+  for shell in sh fish; do
+    expect_guard refused "the guard refuses everything when id fails" \
+      "${shell}" "${base}" no-id fail
+  done
+}
+
 # --- group 4: the two files have to stay in step -----------------------------
 
 test_neither_file_uses_a_dereferencing_ownership_test() {
@@ -1087,6 +1303,15 @@ main() {
     test_a_user_refuses_another_users_prefix \
     test_the_prefix_owner_trusts_their_own_prefix \
     test_fish_guard_matches_the_posix_one \
+    test_a_link_that_climbs_out_of_the_prefix_is_judged_where_it_lands \
+    test_an_absolute_link_that_climbs_back_to_the_root_resolves \
+    test_an_absolute_link_is_walked_from_the_root \
+    test_a_directory_symlink_part_way_down_is_followed \
+    test_the_walk_follows_forty_links_and_no_more \
+    test_a_directory_named_brew_is_refused \
+    test_a_non_executable_entry_point_is_refused_by_fish \
+    test_a_user_trusts_a_root_owned_prefix_in_fish \
+    test_the_guard_refuses_when_it_cannot_tell_who_is_asking \
     test_neither_file_uses_a_dereferencing_ownership_test \
     test_both_files_guard_the_same_prefixes \
     test_neither_file_leaves_its_helper_defined \
