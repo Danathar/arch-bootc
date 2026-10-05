@@ -56,22 +56,26 @@ set -uo pipefail
 # but does not own, which an unprivileged test cannot create. `-r`, `-e` and a
 # deleted or inverted guard are all caught.
 #
-# Two further things are deliberately not asserted here.
-#
-# The first is which prefix wins when /var/home holds an *untrusted* one and
-# /home holds a trusted one. Written `if [ -x A ]; then guard A; elif [ -x B ]`
+# One further thing is deliberately not asserted here: which prefix wins when
+# /var/home holds an *untrusted* one and /home holds a trusted one. Written `if [ -x A ]; then guard A; elif [ -x B ]`
 # the answer is "neither"; written `if trusted A; then A; elif trusted B` it is
 # B. Both are defensible and the file has been written both ways, so pinning
 # either here would turn a design question into a test failure. The cases below
 # use only fixtures where the two readings agree.
 #
-# The second is the fish fragment, which needs an interpreter this job does not
-# have. It is a hand-maintained pair with this one and deserves the same
-# treatment; see #207 and PR #209.
+# The same cases cover the fish fragment, system_files/etc/fish/conf.d/
+# homebrew.fish, the other half of a hand-maintained pair (#207, PR #209):
+# every case below runs again with fish as the shell that loads the file. The
+# fish cases need `fish` on PATH and report SKIP without it. build.yml's `test`
+# job installs it for tests/test-homebrew-shell-integration.sh, so in CI a skip
+# here fails the run like any other. That suite runs the fish guard function on
+# its own; only these cases load the file, so only these see the `if` around
+# its `| source` and the `functions --erase` after it.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 FRAGMENT="${REPO_ROOT}/system_files/etc/profile.d/homebrew.sh"
+FISH_FRAGMENT="${REPO_ROOT}/system_files/etc/fish/conf.d/homebrew.fish"
 
 # An executable belonging to someone other than whoever runs the suite, to
 # stand in for a prefix the caller does not own. `--map-root-user` maps exactly
@@ -88,6 +92,12 @@ DONOR="/usr/bin/tee"
 failures=0
 tests_run=0
 skipped=0
+
+# Which fragment the cases are loading: `bash` for homebrew.sh, or fish's path
+# for homebrew.fish. main() runs every case once per shell, and LABEL tells
+# the two runs apart in the output.
+SHELL_UNDER_TEST=bash
+LABEL=""
 
 cleanup() {
   [[ -n "${WORK_DIR:-}" && -d "${WORK_DIR}" ]] && rm -rf -- "${WORK_DIR}"
@@ -109,14 +119,14 @@ pass() {
 # run-tests.sh so a run that skipped its way to green cannot look like a full
 # pass.
 skip() {
-  local desc="$1" reason="$2"
+  local desc="$1${LABEL}" reason="$2"
   tests_run=$((tests_run + 1))
   skipped=$((skipped + 1))
   printf 'ok - %s # SKIP %s\n' "${desc}" "${reason}"
 }
 
 check() {
-  local desc="$1" result="$2"
+  local desc="$1${LABEL}" result="$2"
   shift 2
   tests_run=$((tests_run + 1))
   if [[ "${result}" == "0" ]]; then
@@ -196,12 +206,18 @@ home_is_mountable() {
 # the fragment evals, working its own prefix out from where it was installed so
 # one stub serves both branches. `$PATH` is left unexpanded on purpose: the
 # fragment's `eval` is what expands it, which is the behaviour under test.
+# Real brew prints fish syntax to fish, so BREW_SYNTAX=fish does the same here.
 # shellcheck disable=SC2016 # a program for /bin/sh to expand, not this shell
 BREW_STUB='#!/bin/sh
 printf "%s\n" "$*" >>"${BREW_CALLS}"
 prefix="$(cd -- "$(dirname -- "$0")/.." && pwd)"
-printf "export HOMEBREW_PREFIX=\"%s\"\n" "${prefix}"
-printf "export PATH=\"%s/bin:\$PATH\"\n" "${prefix}"
+if [ "${BREW_SYNTAX:-sh}" = fish ]; then
+  printf "set --global --export HOMEBREW_PREFIX \"%s\"\n" "${prefix}"
+  printf "set --global --export PATH \"%s/bin\" \$PATH\n" "${prefix}"
+else
+  printf "export HOMEBREW_PREFIX=\"%s\"\n" "${prefix}"
+  printf "export PATH=\"%s/bin:\$PATH\"\n" "${prefix}"
+fi
 '
 
 # Source the fragment and report what it changed. This runs either as outer
@@ -264,6 +280,68 @@ FRAGMENT_PROGRAM='
   printf "new_vars=%s\n" "$(comm -13 <(printf "%s\n" "${vars_before}") <(compgen -v | sort) | tr "\n" " ")"
 '
 
+# The same report, from fish loading homebrew.fish the way conf.d does: with
+# `source`, in the shell itself. Keys and meanings match FRAGMENT_PROGRAM, so
+# every assertion reads the two reports the same way. The program's own
+# variables are --local, so the global-variable diff sees only the fragment's.
+# shellcheck disable=SC2016 # a program for fish to expand, not this shell
+FISH_FRAGMENT_PROGRAM='
+  set --local fragment $argv[1]; set --local work $argv[2]
+  set --local var_home_kind $argv[3]; set --local home_kind $argv[4]
+  cd $work/cwd; or exit 98
+  set --erase HOMEBREW_PREFIX HOMEBREW_CELLAR HOMEBREW_REPOSITORY
+  set --local path_before "$PATH"
+  set --local funcs_before (functions --all --names | sort)
+  set --local vars_before (set --global --names | sort)
+
+  source $fragment </dev/null 2>$work/stderr
+  set --local fragment_status $status
+
+  printf "status=%s\n" $fragment_status
+  printf "caller_uid=%s\n" (id -u)
+  if test "$var_home_kind" = trusted
+    printf "brew_uid=%s\n" (stat -c %u /var/home/linuxbrew/.linuxbrew/bin/brew)
+  else if test "$home_kind" = trusted
+    printf "brew_uid=%s\n" (stat -c %u /home/linuxbrew/.linuxbrew/bin/brew)
+  end
+  printf "prefix=%s\n" "$HOMEBREW_PREFIX"
+  if test "$PATH" = "$path_before"
+    printf "path_changed=no\n"
+  else
+    printf "path_changed=yes\n"
+  end
+  if test -s $work/brew-calls
+    printf "brew_ran=yes\n"
+  else
+    printf "brew_ran=no\n"
+  end
+  if test -e $work/cwd/shellenv
+    printf "donor_ran=yes\n"
+  else
+    printf "donor_ran=no\n"
+  end
+  if test "$var_home_kind" = untrusted
+    printf "bound_uid=%s\n" (stat -c %u /var/home/linuxbrew/.linuxbrew/bin/brew)
+  else if test "$home_kind" = untrusted
+    printf "bound_uid=%s\n" (stat -c %u /home/linuxbrew/.linuxbrew/bin/brew)
+  end
+  if test -s $work/stderr
+    printf "stderr=yes\n"
+  else
+    printf "stderr=no\n"
+  end
+  set --local new_funcs
+  for name in (functions --all --names | sort)
+    contains -- $name $funcs_before; or set --append new_funcs $name
+  end
+  printf "new_funcs=%s\n" "$new_funcs"
+  set --local new_vars
+  for name in (set --global --names | sort)
+    contains -- $name $vars_before; or set --append new_vars $name
+  end
+  printf "new_vars=%s\n" "$new_vars"
+'
+
 # The program that runs inside the namespace. It builds the fixtures, sources
 # the fragment, and prints a key=value report. Kept as one string so the
 # quoting is in one place; it reaches the inner shell unexpanded.
@@ -271,7 +349,7 @@ FRAGMENT_PROGRAM='
 NS_PROGRAM='
   set -u
   fragment="$1"; work="$2"; var_home_kind="$3"; home_kind="$4"; donor="$5"
-  home_mountable="$6"; caller_uid="$7"; fragment_program="$8"
+  home_mountable="$6"; caller_uid="$7"; fragment_program="$8"; shell="$9"
 
   mask() {
     # A tmpfs over the directory the fragment reads, so the fixture is at the
@@ -304,28 +382,33 @@ NS_PROGRAM='
   build /var/home "${var_home_kind}"
   build /home "${home_kind}"
 
+  # fish takes the script'\''s arguments straight after -c, with no $0.
+  if [ "${shell}" = bash ]; then
+    program=("${BASH}" --noprofile --norc -c "${fragment_program}" bash)
+  else
+    program=("${shell}" --no-config -c "${fragment_program}")
+  fi
   if [ "${caller_uid}" = 0 ]; then
-    exec "${BASH}" --noprofile --norc -c "${fragment_program}" bash \
-      "${fragment}" "${work}" "${var_home_kind}" "${home_kind}"
+    exec "${program[@]}" "${fragment}" "${work}" "${var_home_kind}" "${home_kind}"
   else
     # Outer namespace root owns the fixture. Mapping that uid to 1000 in a
     # nested namespace makes both the caller and the fixture UID 1000, while
     # leaving 0 distinct so the root-owner fallback cannot satisfy the guard.
     exec unshare --user --map-user="${caller_uid}" \
-      "${BASH}" --noprofile --norc -c "${fragment_program}" bash \
-      "${fragment}" "${work}" "${var_home_kind}" "${home_kind}"
+      "${program[@]}" "${fragment}" "${work}" "${var_home_kind}" "${home_kind}"
   fi
 '
 
 # Source the fragment inside a namespace with the named fixtures in place, and
-# print the report. `var_home_kind` and `home_kind` are each `none` (the
+# print the report. SHELL_UNDER_TEST picks which fragment and which shell:
+# `bash` for homebrew.sh, or the path to fish for homebrew.fish. `var_home_kind` and `home_kind` are each `none` (the
 # directory is there but holds no prefix), `trusted` (a prefix we own) or
 # `untrusted` (ours, with someone else's binary bound over bin/brew). Both
 # trees are masked either way, so a Homebrew install belonging to whoever runs
 # the suite can never be what a case is measuring.
 run_fragment() {
   local var_home_kind="$1" home_kind="$2" caller_uid="${3:-0}"
-  local work
+  local work fragment_copy program syntax
   work="$(mktemp -d -p "${WORK_DIR}")"
   mkdir -p "${work}/cwd"
   printf '%s' "${BREW_STUB}" >"${work}/brew-stub"
@@ -335,14 +418,27 @@ run_fragment() {
   # A copy, because /home is masked in the fallback cases and the checkout may
   # well be under it -- on the CI runner it is. Made from the shipped file on
   # every run, so what executes is still the shipped text.
-  cp -- "${FRAGMENT}" "${work}/homebrew.sh"
+  if [[ "${SHELL_UNDER_TEST}" == bash ]]; then
+    fragment_copy="${work}/homebrew.sh"
+    cp -- "${FRAGMENT}" "${fragment_copy}"
+    program="${FRAGMENT_PROGRAM}"
+    syntax="sh"
+  else
+    fragment_copy="${work}/homebrew.fish"
+    cp -- "${FISH_FRAGMENT}" "${fragment_copy}"
+    program="${FISH_FRAGMENT_PROGRAM}"
+    syntax="fish"
+  fi
 
+  # HOME and XDG_* keep fish's history and universal variables in the work
+  # directory, away from whoever runs the suite. bash ignores them here.
   unshare --map-root-user --mount \
-    env "BREW_CALLS=${work}/brew-calls" \
+    env "BREW_CALLS=${work}/brew-calls" "BREW_SYNTAX=${syntax}" \
+    "HOME=${work}" "XDG_CONFIG_HOME=${work}/config" "XDG_DATA_HOME=${work}/data" \
     "${BASH}" -c "${NS_PROGRAM}" bash \
-    "${work}/homebrew.sh" "${work}" "${var_home_kind}" "${home_kind}" "${DONOR}" \
+    "${fragment_copy}" "${work}" "${var_home_kind}" "${home_kind}" "${DONOR}" \
     "$(home_is_mountable && printf yes || printf no)" "${caller_uid}" \
-    "${FRAGMENT_PROGRAM}" 2>&1
+    "${program}" "${SHELL_UNDER_TEST}" 2>&1
 }
 
 # Pull one key out of a report. An absent key prints nothing, which no
@@ -480,15 +576,32 @@ test_the_fragment_leaves_nothing_of_its_own_behind() {
 }
 
 main() {
-  for test_fn in \
-    test_a_prefix_we_own_is_put_on_path \
-    test_a_prefix_we_do_not_own_is_never_run \
-    test_no_prefix_at_all_is_a_quiet_no_op \
-    test_the_home_branch_is_reached_and_guarded \
-    test_the_fragment_leaves_nothing_of_its_own_behind; do
+  local tests=(
+    test_a_prefix_we_own_is_put_on_path
+    test_a_prefix_we_do_not_own_is_never_run
+    test_no_prefix_at_all_is_a_quiet_no_op
+    test_the_home_branch_is_reached_and_guarded
+    test_the_fragment_leaves_nothing_of_its_own_behind
+  )
+  for test_fn in "${tests[@]}"; do
     printf '# %s\n' "${test_fn}"
     "${test_fn}"
   done
+
+  # The same cases again, with fish loading homebrew.fish.
+  local fish_bin
+  if ! fish_bin="$(command -v fish)"; then
+    for test_fn in "${tests[@]}"; do
+      skip "${test_fn} (fish)" "fish is not installed"
+    done
+  else
+    SHELL_UNDER_TEST="${fish_bin}"
+    LABEL=" (fish)"
+    for test_fn in "${tests[@]}"; do
+      printf '# %s (fish)\n' "${test_fn}"
+      "${test_fn}"
+    done
+  fi
 
   printf '\n1..%d\n' "${tests_run}"
   if ((failures > 0)); then
