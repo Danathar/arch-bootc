@@ -9733,6 +9733,35 @@ risk_path_exists() { # path from the config
 
 risk_flat() { tr '\n' ' ' | sed -E 's/\*\*//g; s/ +/ /g'; }
 
+# TOKEN is in stdin as a whole token: a word character at either end of TOKEN
+# may not continue into a word character of the text, so `compose` is not
+# found in `composefs`. Punctuation at an end (`.wants`, `/usr/lib/...`) needs
+# no boundary there.
+risk_holds_token() { # token, text on stdin
+  awk -v tok="$1" '
+    function w(c) { return c ~ /[A-Za-z0-9_]/ }
+    {
+      s = $0
+      while ((i = index(s, tok)) > 0) {
+        before = substr(s, i - 1, 1)
+        after = substr(s, i + length(tok), 1)
+        if ((!w(substr(tok, 1, 1)) || !w(before)) && (!w(substr(tok, length(tok), 1)) || !w(after))) { found = 1; exit }
+        s = substr(s, i + 1)
+      }
+    }
+    END { exit !found }'
+}
+
+# The T3 section's bold-led bullets, one per line, flattened, markup kept so
+# backticked tokens can still be read.
+risk_t3_bullets() {
+  risk_section T3 | awk '
+    /^- \*\*/ { if (b != "") print b; b = $0; next }
+    b != "" && /^  [^ ]/ { sub(/^ +/, ""); b = b " " $0; next }
+    { if (b != "") print b; b = "" }
+    END { if (b != "") print b }'
+}
+
 if git ls-files --error-unmatch -- "${RISK_CONFIG}" >/dev/null 2>&1; then
   pass "${RISK_CONFIG} is tracked"
 else
@@ -9842,7 +9871,7 @@ if jq -e '(.tiers | type == "array") and (.rule | type == "object")' "${RISK_CON
         # names the token survives deleting the code that uses it.
         [[ -f "${risk_file}" ]] || continue
         risk_active="$(grep -Ev '^[[:space:]]*#' "${risk_file}")"
-        grep -qF -- "${risk_token}" <<<"${risk_active}" && risk_found=1
+        risk_holds_token "${risk_token}" <<<"${risk_active}" && risk_found=1
       done < <(risk_tcfg '.files[]')
       ((risk_found)) || risk_gone+="'${risk_token}' "
     done < <(risk_tcfg '.file_tokens[]')
@@ -9853,6 +9882,107 @@ if jq -e '(.tiers | type == "array") and (.rule | type == "object")' "${RISK_CON
     pass "${RISK_CONFIG} has T3 content triggers"
   else
     fail "${RISK_CONFIG} has T3 content triggers" "tiers[3] has none, so content-only T3 changes match no tier"
+  fi
+
+  # The checks above read the file's tokens against the page and the tree, which
+  # holds every token that is listed. They read nothing that is NOT listed: a
+  # trigger with no file tokens matches no hunk, a misspelled key reads as an
+  # empty list, and a trigger the page still asks for can be deleted outright.
+  # So the shape is fixed here, and each trigger is tied to the one T3 bullet
+  # it quotes, and each T3 bullet that names no path -- whose only way into the
+  # file is a trigger -- must have one.
+  assert_equal "${RISK_CONFIG} has exactly the top-level keys \$comment, rule, tiers" \
+    "$(jq -r 'keys | join(",")' "${RISK_CONFIG}")" "\$comment,rule,tiers"
+  assert_equal "${RISK_CONFIG} rule has exactly the keys selection, text, when_unsure, when_unsure_text, path_match, path_match_text" \
+    "$(jq -r '.rule | keys | join(",")' "${RISK_CONFIG}")" \
+    "path_match,path_match_text,selection,text,when_unsure,when_unsure_text"
+  assert_equal "every T3 content trigger has exactly the keys id, page_tokens, files, file_tokens, each list non-empty and of non-empty strings" \
+    "$(jq -r '[.tiers[3].content_triggers[]
+        | select((keys != ["file_tokens", "files", "id", "page_tokens"])
+          or any(.page_tokens, .files, .file_tokens; type != "array" or length == 0 or any(.[]; type != "string" or . == "")))
+        | .id] | join(",")' "${RISK_CONFIG}")" ""
+  assert_equal "T3 content trigger ids are unique" \
+    "$(jq -r '[.tiers[3].content_triggers[].id] | group_by(.) | map(select(length > 1) | .[0]) | join(",")' "${RISK_CONFIG}")" ""
+
+  # A rule sentence is checked as a substring of the page, so it has to be a
+  # whole sentence there: ending in a full stop and starting where one starts.
+  # Otherwise "Take the highest tier" or "round up." passes for the sentence.
+  for risk_key in text when_unsure_text path_match_text; do
+    risk_sentence="$(jq -r --arg key "${risk_key}" '.rule[$key] // ""' "${RISK_CONFIG}")"
+    risk_whole=0
+    if [[ -n "${risk_sentence}" && "${risk_sentence}" == *[.!?] && "${risk_sentence}" == [A-Z]* ]]; then
+      for risk_lead in ". " "! " "? " ": " "| "; do
+        [[ "${risk_doc_flat}" == *"${risk_lead}${risk_sentence}"* ]] && risk_whole=1
+      done
+      [[ "${risk_doc_flat}" == "${risk_sentence}"* ]] && risk_whole=1
+    fi
+    if ((risk_whole)); then
+      pass "rule.${risk_key} in ${RISK_CONFIG} is a whole sentence of ${RISK_DOC}"
+    else
+      fail "rule.${risk_key} in ${RISK_CONFIG} is a whole sentence of ${RISK_DOC}" \
+        "'${risk_sentence}' is not a sentence that starts and ends where one of the page's does"
+    fi
+  done
+
+  risk_bullets="$(risk_t3_bullets)"
+  risk_bullet_count="$(grep -c . <<<"${risk_bullets}")"
+  if ((risk_bullet_count >= 8)); then
+    pass "${RISK_DOC}'s T3 section reads as bold-led bullets (${risk_bullet_count})"
+  else
+    fail "${RISK_DOC}'s T3 section reads as bold-led bullets" \
+      "read ${risk_bullet_count}; the bullet checks below would pass by reading nothing"
+  fi
+  risk_anchored=""
+  risk_unanchored=""
+  while IFS= read -r risk_trigger; do
+    [[ -z "${risk_trigger}" ]] && continue
+    risk_hits=0
+    risk_hit_bullet=""
+    while IFS= read -r risk_bullet; do
+      [[ -z "${risk_bullet}" ]] && continue
+      risk_in=1
+      while IFS= read -r risk_token; do
+        [[ -z "${risk_token}" ]] && continue
+        [[ "${risk_bullet}" == *"${risk_token}"* ]] || risk_in=0
+      done < <(jq -r --arg id "${risk_trigger}" '.tiers[3].content_triggers[] | select(.id == $id) | .page_tokens[]?' "${RISK_CONFIG}")
+      if ((risk_in)); then
+        risk_hits=$((risk_hits + 1))
+        risk_hit_bullet="${risk_bullet}"
+      fi
+    done <<<"${risk_bullets}"
+    if ((risk_hits == 1)); then
+      risk_anchored+="${risk_hit_bullet}"$'\n'
+    else
+      risk_unanchored+="${risk_trigger}(${risk_hits} bullets) "
+    fi
+  done < <(jq -r '.tiers[3].content_triggers[].id' "${RISK_CONFIG}")
+  assert_equal "every T3 content trigger quotes exactly one of ${RISK_DOC}'s T3 bullets" "" "${risk_unanchored}"
+
+  risk_pathless=0
+  risk_unanchored=""
+  while IFS= read -r risk_bullet; do
+    [[ -z "${risk_bullet}" ]] && continue
+    risk_bullet_paths=0
+    # shellcheck disable=SC2016 # the page's own backtick markup
+    while IFS= read -r risk_token; do
+      [[ -z "${risk_token}" || "${risk_token}" == *" "* || "${risk_token}" == /* ]] && continue
+      if [[ "${risk_token}" == */* ]] || git ls-files --error-unmatch -- "${risk_token}" >/dev/null 2>&1; then
+        risk_bullet_paths=1
+      fi
+    done < <(grep -oE '`[^`]+`' <<<"${risk_bullet}" | tr -d '`')
+    ((risk_bullet_paths)) && continue
+    risk_pathless=$((risk_pathless + 1))
+    if ! grep -qxF -- "${risk_bullet}" <<<"${risk_anchored}"; then
+      risk_heading="${risk_bullet#- \*\*}"
+      risk_unanchored+="'${risk_heading%%\*\**}' "
+    fi
+  done <<<"${risk_bullets}"
+  assert_equal "every T3 bullet in ${RISK_DOC} that names no path has a content trigger in ${RISK_CONFIG}" "" "${risk_unanchored}"
+  if ((risk_pathless >= 4)); then
+    pass "${RISK_DOC} still has T3 bullets that only a content trigger can carry (${risk_pathless})"
+  else
+    fail "${RISK_DOC} still has T3 bullets that only a content trigger can carry" \
+      "read ${risk_pathless}; the check above would pass by reading none"
   fi
 else
   fail "${RISK_CONFIG} parses and has tiers and rule" "missing, not valid JSON, or tiers/rule have the wrong type"
