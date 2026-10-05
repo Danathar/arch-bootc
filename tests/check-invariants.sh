@@ -8564,6 +8564,21 @@ cicd_prune_flavors="$(sed -n 's/^[[:space:]]*flavor: \[\(.*\)\]$/\1/p' <<<"${cic
 cicd_doc_packages="$(grep -oE '\(`arch-bootc-[a-z]+`(, `-[a-z]+`)*\)' <<<"${cicd_flat}" | grep -oE '`[^`]+`' | tr -d '`' | sed -E 's/^(arch-bootc)?-//' | tr '\n' ' ' | sed 's/ $//')"
 assert_equal "the packages the page says need the Admin grant are the flavors cleanup_packages prunes" \
   "${cicd_doc_packages}" "${cicd_prune_flavors}"
+# The flavor list is written three times: build_push publishes, cleanup_packages
+# prunes, and nightly's signatures job verifies. The checks above join the last
+# two to prose, and the rubric and rechunk checks read build.yml's two matrices
+# as one union, so a flavor added to build_push alone passes all of them while
+# its package is never pruned and its signature never checked. Join the copies
+# to the one that publishes, job by job, ignoring order.
+cicd_publish_flavors="$(cicd_job "${BUILD_WORKFLOW}" build_push | grep -Ev '^[[:space:]]*#' |
+  sed -n 's/^[[:space:]]*flavor: \[\(.*\)\]$/\1/p' | tr -d ' ' | tr ',' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+if [[ -z "${cicd_publish_flavors}" ]]; then
+  fail "the flavors build_push publishes can be read from ${BUILD_WORKFLOW}" "no 'flavor: [...]' matrix in the build_push job"
+fi
+assert_equal "cleanup_packages prunes every flavor build_push publishes, and no other" \
+  "$(tr ' ' '\n' <<<"${cicd_prune_flavors}" | sort | tr '\n' ' ' | sed 's/ $//')" "${cicd_publish_flavors}"
+assert_equal "the nightly signatures job verifies every flavor build_push publishes, and no other" \
+  "$(tr ' ' '\n' <<<"${cicd_sig_flavors}" | sort | tr '\n' ' ' | sed 's/ $//')" "${cicd_publish_flavors}"
 # "Every publish pushes `latest`, `latest.YYYYMMDD` and `YYYYMMDD`": the raw
 # tags metadata-action generates, with DEFAULT_TAG and the date filled in.
 cicd_default_tag="$(sed -n 's/^  DEFAULT_TAG: "\(.*\)"$/\1/p' "${BUILD_WORKFLOW}")"
