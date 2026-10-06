@@ -447,6 +447,56 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# One cloud-config document for both flows
+# ---------------------------------------------------------------------------
+#
+# The VM flow writes the admin account's seed onto an ISO; the bare-metal flow
+# writes the same seed straight into the new deployment's /var. The cases above
+# check the VM half's document line by line. The bare-metal half writes only on
+# a real install -- flow_baremetal is only ever driven here with DRY_RUN=1 --
+# so nothing can read what it writes. It used to write its own hand copy of the
+# document, and dropping `groups: [wheel]` from that copy, or flipping its
+# `lock_passwd`, failed no test anywhere: check-invariants compares
+# docs/first-boot.md against every key the script prints, which a second copy
+# satisfies on the first copy's behalf.
+#
+# So both flows print the document through one function, and these cases hold
+# that shape: the function's output is what the VM seed contains, each flow
+# calls it, and the script prints no second `#cloud-config` of its own.
+
+# Run a few lines against the sourced script without the stubs or DRY_RUN the
+# other helpers set up; these cases only read what it defines.
+run_sourced() {
+  # shellcheck disable=SC2016
+  OUT="$("${BASH}" -c 'source "$1" 2>/dev/null; shift; eval "$1"' _ "${QUICKSTART}" "$1" 2>&1)"
+  STATUS=$?
+}
+
+run_sourced "cloud_config_user_data tester '${FIXTURE_HASH}' '${FIXTURE_KEY}'"
+assert_status "the shared cloud-config document can be printed on its own" 0 "${STATUS}"
+shared_doc="${OUT}"
+
+new_case
+iso="${OUT_DIR}/seed.iso"
+run_seed "${OUT_DIR}" tester "${FIXTURE_HASH}" "${FIXTURE_KEY}" "${iso}"
+assert_equals "the VM seed's user-data is exactly the shared cloud-config document" \
+  "${shared_doc}" "$(probe_file user-data)"
+
+run_sourced 'declare -f make_seed_iso'
+# shellcheck disable=SC2016  # the function's source text, not an expansion
+assert_contains "make_seed_iso writes user-data from the shared document" \
+  "${OUT}" 'cloud_config_user_data "${username}" "${pwhash}" "${sshkey}" > "${seeddir}/user-data"'
+
+run_sourced 'declare -f flow_baremetal'
+# shellcheck disable=SC2016  # the function's source text, not an expansion
+assert_contains "flow_baremetal seeds the new deployment from the shared document" \
+  "${OUT}" 'cloud_config_user_data "${ADMIN_USER}" "${ADMIN_HASH}" "${ADMIN_SSHKEY}" | sudo tee "${deploy}/var/lib/cloud/seed/nocloud/user-data"'
+assert_absent "flow_baremetal prints no cloud-config document of its own" "${OUT}" "#cloud-config"
+
+assert_equals "scripts/quickstart.sh prints exactly one cloud-config document" \
+  "1" "$(grep -c "printf '#cloud-config" -- "${QUICKSTART}")"
+
+# ---------------------------------------------------------------------------
 # cleanup_task_resources
 # ---------------------------------------------------------------------------
 #
