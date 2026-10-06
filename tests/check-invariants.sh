@@ -3960,6 +3960,26 @@ else
           [[ "${strategy_cmd}" != *" --state "* ]]; then
           strategy_cmd_failures+="[no --state: ${strategy_cmd:0:60}] "
         fi
+        # The state has to match the question. A closed history range counts
+        # everything opened in it, so it reads every state; the merged range is
+        # the one exception and reads merged pull requests only; a command with
+        # no range asks what is waiting now, so it reads open ones. `--state
+        # open` on the weeks window would drop a regression that was fixed,
+        # and `--state all` on the merged count would add the unmerged.
+        if [[ "${strategy_cmd}" == "gh issue list "* || "${strategy_cmd}" == "gh pr list "* ]]; then
+          strategy_state="$(sed -nE 's/.* --state ([a-z]+)( .*|$)/\1/p' <<<"${strategy_cmd}")"
+          case "${strategy_cmd}" in
+            *'--search "merged:'*) strategy_want_state="merged" ;;
+            *'--search "created:'*) strategy_want_state="all" ;;
+            *) strategy_want_state="open" ;;
+          esac
+          if [[ "${strategy_state}" != "${strategy_want_state}" ]]; then
+            strategy_cmd_failures+="[--state '${strategy_state}' where the range asks for '${strategy_want_state}': ${strategy_cmd:0:60}] "
+          fi
+          if [[ "${strategy_cmd}" == *'--search "merged:'* && "${strategy_cmd}" != "gh pr list "* ]]; then
+            strategy_cmd_failures+="[a merged: range on something that is not a pull request: ${strategy_cmd:0:60}] "
+          fi
+        fi
         # A search says the range it covers with a closed <start>..<end> pair, so
         # a reading that stops growing can be reproduced later.
         if [[ "${strategy_cmd}" == *" --search "* && "${strategy_cmd}" != *'--search "created:<start>..<end>"'* &&
@@ -3977,12 +3997,14 @@ else
         ;;
       "git grep "*)
         strategy_git=$((strategy_git + 1))
-        # Every pathspec after `--` that is a path has to exist; `:!` exclusions
-        # and quotes are not paths.
+        # Every pathspec after `--` has to exist, the path inside a `:!`
+        # exclusion included: an exclusion that names nothing excludes nothing,
+        # and the file it meant to hide comes back as hits. Quotes are not part
+        # of the path.
         strategy_pathspecs="${strategy_cmd#* -- }"
         for strategy_path in ${strategy_pathspecs}; do
           strategy_path="${strategy_path//\'/}"
-          [[ "${strategy_path}" == ":"* ]] && continue
+          strategy_path="${strategy_path#:!}"
           [[ -e "${strategy_path}" ]] || strategy_cmd_failures+="[no such path ${strategy_path}] "
         done
         ;;
@@ -4027,6 +4049,107 @@ else
     assert_equal "${STRATEGY_DOC}'s merged-by-prefix jq program groups branch names by prefix, largest first" \
       "$(jq -c "${strategy_jq}" <<<'[{"headRefName":"quality/a"},{"headRefName":"renovate/x"},{"headRefName":"quality/b"},{"headRefName":"flat"}]' 2>&1)" \
       '[{"prefix":"quality","count":2},{"prefix":"flat","count":1},{"prefix":"renovate","count":1}]'
+  fi
+
+  # -- Each entry's commands ------------------------------------------------
+  # The checks above read the commands as one pool, so a command could be
+  # deleted, or moved under another entry, while the pool still held a gh and
+  # a git grep line. Pair each command with the entry it follows instead. An
+  # entry is the first four bold words that open a paragraph in the two
+  # measuring sections, the same key the criteria comparison above uses.
+  strategy_pairs="$(awk '
+    /^## / { on = ($0 == "## Measuring each criterion" || $0 == "## Is the work going there?"); entry = ""; next }
+    /^### / { on = 0; next }
+    !on { next }
+    /^```/ { if (in_block) { in_block = 0 } else { in_block = (substr($0, 4) == "bash") } ; next }
+    in_block && entry != "" { print entry "\t" $0; next }
+    /^\*\*[^*]+\*\*/ { entry = $0; sub(/^\*\*/, "", entry); sub(/\*\*.*/, "", entry); split(entry, w, " "); entry = w[1] " " w[2] " " w[3] " " w[4]; sub(/ +$/, "", entry) }
+  ' "${STRATEGY_DOC}")"
+  strategy_entry_cmds() {
+    awk -F '\t' -v e="$1" '$1 == e { print $2 }' <<<"${strategy_pairs}"
+  }
+  strategy_empty=""
+  while IFS= read -r strategy_entry; do
+    [[ -n "${strategy_entry}" ]] || continue
+    [[ -n "$(strategy_entry_cmds "${strategy_entry}")" ]] || strategy_empty+="[${strategy_entry}] "
+  done < <(awk '
+    /^## / { on = ($0 == "## Measuring each criterion" || $0 == "## Is the work going there?"); next }
+    /^### / { on = 0; next }
+    on && /^\*\*[^*]+\*\*/ { sub(/^\*\*/, ""); sub(/\*\*.*/, ""); print $1, $2, $3, $4 }
+  ' "${STRATEGY_DOC}")
+  if [[ -z "${strategy_pairs}" ]]; then
+    fail "every entry in ${STRATEGY_DOC} is followed by the command that measures it" \
+      "no command was paired with an entry; the pairing read nothing"
+  elif [[ -z "${strategy_empty}" ]]; then
+    pass "every entry in ${STRATEGY_DOC} is followed by the command that measures it"
+  else
+    fail "every entry in ${STRATEGY_DOC} is followed by the command that measures it" \
+      "no command under ${strategy_empty}"
+  fi
+
+  # The two workflow searches and the tests/ search each sit under their own
+  # box. The tests/ search excludes check-invariants.sh, which spells out every
+  # VM tool's name in the very checks that read this page and would otherwise
+  # be its first hits.
+  strategy_vm_tools='virt-install|qemu-system|virsh[[:space:]]|systemd-vmspawn|bcvk'
+  assert_equal "${STRATEGY_DOC} measures 'CI boots the built' with the workflow boot search alone" \
+    "$(strategy_entry_cmds "CI boots the built")" \
+    "git grep -nE 'qemu-system|virt-install|virsh[[:space:]]|systemd-vmspawn|bcvk' -- .github/workflows"
+  assert_equal "${STRATEGY_DOC} measures 'CI upgrades a system' with the workflow upgrade search alone" \
+    "$(strategy_entry_cmds "CI upgrades a system")" \
+    "git grep -nE 'bootc[[:space:]]+(upgrade|switch)' -- .github/workflows"
+  assert_equal "${STRATEGY_DOC} measures 'The manual VM check' with the tests/ search, check-invariants.sh excluded" \
+    "$(strategy_entry_cmds "The manual VM check")" \
+    "git grep -nE '${strategy_vm_tools}' -- tests ':!tests/check-invariants.sh'"
+
+  # "the first command" is the tag rules and "the second command is context
+  # only: it lists GitHub Releases".
+  strategy_tags=()
+  mapfile -t strategy_tags < <(strategy_entry_cmds "Images are published under")
+  if ((${#strategy_tags[@]} == 2)) &&
+    [[ "${strategy_tags[0]}" == "git grep -nE '^[[:space:]]+type=(raw|sha|ref)' -- .github/workflows/build.yml" ]] &&
+    [[ "${strategy_tags[1]}" == "gh release list "* ]]; then
+    pass "${STRATEGY_DOC}'s 'Images are published under' entry runs the tag-rule search first and lists releases second"
+  else
+    fail "${STRATEGY_DOC}'s 'Images are published under' entry runs the tag-rule search first and lists releases second" \
+      "found ${#strategy_tags[@]} command(s): ${strategy_tags[*]:0:2}"
+  fi
+
+  # "The first command lists the labelled ones and the second lists all of
+  # them", read by title. So two commands that differ only by `--label bug`,
+  # both asking for the title.
+  strategy_weeks=()
+  mapfile -t strategy_weeks < <(strategy_entry_cmds "Eight consecutive weeks of")
+  if ((${#strategy_weeks[@]} != 2)); then
+    fail "${STRATEGY_DOC}'s weeks entry lists the bug-labelled issues, then every issue, in the same range" \
+      "found ${#strategy_weeks[@]} command(s) under 'Eight consecutive weeks of', not 2"
+  elif [[ "${strategy_weeks[0]}" != "gh issue list "*" --label bug "* ||
+    "${strategy_weeks[1]}" == *" --label "* ||
+    "${strategy_weeks[0]/ --label bug/}" != "${strategy_weeks[1]}" ]]; then
+    fail "${STRATEGY_DOC}'s weeks entry lists the bug-labelled issues, then every issue, in the same range" \
+      "first: ${strategy_weeks[0]}; second: ${strategy_weeks[1]}"
+  else
+    pass "${STRATEGY_DOC}'s weeks entry lists the bug-labelled issues, then every issue, in the same range"
+  fi
+  if [[ "${strategy_weeks[1]:-}" =~ \ --json\ ([a-zA-Z,]+) ]] && [[ ",${BASH_REMATCH[1]}," == *,title,* ]]; then
+    pass "${STRATEGY_DOC}'s weeks commands request the title, which the page says the issues are read by"
+  else
+    fail "${STRATEGY_DOC}'s weeks commands request the title, which the page says the issues are read by" \
+      "${strategy_weeks[1]:-no second command}"
+  fi
+
+  # "Issues labelled `needs-human`" and "open pull requests labelled `hold`":
+  # one issue command and one pull request command, each on the label its
+  # sentence names.
+  strategy_waiting="$(strategy_entry_cmds "What is waiting on" | sed -E 's/^(gh [a-z]+ list) .* --label ([A-Za-z0-9_-]+) .*/\1 \2/')"
+  assert_equal "${STRATEGY_DOC}'s waiting entry lists issues labelled needs-human and pull requests labelled hold" \
+    "${strategy_waiting//$'\n'/ | }" "gh issue list needs-human | gh pr list hold"
+  strategy_flat="$(tr '\n' ' ' <"${STRATEGY_DOC}")"
+  if [[ "${strategy_flat}" == *"Issues labelled \`needs-human\`"* && "${strategy_flat}" == *"pull requests labelled \`hold\`"* ]]; then
+    pass "${STRATEGY_DOC}'s waiting entry still names the needs-human and hold labels its commands filter on"
+  else
+    fail "${STRATEGY_DOC}'s waiting entry still names the needs-human and hold labels its commands filter on" \
+      "the sentences naming the two labels changed; re-read the entry against its commands"
   fi
 
   # -- The dated reading -----------------------------------------------------
