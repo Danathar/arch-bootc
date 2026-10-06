@@ -394,6 +394,28 @@ assert_target_identity() {
 
 # ------------------------------------------------------------ cloud-init ---
 
+# cloud_config_user_data <username> <pwhash> <sshkey> -- prints the
+# #cloud-config document that creates the first admin account. Both install
+# flows seed exactly this document (the VM flow on a seed ISO, the bare-metal
+# flow straight into the new deployment's /var), so it is written once: a key
+# changed for one flow cannot leave the other creating a different account.
+# The bare-metal half only ever runs on a real install, which no test performs,
+# so the seed it writes is checked through this function.
+cloud_config_user_data() {
+    local username="$1" pwhash="$2" sshkey="$3"
+    printf '#cloud-config\nusers:\n'
+    printf '  - name: %s\n' "${username}"
+    printf '    uid: 1000\n'
+    printf '    groups: [wheel]\n'
+    printf '    shell: /bin/bash\n'
+    printf '    lock_passwd: false\n'
+    printf "    passwd: '%s'\n" "${pwhash}"
+    if [ -n "${sshkey}" ]; then
+        printf '    ssh_authorized_keys:\n'
+        printf '      - %s\n' "${sshkey}"
+    fi
+}
+
 # Builds a NoCloud seed ISO. The image pins cloud-init to the NoCloud
 # datasource, which looks for a filesystem labelled 'cidata' -- so attaching
 # this as a CD-ROM is enough to have the admin user created during first boot.
@@ -416,19 +438,7 @@ make_seed_iso() {
 
         printf 'instance-id: arch-bootc-quickstart\nlocal-hostname: %s\n' "${VM_HOSTNAME}" \
             > "${seeddir}/meta-data"
-        {
-            printf '#cloud-config\nusers:\n'
-            printf '  - name: %s\n' "${username}"
-            printf '    uid: 1000\n'
-            printf '    groups: [wheel]\n'
-            printf '    shell: /bin/bash\n'
-            printf '    lock_passwd: false\n'
-            printf "    passwd: '%s'\n" "${pwhash}"
-            if [ -n "${sshkey}" ]; then
-                printf '    ssh_authorized_keys:\n'
-                printf '      - %s\n' "${sshkey}"
-            fi
-        } > "${seeddir}/user-data"
+        cloud_config_user_data "${username}" "${pwhash}" "${sshkey}" > "${seeddir}/user-data"
     fi
 
     case "${ISO_TOOL}" in
@@ -820,19 +830,8 @@ ${deployments:-      none}
         sudo install -m 600 /dev/null "${deploy}/var/lib/cloud/seed/nocloud/user-data"
         printf 'instance-id: arch-bootc-quickstart\n' \
             | sudo tee "${deploy}/var/lib/cloud/seed/nocloud/meta-data" >/dev/null
-        {
-            printf '#cloud-config\nusers:\n'
-            printf '  - name: %s\n' "${ADMIN_USER}"
-            printf '    uid: 1000\n'
-            printf '    groups: [wheel]\n'
-            printf '    shell: /bin/bash\n'
-            printf '    lock_passwd: false\n'
-            printf "    passwd: '%s'\n" "${ADMIN_HASH}"
-            if [ -n "${ADMIN_SSHKEY}" ]; then
-                printf '    ssh_authorized_keys:\n'
-                printf '      - %s\n' "${ADMIN_SSHKEY}"
-            fi
-        } | sudo tee "${deploy}/var/lib/cloud/seed/nocloud/user-data" >/dev/null
+        cloud_config_user_data "${ADMIN_USER}" "${ADMIN_HASH}" "${ADMIN_SSHKEY}" \
+            | sudo tee "${deploy}/var/lib/cloud/seed/nocloud/user-data" >/dev/null
         sudo umount -- "${BAREMETAL_MOUNT_DIR}"
         rmdir -- "${BAREMETAL_MOUNT_DIR}"
         BAREMETAL_MOUNT_DIR=''
