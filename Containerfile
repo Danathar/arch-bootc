@@ -60,8 +60,8 @@ RUN --mount=type=cache,dst=/usr/lib/sysimage/cache/pacman \
 # check below compares. Resolve it with:
 #   git ls-remote --tags https://github.com/bootc-dev/bootc.git 'vX.Y.Z*'
 # and take the ^{} row, not the bare tag row.
-ARG BOOTC_VERSION=v1.16.14
-ARG BOOTC_COMMIT=c87b62fb805a69793fa0cba671bbed10a2132423
+ARG BOOTC_VERSION=v1.17.1
+ARG BOOTC_COMMIT=d01e723ae9480fa53aa9db09a7eff0439548e9f6
 # bootc >= v1.16.11 links libselinux through the `selinux` crate
 # (bootc-dev/bootc#2431), and its `selinux-sys` build script needs
 # libselinux's headers and shared library. Arch's official repositories do
