@@ -9583,6 +9583,257 @@ RUNBOOK_QUOTES
   assert_absent "renovate.json does not set rebaseWhen to never, which the runbook warns against" \
     "renovate.json" '"rebaseWhen"[[:space:]]*:[[:space:]]*"never"'
 
+  # --- The page's own copies of the triggers, jobs, gates and commands --------
+  #
+  # The checks above read the workflow side: the cron lines, the `needs:` gate,
+  # the matrices. The page says each of those again in its own words -- the
+  # "Starts on" column, "daily 10:05 UTC", "Five jobs", "`build_push` needs
+  # `lint` and `test`" -- and the reader acts on those words, not on the YAML.
+  # Rewording the page to say 11:05, or dropping a trigger from a workflow while
+  # the table still lists it, used to pass. Each claim below is derived from the
+  # workflow and compared with what the page says, both ways.
+
+  # The jobs of one workflow, in file order.
+  runbook_jobs() {
+    awk '
+      /^jobs:$/ { in_jobs = 1; next }
+      /^[A-Za-z_]/ { in_jobs = 0 }
+      in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ { print substr($0, 3, length($0) - 3) }
+    ' "$1"
+  }
+
+  # The `types:` listed under the `issues:` and `pull_request:` triggers.
+  runbook_event_types() {
+    awk '
+      /^on:/ { in_on = 1; next }
+      in_on && /^[^[:space:]#]/ { exit }
+      in_on && /^  [A-Za-z_]+:/ { event = $1; next }
+      in_on && /^    [A-Za-z_]+:/ { key = $1; next }
+      in_on && (event == "issues:" || event == "pull_request:") && key == "types:" && /^      - / { print $2 }
+    ' "$1" | LC_ALL=C sort -u
+  }
+
+  # One cron line in the page's words: "daily HH:MM UTC" or "monthly on the
+  # 1st, HH:MM UTC". Anything else prints nothing, so a new kind of schedule
+  # fails below until the page and this function learn to say it.
+  runbook_cron_words() {
+    local minute hour dom month dow
+    read -r minute hour dom month dow <<<"$1"
+    [[ "${minute}" =~ ^[0-9]+$ && "${hour}" =~ ^[0-9]+$ && "${month}" == "*" && "${dow}" == "*" ]] || return 0
+    case "${dom}" in
+      "*") printf 'daily %02d:%02d UTC' "$((10#${hour}))" "$((10#${minute}))" ;;
+      1) printf 'monthly on the 1st, %02d:%02d UTC' "$((10#${hour}))" "$((10#${minute}))" ;;
+    esac
+  }
+
+  # The table's "Starts on" cell: every trigger the workflow has, and none it
+  # does not. Event types are matched in the page's words.
+  runbook_type_words="opened|opened
+reopened|reopened
+synchronize|pushed to
+ready_for_review|ready for review
+labeled|labelled"
+  runbook_sched_section="$(runbook_section 'A scheduled run is missing' | tr '\n' ' ' | tr -s ' ')"
+  runbook_sched_stated=0
+  while IFS= read -r runbook_wf; do
+    [[ -n "${runbook_wf}" ]] || continue
+    runbook_cell="$(grep -F -- "| \`${runbook_wf}\` |" "${RUNBOOK_DOC}" | head -n 1 | awk -F'|' '{ print tolower($4) }')"
+    runbook_triggers=" $(cicd_triggers "${runbook_wf}") "
+    runbook_cell_bad=""
+
+    runbook_has_manual=no
+    [[ "${runbook_triggers}" == *" workflow_dispatch "* ]] && runbook_has_manual=yes
+    runbook_says_manual=no
+    grep -qwF -- "manual" <<<"${runbook_cell}" && runbook_says_manual=yes
+    [[ "${runbook_has_manual}" == "${runbook_says_manual}" ]] ||
+      runbook_cell_bad+="workflow_dispatch is '${runbook_has_manual}' but the cell's 'manual' is '${runbook_says_manual}'; "
+
+    runbook_has_issues=no
+    [[ "${runbook_triggers}" == *" issues "* ]] && runbook_has_issues=yes
+    runbook_says_issue=no
+    grep -qwF -- "issue" <<<"${runbook_cell}" && runbook_says_issue=yes
+    [[ "${runbook_has_issues}" == "${runbook_says_issue}" ]] ||
+      runbook_cell_bad+="the issues trigger is '${runbook_has_issues}' but the cell's 'issue' is '${runbook_says_issue}'; "
+
+    runbook_types="$(runbook_event_types "${runbook_wf}")"
+    while IFS='|' read -r runbook_type runbook_words; do
+      runbook_has_type=no
+      grep -qxF -- "${runbook_type}" <<<"${runbook_types}" && runbook_has_type=yes
+      runbook_says_type=no
+      grep -qF -- "${runbook_words}" <<<"${runbook_cell}" && runbook_says_type=yes
+      [[ "${runbook_has_type}" == "${runbook_says_type}" ]] ||
+        runbook_cell_bad+="event type ${runbook_type} is '${runbook_has_type}' but the cell's '${runbook_words}' is '${runbook_says_type}'; "
+    done <<<"${runbook_type_words}"
+    runbook_unworded="$(comm -23 <(printf '%s\n' "${runbook_types}" | grep -v '^$') \
+      <(cut -d'|' -f1 <<<"${runbook_type_words}" | LC_ALL=C sort -u) | tr '\n' ' ')"
+    [[ -z "${runbook_unworded}" ]] ||
+      runbook_cell_bad+="event types this check has no words for: ${runbook_unworded}; "
+
+    runbook_crons="$(sed -nE 's/^ *- cron: "([^"]+)".*$/\1/p' "${runbook_wf}")"
+    if [[ -z "${runbook_crons}" ]]; then
+      grep -qiE -- 'daily|weekly|monthly|utc' <<<"${runbook_cell}" &&
+        runbook_cell_bad+="the cell gives a schedule but the workflow has none; "
+    else
+      while IFS= read -r runbook_cron; do
+        runbook_cron_text="$(runbook_cron_words "${runbook_cron}")"
+        if [[ -z "${runbook_cron_text}" ]]; then
+          runbook_cell_bad+="cron '${runbook_cron}' is a schedule this check cannot word; "
+          continue
+        fi
+        grep -qF -- "${runbook_cron_text,,}" <<<"${runbook_cell}" ||
+          runbook_cell_bad+="cron '${runbook_cron}' is '${runbook_cron_text}', not in the cell; "
+        runbook_sched_stated=$((runbook_sched_stated + 1))
+        grep -qiF -- "\`${runbook_wf##*/}\` (${runbook_cron_text})" <<<"${runbook_sched_section}" ||
+          runbook_cell_bad+="'A scheduled run is missing' does not say \`${runbook_wf##*/}\` (${runbook_cron_text}); "
+      done <<<"${runbook_crons}"
+    fi
+
+    if [[ -z "${runbook_cell}" ]]; then
+      fail "the runbook's 'Starts on' cell for ${runbook_wf} is the workflow's triggers" "no table row for it"
+    elif [[ -z "${runbook_cell_bad}" ]]; then
+      pass "the runbook's 'Starts on' cell for ${runbook_wf} is the workflow's triggers"
+    else
+      fail "the runbook's 'Starts on' cell for ${runbook_wf} is the workflow's triggers" "${runbook_cell_bad}"
+    fi
+  done <<<"${runbook_tree_workflows}"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  assert_equal "'A scheduled run is missing' gives a time for every schedule and for nothing else" \
+    "$(grep -oiE -- '`[A-Za-z0-9_.-]+\.ya?ml` \((daily|weekly|monthly)[^)]*\)' <<<"${runbook_sched_section}" | grep -c .)" \
+    "${runbook_sched_stated}"
+
+  # "Five jobs: `lint`, ...", "One job, `test`", "one job (`audit`)": the count
+  # word, and the backticked job names when the sentence gives them, are the
+  # workflow's jobs in file order. A job the sentence marks "`main` only" is
+  # exactly a job whose `if:` refuses pull requests and every branch but the
+  # default one.
+  runbook_main_only_if="    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+  runbook_counted=0
+  runbook_number_alt="$(IFS='|'; printf '%s' "${NUMBER_WORDS[*]:1}")"
+  while IFS= read -r runbook_wf; do
+    [[ -n "${runbook_wf}" ]] || continue
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    runbook_wf_flat="$(runbook_section "\`${runbook_wf}\`" | tr '\n' ' ' | tr -s ' ')"
+    # A sentence ends at a full stop followed by a space, so `build.yml` does
+    # not end one.
+    runbook_jobs_sentence="$(grep -oiE -- "(^|[^A-Za-z])(${runbook_number_alt}) jobs?[,:( ]([^.]|\\.[^ ])*\\.( |\$)" <<<"${runbook_wf_flat}" |
+      head -n 1 | sed -E 's/^[^A-Za-z]+//; s/ $//')"
+    [[ -n "${runbook_jobs_sentence}" ]] || continue
+    runbook_counted=$((runbook_counted + 1))
+    runbook_tree_jobs="$(runbook_jobs "${runbook_wf}")"
+    runbook_tree_count="$(grep -c . <<<"${runbook_tree_jobs}")"
+    assert_equal "the runbook's job count for ${runbook_wf} is the number of jobs it has" \
+      "$(awk '{ print tolower($1) }' <<<"${runbook_jobs_sentence}")" \
+      "$(number_word "${runbook_tree_count}")"
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    runbook_named_jobs="$(grep -oE -- '`[A-Za-z_][A-Za-z0-9_-]*`' <<<"${runbook_jobs_sentence%%, one *}" |
+      tr -d '`' | grep -vxF -- 'main' | awk '!seen[$0]++')"
+    [[ -n "${runbook_named_jobs}" ]] || continue
+    assert_equal "the jobs the runbook lists for ${runbook_wf} are its jobs, in order" \
+      "${runbook_named_jobs//$'\n'/ }" "${runbook_tree_jobs//$'\n'/ }"
+    runbook_main_only_bad=""
+    while IFS= read -r runbook_job; do
+      # shellcheck disable=SC2016 # the backticks are the page's own markup
+      runbook_note="$(grep -oE -- "\`${runbook_job}\`( \([^)]*\))?" <<<"${runbook_jobs_sentence}" | head -n 1)"
+      runbook_says_main=no
+      # shellcheck disable=SC2016 # the backticks are the page's own markup
+      [[ "${runbook_note}" == *'`main` only'* ]] && runbook_says_main=yes
+      runbook_is_main=no
+      grep -qxF -- "${runbook_main_only_if}" <<<"$(cicd_job "${runbook_wf}" "${runbook_job}")" && runbook_is_main=yes
+      [[ "${runbook_says_main}" == "${runbook_is_main}" ]] ||
+        runbook_main_only_bad+="${runbook_job}: page '${runbook_says_main}', workflow '${runbook_is_main}'; "
+    done <<<"${runbook_tree_jobs}"
+    assert_equal "the jobs the runbook marks \`main\` only in ${runbook_wf} are the ones whose if: refuses pull requests and other branches" \
+      "${runbook_main_only_bad}" ""
+  done <<<"${runbook_tree_workflows}"
+  assert_equal "five workflow sections still say how many jobs they have" "${runbook_counted}" "5"
+
+  # "Three jobs, one checking step each": each nightly job has exactly one.
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  assert_present "the runbook still says each nightly job has one checking step" \
+    "${RUNBOOK_DOC}" '^Three jobs, one checking step each\.'
+  assert_equal "each nightly job has exactly one checking step" \
+    "$(cut -d'|' -f1 <<<"${runbook_nightly_tree}" | uniq -d | tr '\n' ' ')$(comm -23 \
+      <(runbook_jobs "${NIGHTLY_WORKFLOW}" | LC_ALL=C sort) \
+      <(cut -d'|' -f1 <<<"${runbook_nightly_tree}" | LC_ALL=C sort -u) | tr '\n' ' ')" ""
+
+  # zizmor: "one checking step (`Run zizmor`, after `Checkout` and `Install uv`)".
+  # agent-audit: "one step (`Audit merged agent pull requests`)".
+  assert_equal "zizmor.yaml's steps are the three the runbook lists, checking step last" \
+    "$(runbook_job_steps .github/workflows/zizmor.yaml zizmor | tr '\n' '|')$(runbook_run_steps .github/workflows/zizmor.yaml | tr '\n' '|')" \
+    "Checkout|Install uv|Run zizmor|zizmor|Run zizmor|"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  if grep -qF -- 'one job, one checking step (`Run zizmor`, after `Checkout` and `Install uv`)' <<<"${runbook_flat}"; then
+    pass "the runbook still lists zizmor.yaml's one job and its steps in that order"
+  else
+    fail "the runbook still lists zizmor.yaml's one job and its steps in that order" "the sentence is gone or now says something else"
+  fi
+  assert_equal "agent-audit.yml's audit job has the one step the runbook names" \
+    "$(runbook_job_steps .github/workflows/agent-audit.yml audit | tr '\n' '|')" \
+    "Audit merged agent pull requests|"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  if grep -qF -- 'one job (`audit`), one step (`Audit merged agent pull requests`)' <<<"${runbook_flat}"; then
+    pass "the runbook still says agent-audit.yml has one job with one step"
+  else
+    fail "the runbook still says agent-audit.yml has one job with one step" "the sentence is gone or now says something else"
+  fi
+
+  # The gate and the matrices, as the prose words them.
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  runbook_needs="$(cicd_job "${BUILD_WORKFLOW}" build_push | sed -nE 's/^    needs: \[(.+)\]$/\1/p' |
+    sed -E 's/([A-Za-z_]+)/`\1`/g; s/, ([^,]+)$/ and \1/')"
+  if grep -qF -- "\`build_push\` needs ${runbook_needs}," <<<"${runbook_flat}"; then
+    pass "the runbook's 'build_push needs' sentence lists build_push's needs: (${runbook_needs})"
+  else
+    fail "the runbook's 'build_push needs' sentence lists build_push's needs: (${runbook_needs})" \
+      "no '\`build_push\` needs ${runbook_needs},' on the page"
+  fi
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  for runbook_ff in "the matrix has \`fail-fast: false\`" "The \`signatures\` matrix has \`fail-fast: false\`"; do
+    if grep -qF -- "${runbook_ff}" <<<"${runbook_flat}"; then
+      pass "the runbook still says: ${runbook_ff}"
+    else
+      fail "the runbook still says: ${runbook_ff}" "the sentence is gone or now says something else"
+    fi
+  done
+  assert_present "labeler.yml still sets sync-labels: true, which the runbook says removes unsupported labels" \
+    ".github/workflows/labeler.yml" '^          sync-labels: true$'
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  if grep -qF -- '(`sync-labels` removes ones the paths do not support)' <<<"${runbook_flat}"; then
+    pass "the runbook still says sync-labels removes labels the paths do not support"
+  else
+    fail "the runbook still says sync-labels removes labels the paths do not support" "the sentence is gone"
+  fi
+
+  # --- Every gh command names the repository and a real workflow --------------
+  #
+  # The page says `-R` is given because this repository is a fork and a bare
+  # `gh` defaults to the parent. A command without it, or one that names a
+  # workflow file that does not exist, returns somebody else's runs or nothing.
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  runbook_gh_cmds="$( {
+    awk '/^```/ { fence = !fence; next } fence && /^gh / { print }' "${RUNBOOK_DOC}"
+    # A span that is only `gh <noun> <verb>` names an API call a workflow
+    # makes (`gh label list`), not a command for the reader to run.
+    grep -oE '`gh [^`]+`' <<<"${runbook_flat}" | tr -d '`' | grep -vxE 'gh [a-z]+ [a-z]+'
+  } )"
+  runbook_gh_count="$(grep -c . <<<"${runbook_gh_cmds}")"
+  runbook_gh_repos="$(grep -oE -- ' -R [^ ]+' <<<"${runbook_gh_cmds}" | LC_ALL=C sort -u | tr '\n' ' ')"
+  runbook_gh_bare="$(grep -vE -- ' -R [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+( |$)' <<<"${runbook_gh_cmds}" | tr '\n' ';')"
+  if ((runbook_gh_count < 10)); then
+    fail "every gh command on the runbook passes -R" "only ${runbook_gh_count} gh command(s) found; the extractor is broken"
+  else
+    assert_equal "every gh command on the runbook passes -R (${runbook_gh_count} checked)" "${runbook_gh_bare}" ""
+  fi
+  assert_equal "every gh command on the runbook names the same repository" \
+    "$(wc -w <<<"${runbook_gh_repos}" | tr -d ' ')" "2"
+  runbook_gh_ghosts=""
+  while IFS= read -r runbook_gh_wf; do
+    [[ -n "${runbook_gh_wf}" ]] || continue
+    [[ -f ".github/workflows/${runbook_gh_wf}" ]] || runbook_gh_ghosts+="${runbook_gh_wf} "
+  done < <(grep -oE -- '--workflow [^ ]+' <<<"${runbook_gh_cmds}" | cut -d' ' -f2 | LC_ALL=C sort -u)
+  assert_equal "every --workflow a gh command on the runbook names is a file under .github/workflows/" \
+    "${runbook_gh_ghosts}" ""
+
   # --- Repository paths in backticks exist -------------------------------------
 
   runbook_missing_paths=""
