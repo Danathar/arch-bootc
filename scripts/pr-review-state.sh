@@ -23,6 +23,11 @@ set -euo pipefail
 #   1  something is outstanding (unresolved threads, or failing checks)
 #   2  usage or API error
 #
+# "Failing" is any check state other than passed (SUCCESS, NEUTRAL, SKIPPED)
+# or still running, so a state this script does not know fails the gate. A
+# workflow that could not start counts as a check too, read from its check
+# suite because it never produced a check run.
+#
 # Note the exit code says nothing about whether a *review* happened, and a
 # resolved thread is not evidence that the underlying issue was fixed -- only
 # that someone marked it resolved.
@@ -143,6 +148,18 @@ query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
                 }
               }
             }
+            # A workflow that fails before it creates a job (invalid YAML, a
+            # bad `uses:`) leaves a completed check suite with no check runs,
+            # so nothing reaches the rollup's contexts above. Its conclusion,
+            # STARTUP_FAILURE, exists only on the suite.
+            checkSuites(first: 100) {
+              nodes {
+                status
+                conclusion
+                workflowRun { url workflow { name } }
+                checkRuns(first: 1) { totalCount }
+              }
+            }
           }
         }
       }
@@ -237,17 +254,33 @@ if ! summary="$(printf '%s' "${response}" | jq --argjson threads "${threads}" '
             excerpt: ((.comments.nodes[0].body // "") | gsub("\\s+"; " ") | .[0:160])
           }
       ],
-      checks: [
+      checks: ([
         ($rollup.contexts.nodes // [])[]
         | if .__typename == "CheckRun"
           then {name: .name, state: (.conclusion // .status), url: .detailsUrl}
           else {name: .context, state: .state, url: .targetUrl}
           end
       ]
+      # Only Actions suites, and only finished ones with no runs: a suite with
+      # runs already reported each of them above, and other apps leave empty
+      # suites queued on every push without ever meaning to run.
+      + [
+        ($pr.commits.nodes[0].commit.checkSuites.nodes // [])[]
+        | select(.workflowRun != null and .status == "COMPLETED" and .checkRuns.totalCount == 0)
+        | {name: (.workflowRun.workflow.name // "workflow"), state: (.conclusion // "UNKNOWN"), url: .workflowRun.url}
+      ])
     }
   | .unresolved = [.threads[] | select(.resolved | not)]
-  | .failing = [.checks[] | select(.state == "FAILURE" or .state == "TIMED_OUT" or .state == "CANCELLED" or .state == "ERROR" or .state == "ACTION_REQUIRED")]
-  | .pending = [.checks[] | select(.state == "IN_PROGRESS" or .state == "QUEUED" or .state == "PENDING" or .state == "WAITING")]
+  # Fail closed: name the states that mean "passed" and "still running", and
+  # count every other state as failing. Listing the failing states instead let
+  # STARTUP_FAILURE (a workflow that could not start) and STALE (a run GitHub
+  # gave up on) through as passes (#500), and would do the same for any state
+  # GitHub adds later. REQUESTED is the CheckRun status that comes before
+  # QUEUED; EXPECTED is a required commit status nobody has posted yet.
+  | ["SUCCESS", "NEUTRAL", "SKIPPED"] as $passed
+  | ["REQUESTED", "QUEUED", "IN_PROGRESS", "WAITING", "PENDING", "EXPECTED"] as $running
+  | .pending = [.checks[] | select(.state | IN($running[]))]
+  | .failing = [.checks[] | select(.state | IN($passed[], $running[]) | not)]
 ' 2>&1)"; then
   printf 'error: could not parse the GraphQL response: %s\n' "${summary}" >&2
   exit 2
