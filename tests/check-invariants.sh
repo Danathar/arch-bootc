@@ -10800,6 +10800,16 @@ else
 
   # --- Enforced by GitHub ---------------------------------------------------------
 
+  # "is the ruleset on `main`" holds only while it is enforced and scoped to the
+  # default branch; rules and bypass list alone would still pass a ruleset set
+  # to "disabled" or "evaluate", or moved to another branch.
+  assert_equal "the ruleset the page cites is enforced, not evaluated or disabled" \
+    "$(jq -r '.enforcement' "${AB_RULESET}")" "active"
+  assert_equal "the ruleset the page cites applies to main and nothing else" \
+    "$(jq -r '[.target, (.conditions.ref_name.include // [] | join(",")), (.conditions.ref_name.exclude // [] | length)] | join(" ")' "${AB_RULESET}")" \
+    "branch ~DEFAULT_BRANCH 0"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ab_says "the page says the ruleset is the one on main" 'is the ruleset on `main`'
   assert_equal "nothing may bypass the ruleset, as the page says" \
     "$(jq -r '.bypass_actors // [] | length' "${AB_RULESET}")" "0"
   ab_says "the page says the ruleset has no bypass actor" "It has no bypass actor"
