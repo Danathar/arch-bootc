@@ -23,6 +23,9 @@ set -euo pipefail
 #   1  something is outstanding (unresolved threads, or failing checks)
 #   2  usage or API error
 #
+# "Failing" is any check state other than passed (SUCCESS, NEUTRAL, SKIPPED)
+# or still running, so a state this script does not know fails the gate.
+#
 # Note the exit code says nothing about whether a *review* happened, and a
 # resolved thread is not evidence that the underlying issue was fixed -- only
 # that someone marked it resolved.
@@ -246,8 +249,16 @@ if ! summary="$(printf '%s' "${response}" | jq --argjson threads "${threads}" '
       ]
     }
   | .unresolved = [.threads[] | select(.resolved | not)]
-  | .failing = [.checks[] | select(.state == "FAILURE" or .state == "TIMED_OUT" or .state == "CANCELLED" or .state == "ERROR" or .state == "ACTION_REQUIRED")]
-  | .pending = [.checks[] | select(.state == "IN_PROGRESS" or .state == "QUEUED" or .state == "PENDING" or .state == "WAITING")]
+  # Fail closed: name the states that mean "passed" and "still running", and
+  # count every other state as failing. Listing the failing states instead let
+  # STARTUP_FAILURE (a workflow that could not start) and STALE (a run GitHub
+  # gave up on) through as passes (#500), and would do the same for any state
+  # GitHub adds later. REQUESTED is the CheckRun status that comes before
+  # QUEUED; EXPECTED is a required commit status nobody has posted yet.
+  | ["SUCCESS", "NEUTRAL", "SKIPPED"] as $passed
+  | ["REQUESTED", "QUEUED", "IN_PROGRESS", "WAITING", "PENDING", "EXPECTED"] as $running
+  | .pending = [.checks[] | select(.state | IN($running[]))]
+  | .failing = [.checks[] | select(.state | IN($passed[], $running[]) | not)]
 ' 2>&1)"; then
   printf 'error: could not parse the GraphQL response: %s\n' "${summary}" >&2
   exit 2

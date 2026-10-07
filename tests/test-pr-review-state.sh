@@ -331,21 +331,39 @@ assert_contains "the failing check is counted" "${output}" "1 failing check(s)"
 
 # --- every state the gate counts as failing -------------------------------
 #
-# `FAILURE` above is the obvious one. The other four are in the filter because
-# each is a way for a check to stop without having passed, and the one that
-# matters most here is `CANCELLED`: a cancelled run is not a run that said
-# nothing, it is a run that did not finish, and treating it as neutral would
-# let a gate report "nothing outstanding" for a commit nothing verified.
+# `FAILURE` above is the obvious one. The others are each a way for a check to
+# stop without having passed, and the one that matters most here is
+# `CANCELLED`: a cancelled run is not a run that said nothing, it is a run that
+# did not finish, and treating it as neutral would let a gate report "nothing
+# outstanding" for a commit nothing verified. `STARTUP_FAILURE` (the workflow
+# could not start, e.g. invalid YAML) and `STALE` (GitHub gave up on the run)
+# are the same case: no result was ever reported.
 
-for failing_state in TIMED_OUT CANCELLED ERROR ACTION_REQUIRED; do
+for failing_state in TIMED_OUT CANCELLED ERROR ACTION_REQUIRED STARTUP_FAILURE STALE; do
   write_fixture "[]" "[$(check_run 'Shell tests and coverage' "${failing_state}")]" FAILURE
   output="$(run_script --repo Danathar/arch-bootc 77)"
   assert_status "${failing_state} is counted as failing" 1 "$?"
-  # The report's state column is 14 characters wide, so the one state longer
-  # than that is matched by its visible prefix rather than its full name.
+  # The report's state column is 14 characters wide, so the states longer
+  # than that are matched by their visible prefix rather than their full name.
   assert_contains "${failing_state} is reported in the check list" "${output}" "${failing_state:0:14}"
   assert_contains "${failing_state} reaches the outstanding line" "${output}" "1 failing check(s)"
 done
+
+# The script lists the states that mean "passed" and "still running" and counts
+# everything else as failing. A state GitHub adds later must therefore fail the
+# gate rather than pass it by omission, which is what let STARTUP_FAILURE and
+# STALE through when the script listed failing states instead (#500).
+write_fixture "[]" "[$(check_run 'Shell tests and coverage' SOME_NEW_STATE)]" FAILURE
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "a state the script has never heard of fails the gate" 1 "$?"
+assert_contains "an unknown state reaches the outstanding line" "${output}" "1 failing check(s), 0 still running"
+
+# The passing side of the same rule: every state that means "passed" keeps the
+# gate at 0, so the allow-list is not narrower than GitHub's success states.
+write_fixture "[]" "[$(check_run 'Shell tests and coverage' SUCCESS), $(check_run 'Lint shell scripts' NEUTRAL), $(check_run 'Build and push image (kde)' SKIPPED), $(status_context 'ci/mirror' SUCCESS)]" SUCCESS
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "SUCCESS, NEUTRAL and SKIPPED all pass the gate" 0 "$?"
+assert_contains "passing states are neither failing nor running" "${output}" "0 failing check(s), 0 still running"
 
 # The truncation above is a property of the human-readable column only. Anything
 # consuming the exit code and `--json` has to see the state GitHub actually
@@ -384,6 +402,18 @@ write_fixture \
 output="$(run_script --repo Danathar/arch-bootc 77)"
 assert_status "queued and waiting checks do not fail the gate" 0 "$?"
 assert_contains "queued and waiting checks are both counted as running" "${output}" "2 still running"
+
+# REQUESTED is the CheckRun status before QUEUED; EXPECTED is a required commit
+# status that has not been posted yet. Neither is a result, so both count as
+# still running rather than as passed or failed.
+write_fixture \
+  "[]" \
+  "[$(running_check_run 'Shell tests and coverage' REQUESTED), $(status_context 'ci/external-signer' EXPECTED)]" \
+  PENDING
+
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "requested and expected checks do not fail the gate" 0 "$?"
+assert_contains "requested and expected checks are both counted as running" "${output}" "0 failing check(s), 2 still running"
 
 # --- classic commit statuses ----------------------------------------------
 #
