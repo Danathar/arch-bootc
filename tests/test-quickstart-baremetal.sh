@@ -38,11 +38,14 @@ set -uo pipefail
 # `[ -b ]` is still real. It is answered with a block device that already
 # exists on the host, used purely as a token to get past that one line: every
 # command run against it is stubbed. Nothing here writes to it. The guard
-# functions never write anywhere under any circumstances, and `flow_baremetal`
-# is only ever run with DRY_RUN=1, where every mutating command is printed
-# instead of executed -- with `sudo`, `mount`, `umount` and `mountpoint`
-# stubbed to fail loudly, so a dry run that stopped being dry fails a case
-# rather than touching the host. No device is opened, read or modified.
+# functions never write anywhere under any circumstances. `flow_baremetal` is
+# run with DRY_RUN=1, where every mutating command is printed instead of
+# executed -- with `sudo`, `mount`, `umount` and `mountpoint` stubbed to fail
+# loudly, so a dry run that stopped being dry fails a case rather than touching
+# the host. The one section that runs it with DRY_RUN=0, for the seed step,
+# replaces the installer and `sudo` with shell functions first, so `mount`
+# there only creates directories under this run's work directory. No device is
+# opened, read or modified.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -107,6 +110,11 @@ case "${args}" in
   *"-nrpo NAME,FSTYPE"*)
     [[ -n "${STUB_SIGS_FAIL:-}" ]] && exit 1
     printf '%s\n' "${STUB_SIGS-}" ;;
+  # The partition table flow_baremetal reads back after the installer ran, to
+  # find the root partition it then mounts and seeds.
+  *"-nrpo NAME,PARTN"*)
+    [[ -n "${STUB_PARTS_FAIL:-}" ]] && exit 1
+    printf '%s\n' "${STUB_PARTS-}" ;;
   *"-srnpo NAME,TYPE"*)
     [[ -n "${STUB_ANCESTORS_FAIL:-}" ]] && exit 1
     printf '%s\n' "${STUB_ANCESTORS-}" ;;
@@ -453,8 +461,9 @@ fi
 # The VM flow writes the admin account's seed onto an ISO; the bare-metal flow
 # writes the same seed straight into the new deployment's /var. The cases above
 # check the VM half's document line by line. The bare-metal half writes only on
-# a real install -- flow_baremetal is only ever driven here with DRY_RUN=1 --
-# so nothing can read what it writes. It used to write its own hand copy of the
+# a real install, and every flow_baremetal case below except the seed-step
+# section at the end is a dry run, so for a long time nothing read what it
+# wrote. It used to write its own hand copy of the
 # document, and dropping `groups: [wheel]` from that copy, or flipping its
 # `lock_passwd`, failed no test anywhere: check-invariants compares
 # docs/first-boot.md against every key the script prints, which a second copy
@@ -989,6 +998,238 @@ else
   check "the identity is read once up front and re-read once before installing" 1 \
     "identity was read $(wc -c <"${identity_calls}") time(s), expected 2"
 fi
+
+# ---------------------------------------------------------------------------
+# flow_baremetal, DRY_RUN=0: the seed step
+# ---------------------------------------------------------------------------
+#
+# Every flow_baremetal case above is a dry run, and a dry run prints one
+# sentence where a real install seeds the first admin account. The block behind
+# that sentence is the only part of the bare-metal path that runs after the
+# disk has been erased: it reads the new partition table back, picks partition
+# number 3, mounts it, finds the one deployment under /state/deploy, writes
+# meta-data and user-data into that deployment's /var at mode 0600, and
+# unmounts. Nothing ran any of it. Picking the wrong partition, writing the
+# password hash at the default mode, seeding the wrong directory or leaving the
+# disk mounted all exit 0 with the same transcript -- the first sign would be a
+# machine whose admin account never appears.
+#
+# So the flow runs here with DRY_RUN=0, and the commands that would act on a
+# real disk are replaced inside the subshell rather than on PATH:
+#
+#   - prepare_image and run only record that they were called. The pull and
+#     the installer are not the subject, and run is how the installer command
+#     reaches podman.
+#   - sudo is a function. `sudo mount` lays out an installed root filesystem
+#     (/state/deploy holding the deployments STUB_DEPLOYS names) inside the
+#     directory the flow mounts on; `sudo umount` moves that tree out to the
+#     case's probe directory, the way unmounting empties a mount point, so the
+#     flow's own rmdir works and what it wrote can still be read afterwards.
+#     Every other command sudo is given runs for real, inside that tree.
+#   - mountpoint answers from the same state, so a refusal after the mount is
+#     cleaned up by the real EXIT handler.
+#
+# `[ -b ]` is real here too, so partition 3 is a symlink to the block device
+# token: a different name from the disk, so mounting the disk instead of the
+# partition shows, and still a block device. It is never opened: mount is the
+# function above, not mount(8).
+
+# The deployment name an install produces: a checksum-like directory.
+INSTALL_DEPLOY='0123abcd.0'
+
+install_case_number=0
+new_install_case() {
+  install_case_number=$((install_case_number + 1))
+  INSTALL_PROBE="${WORK_DIR}/install${install_case_number}"
+  INSTALL_TMP="${INSTALL_PROBE}/tmp"
+  INSTALL_LOG="${INSTALL_PROBE}/calls"
+  mkdir -p "${INSTALL_TMP}"
+  : >"${INSTALL_LOG}"
+  export INSTALL_PROBE INSTALL_LOG
+}
+install_calls() { cat -- "${INSTALL_LOG}"; }
+install_seed_dir() {
+  printf '%s\n' "${INSTALL_PROBE}/rootfs/state/deploy/$1/var/lib/cloud/seed/nocloud"
+}
+# Every file the flow left in the installed tree, relative to its root.
+install_written() {
+  if [[ -d "${INSTALL_PROBE}/rootfs" ]]; then
+    (cd -- "${INSTALL_PROBE}/rootfs" && find . -type f | sort | tr '\n' ' ')
+  fi
+}
+
+run_install() {
+  # shellcheck disable=SC2016
+  OUT="$(
+    PATH="${STUB_DIR}:${PATH}" HOME="${FLOW_HOME}" TMPDIR="${INSTALL_TMP}" "${BASH}" -c '
+      source "$1" 2>/dev/null
+      shift
+      DRY_RUN=0
+      # Wide open on purpose: a seed file left at the default mode would then
+      # be readable by everyone, which is what the 0600 cases look for.
+      umask 022
+      running_system_disks() { printf "%s\n" "${STUB_SYSDISKS-}"; }
+      prepare_image() { printf "prepare_image\n" >>"${INSTALL_LOG}"; }
+      run() { printf "run %s\n" "$*" >>"${INSTALL_LOG}"; }
+      mountpoint() { [ -e "${INSTALL_PROBE}/mounted" ]; }
+      sudo() {
+        printf "sudo %s\n" "$*" >>"${INSTALL_LOG}"
+        local deployment
+        case "$1" in
+          mount)
+            [ -n "${STUB_NO_DEPLOY_DIR:-}" ] || mkdir -p -- "$4/state/deploy"
+            # Each deployment holds a tree of its own, as a real one does, so
+            # a search that descended into it would find more than one.
+            for deployment in ${STUB_DEPLOYS-}; do
+              mkdir -p -- "$4/state/deploy/${deployment}/usr"
+            done
+            printf "%s\n" "$4" >"${INSTALL_PROBE}/mounted" ;;
+          umount)
+            mkdir -p -- "${INSTALL_PROBE}/rootfs"
+            if [ -e "$3/state" ]; then
+              mv -- "$3/state" "${INSTALL_PROBE}/rootfs/"
+            fi
+            rm -f -- "${INSTALL_PROBE}/mounted" ;;
+          *) "$@" ;;
+        esac
+      }
+      flow_baremetal
+    ' _ "${QUICKSTART}" 2>&1
+  )"
+  STATUS=$?
+}
+
+INSTALL_ROOTPART="${WORK_DIR}/fixture-part3"
+ln -s -- "${BLOCK_TOKEN}" "${INSTALL_ROOTPART}"
+
+# A partition table with partition number 3 among others, out of order, so
+# taking the first or the last line picks the wrong one, and with a partition
+# 13, so matching the number as a substring finds two.
+INSTALL_PARTS="/dev/fixture1 1
+${INSTALL_ROOTPART} 3
+/dev/fixture2 2
+/dev/fixture13 13"
+
+run_sourced "cloud_config_user_data tester '${FIXTURE_HASH}' ''"
+install_doc="${OUT}"
+
+new_install_case
+STUB_SYSDISKS="" STUB_MOUNTS="" STUB_SIGS="" \
+  STUB_RESOLVED="${BLOCK_TOKEN}" STUB_IDENTITY="${IDENTITY}" \
+  STUB_PARTS="${INSTALL_PARTS}" STUB_DEPLOYS="${INSTALL_DEPLOY}" \
+  run_install <<<"$(baremetal_answers "${BLOCK_TOKEN}" "${BLOCK_TOKEN}" ERASE)"
+assert_status "a confirmed install completes" 0 "${STATUS}"
+assert_contains "the install reports the deployment seeded" "${OUT}" \
+  "cloud-init seeded into the fresh deployment's /var"
+assert_contains "the install names the root partition it found" "${OUT}" \
+  "root partition: ${INSTALL_ROOTPART}"
+assert_absent "the password hash never reaches the transcript" "${OUT}" "STUBHASH"
+mount_line="$(grep -m1 '^sudo mount ' "${INSTALL_LOG}")"
+mount_dir="${mount_line##* }"
+assert_equals "partition number 3 is the one mounted" \
+  "sudo mount -- ${INSTALL_ROOTPART} ${mount_dir}" "${mount_line}"
+assert_equals "the image is prepared, then installed, then the new disk mounted" \
+  "prepare_image run sudo mount" \
+  "$(grep -oE '^(prepare_image|run|sudo mount)' "${INSTALL_LOG}" | tr '\n' ' ' | sed 's/ $//')"
+assert_contains "the installer is run against the resolved disk" "$(install_calls)" \
+  "bootc install to-disk --composefs-backend ${BLOCK_TOKEN}"
+seed_dir="$(install_seed_dir "${INSTALL_DEPLOY}")"
+assert_equals "only the deployment's NoCloud seed is written" \
+  "./state/deploy/${INSTALL_DEPLOY}/var/lib/cloud/seed/nocloud/meta-data ./state/deploy/${INSTALL_DEPLOY}/var/lib/cloud/seed/nocloud/user-data " \
+  "$(install_written)"
+assert_equals "the seeded user-data is the shared cloud-config document" \
+  "${install_doc}" "$(cat -- "${seed_dir}/user-data" 2>/dev/null)"
+assert_equals "the seeded meta-data names the NoCloud instance" \
+  "instance-id: arch-bootc-quickstart" "$(cat -- "${seed_dir}/meta-data" 2>/dev/null)"
+assert_equals "the seeded user-data, which holds the hash, is 0600" \
+  "600" "$(stat -c '%a' -- "${seed_dir}/user-data" 2>/dev/null)"
+assert_equals "the seeded meta-data is 0600" \
+  "600" "$(stat -c '%a' -- "${seed_dir}/meta-data" 2>/dev/null)"
+assert_contains "the mount point is unmounted after seeding" "$(install_calls)" \
+  "sudo umount -- ${mount_dir}"
+assert_equals "the temporary mount point is removed" "" "$(ls -A -- "${INSTALL_TMP}")"
+
+# Refusals before anything is mounted: the partition table cannot be read, or
+# it does not hold exactly one partition number 3, or that partition is not a
+# block device. Each must stop before mount, because every later step writes
+# to whatever was mounted.
+refuse_before_mount() {
+  local description="$1" message="$2"
+  assert_status "${description} is refused" 1 "${STATUS}"
+  assert_contains "${description} is reported" "${OUT}" "${message}"
+  assert_absent "${description} mounts nothing" "$(install_calls)" "sudo mount"
+}
+
+new_install_case
+STUB_SYSDISKS="" STUB_MOUNTS="" STUB_SIGS="" \
+  STUB_RESOLVED="${BLOCK_TOKEN}" STUB_IDENTITY="${IDENTITY}" \
+  STUB_PARTS_FAIL=1 STUB_DEPLOYS="${INSTALL_DEPLOY}" \
+  run_install <<<"$(baremetal_answers "${BLOCK_TOKEN}" "${BLOCK_TOKEN}" ERASE)"
+refuse_before_mount "an unreadable new partition table" \
+  "could not inspect the new partition table on ${BLOCK_TOKEN}"
+
+new_install_case
+STUB_SYSDISKS="" STUB_MOUNTS="" STUB_SIGS="" \
+  STUB_RESOLVED="${BLOCK_TOKEN}" STUB_IDENTITY="${IDENTITY}" \
+  STUB_PARTS="/dev/fixture1 1
+/dev/fixture2 2" STUB_DEPLOYS="${INSTALL_DEPLOY}" \
+  run_install <<<"$(baremetal_answers "${BLOCK_TOKEN}" "${BLOCK_TOKEN}" ERASE)"
+refuse_before_mount "a table with no partition number 3" \
+  "expected exactly one partition number 3 on ${BLOCK_TOKEN}"
+
+new_install_case
+STUB_SYSDISKS="" STUB_MOUNTS="" STUB_SIGS="" \
+  STUB_RESOLVED="${BLOCK_TOKEN}" STUB_IDENTITY="${IDENTITY}" \
+  STUB_PARTS="${INSTALL_PARTS}
+/dev/fixture3 3" STUB_DEPLOYS="${INSTALL_DEPLOY}" \
+  run_install <<<"$(baremetal_answers "${BLOCK_TOKEN}" "${BLOCK_TOKEN}" ERASE)"
+refuse_before_mount "a table with two partitions number 3" \
+  "expected exactly one partition number 3 on ${BLOCK_TOKEN}"
+
+new_install_case
+STUB_SYSDISKS="" STUB_MOUNTS="" STUB_SIGS="" \
+  STUB_RESOLVED="${BLOCK_TOKEN}" STUB_IDENTITY="${IDENTITY}" \
+  STUB_PARTS="/dev/fixture-missing 3" STUB_DEPLOYS="${INSTALL_DEPLOY}" \
+  run_install <<<"$(baremetal_answers "${BLOCK_TOKEN}" "${BLOCK_TOKEN}" ERASE)"
+refuse_before_mount "a partition number 3 that is not a block device" \
+  "expected root partition /dev/fixture-missing not found after install"
+
+# Refusals after the mount: the layout under /state/deploy is not the single
+# deployment the seed path assumes. Nothing may be written -- guessing which
+# deployment boots would seed the wrong one or none -- and the EXIT handler
+# must still unmount the disk and remove the mount point.
+refuse_after_mount() {
+  local description="$1" message="$2"
+  assert_status "${description} is refused" 1 "${STATUS}"
+  assert_contains "${description} is reported" "${OUT}" "${message}"
+  assert_equals "${description} writes no seed" "" "$(install_written)"
+  assert_contains "${description} still unmounts the disk" "$(install_calls)" "sudo umount -- "
+  assert_equals "${description} still removes the mount point" "" "$(ls -A -- "${INSTALL_TMP}")"
+}
+
+new_install_case
+STUB_SYSDISKS="" STUB_MOUNTS="" STUB_SIGS="" \
+  STUB_RESOLVED="${BLOCK_TOKEN}" STUB_IDENTITY="${IDENTITY}" \
+  STUB_PARTS="${INSTALL_PARTS}" STUB_DEPLOYS="" \
+  run_install <<<"$(baremetal_answers "${BLOCK_TOKEN}" "${BLOCK_TOKEN}" ERASE)"
+refuse_after_mount "a root filesystem with no deployment" \
+  "expected exactly one deployment under ${INSTALL_ROOTPART}:/state/deploy"
+
+new_install_case
+STUB_SYSDISKS="" STUB_MOUNTS="" STUB_SIGS="" \
+  STUB_RESOLVED="${BLOCK_TOKEN}" STUB_IDENTITY="${IDENTITY}" \
+  STUB_PARTS="${INSTALL_PARTS}" STUB_DEPLOYS="${INSTALL_DEPLOY} 4567cdef.0" \
+  run_install <<<"$(baremetal_answers "${BLOCK_TOKEN}" "${BLOCK_TOKEN}" ERASE)"
+refuse_after_mount "a root filesystem with two deployments" \
+  "expected exactly one deployment under ${INSTALL_ROOTPART}:/state/deploy"
+
+new_install_case
+STUB_SYSDISKS="" STUB_MOUNTS="" STUB_SIGS="" \
+  STUB_RESOLVED="${BLOCK_TOKEN}" STUB_IDENTITY="${IDENTITY}" \
+  STUB_PARTS="${INSTALL_PARTS}" STUB_NO_DEPLOY_DIR=1 \
+  run_install <<<"$(baremetal_answers "${BLOCK_TOKEN}" "${BLOCK_TOKEN}" ERASE)"
+refuse_after_mount "a root filesystem with no /state/deploy" \
+  "could not inspect deployments under ${INSTALL_ROOTPART}:/state/deploy"
 
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
