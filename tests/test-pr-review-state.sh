@@ -214,7 +214,7 @@ chmod +x "${STUB_DIR}/gh"
 # Build a GraphQL response. Threads and checks are passed in as JSON arrays so
 # each case states only what it is actually testing.
 write_fixture() {
-  local threads="$1" checks="$2" rollup="${3:-SUCCESS}" page_info="${4:-}" target="${5:-${FIXTURE}}"
+  local threads="$1" checks="$2" rollup="${3:-SUCCESS}" page_info="${4:-}" target="${5:-${FIXTURE}}" suites="${6:-[]}"
   [[ -z "${page_info}" ]] && page_info='{"hasNextPage": false, "endCursor": null}'
   cat >"${target}" <<JSON
 {"data":{"repository":{"pullRequest":{
@@ -224,7 +224,8 @@ write_fixture() {
   "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
   "reviewThreads": {"pageInfo": ${page_info}, "nodes": ${threads}},
   "commits": {"nodes": [{"commit": {"statusCheckRollup":
-    $(if [[ "${rollup}" == "null" ]]; then printf 'null'; else printf '{"state": "%s", "contexts": {"nodes": %s}}' "${rollup}" "${checks}"; fi)
+    $(if [[ "${rollup}" == "null" ]]; then printf 'null'; else printf '{"state": "%s", "contexts": {"nodes": %s}}' "${rollup}" "${checks}"; fi),
+    "checkSuites": {"nodes": ${suites}}
   }}]}
 }}}}
 JSON
@@ -250,6 +251,15 @@ running_check_run() { # name status
 # `targetUrl` under different names than a CheckRun does.
 status_context() { # context state
   printf '{"__typename":"StatusContext","context":"%s","state":"%s","targetUrl":"https://example.invalid/status"}' "$1" "$2"
+}
+
+# A check suite as the commit's checkSuites connection returns it. `runs` is
+# the suite's check-run count; a workflow that failed to start has none.
+check_suite() { # workflow status conclusion runs
+  local conclusion="null"
+  [[ "$3" != "null" ]] && conclusion="\"$3\""
+  printf '{"status":"%s","conclusion":%s,"workflowRun":{"url":"https://example.invalid/suite","workflow":{"name":"%s"}},"checkRuns":{"totalCount":%s}}' \
+    "$2" "${conclusion}" "$1" "$4"
 }
 
 run_script() {
@@ -348,6 +358,26 @@ for failing_state in TIMED_OUT CANCELLED ERROR ACTION_REQUIRED STARTUP_FAILURE S
   assert_contains "${failing_state} is reported in the check list" "${output}" "${failing_state:0:14}"
   assert_contains "${failing_state} reaches the outstanding line" "${output}" "1 failing check(s)"
 done
+
+# A workflow that fails before creating a job (invalid YAML, a bad `uses:`)
+# produces no check run at all, so the rollup can be empty or absent; GitHub
+# reports STARTUP_FAILURE only on the check suite. The gate has to read it
+# there, or that commit exits 0 with "no checks ran".
+write_fixture "[]" "[]" null "" "${FIXTURE}" \
+  "[$(check_suite 'Build' COMPLETED STARTUP_FAILURE 0)]"
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "a workflow that could not start fails the gate" 1 "$?"
+assert_contains "the workflow that could not start is named" "${output}" "STARTUP_FAILUR  Build"
+assert_contains "a startup failure reaches the outstanding line" "${output}" "1 failing check(s)"
+
+# The suite is read only when it has no runs to speak for it. A suite whose runs
+# are already in the rollup, one still queued, and one that is not an Actions
+# workflow (other apps leave empty suites behind on every push) add nothing.
+write_fixture "[]" "[$(check_run 'Shell tests and coverage' SUCCESS)]" SUCCESS "" "${FIXTURE}" \
+  "[$(check_suite 'Shell' COMPLETED FAILURE 1), $(check_suite 'Build' QUEUED null 0), {\"status\":\"COMPLETED\",\"conclusion\":\"STALE\",\"workflowRun\":null,\"checkRuns\":{\"totalCount\":0}}]"
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "suites with runs, queued suites and non-Actions suites add no checks" 0 "$?"
+assert_contains "only the rollup's check is counted" "${output}" "0 failing check(s), 0 still running"
 
 # The script lists the states that mean "passed" and "still running" and counts
 # everything else as failing. A state GitHub adds later must therefore fail the
