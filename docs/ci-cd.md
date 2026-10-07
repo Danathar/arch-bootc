@@ -659,6 +659,51 @@ the step every listed path plus a set of look-alikes. The stub makes the test
 deterministic and network-free; the first scheduled run is the check against
 the live API.
 
+## Auto issues for failed scheduled runs
+
+`.github/workflows/auto-issues.yml` turns a red scheduled run into an issue.
+Without it, a daily build that fails with no commit behind it shows up only as
+a red row in the Actions tab and an email to whoever is subscribed, and the
+images quietly stop being refreshed. It runs daily at 13:17 UTC, after both
+daily workflows have finished, and on `workflow_dispatch`.
+
+It reads two workflows, each on its own: `build.yml` and
+`nightly-compliance.yml`. For each, it takes the newest **completed**
+**scheduled** run on `main` and decides:
+
+| Newest run | What the job does |
+| --- | --- |
+| `failure`, `timed_out` or `startup_failure` | Opens an issue, or comments on the one already open |
+| Started more than 48 hours ago, whatever its result | Opens or comments the same way: the schedule stopped running |
+| `success` | Closes the open issue, if any, with a comment linking the run |
+| `cancelled` or anything else | Nothing; a cancelled run says nothing about the image |
+| No scheduled run at all | Nothing; a fork that just enabled Actions has none yet |
+
+There is at most one open issue per workflow. The job finds it by a hidden
+marker in its body (`<!-- auto-issues:build.yml -->`) **and** by its author,
+`github-actions`, so an issue a person wrote that quotes the marker is never
+written on. Each issue or comment also carries a run marker, so a run that is
+already on the issue is not reported a second time when the job is dispatched
+again by hand.
+
+The job's token is `actions: read` and `issues: write`, declared on the job and
+written down in `.github/policies/workflow-permissions.json`. It checks nothing
+out and runs no action. Everything it writes into an issue comes from the
+Actions API (run id, URL, conclusion, start time, commit) or is a fixed
+sentence in the step, so nothing an outsider typed reaches the issue. The issue
+is a pointer to the run, not a diagnosis: what to do next for each workflow is
+in [ai-ops-runbook.md](ai-ops-runbook.md).
+
+This does not catch the case GitHub's 60-day inactivity rule causes: that rule
+disables every scheduled workflow at once, this one included.
+
+`tests/test-auto-issues.sh` executes the step's actual `run:` body against a
+`gh` stub serving staged JSON and the real `jq`: a first failure, `timed_out`
+and `startup_failure`, a comment on the open issue, a person's look-alike
+issue, a run already reported, a close on success, a cancelled run, a stale
+schedule on either side of 48 hours, no runs at all, and a failed API read,
+which must fail the step rather than open a duplicate.
+
 ## Pruning old package versions
 
 Every publish pushes `latest`, `latest.YYYYMMDD` and `YYYYMMDD` for all three

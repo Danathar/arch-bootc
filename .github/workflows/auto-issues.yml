@@ -1,0 +1,179 @@
+---
+name: File issues for failed scheduled runs
+on:
+  schedule:
+    # build.yml starts at 10:05 UTC and its scheduled runs have finished by
+    # about 11:50 (build_push alone may take 90 minutes); nightly-compliance.yml
+    # starts at 05:40 and takes minutes. 13:17 reads both after they are done.
+    - cron: "17 13 * * *"
+  workflow_dispatch:
+
+# Two runs at once could each find no open issue and each open one.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# Turn a failed scheduled run into an issue, so the failure waits in the issue
+# list instead of only in a red row of the Actions tab or an email.
+#
+# The two scheduled workflows this reads are the ones whose failure means
+# something a user would notice: when build.yml's daily run fails, the
+# published images are not refreshed and installed systems receive no updates
+# that day; when nightly-compliance.yml fails, one of its checks (repository
+# invariants, the bootc pin, published signatures) stopped holding. Both are
+# exactly the kind of failure that can happen with no commit at all, so no
+# pull request is there to catch it.
+#
+# Per watched workflow, read the newest *completed* scheduled run on main:
+#
+#   failure, timed_out, startup_failure
+#               -- open an issue, or comment on the one already open
+#   success     -- close the open issue, if any, with a comment
+#   cancelled, skipped, anything else
+#               -- leave everything alone; a cancelled run says nothing
+#   older than 48 hours, or none at all
+#               -- the schedule stopped running; treated like a failure
+#
+# One open issue per workflow at most. It is found by a marker comment in its
+# body and by its author, so a person's issue quoting the marker is never
+# taken over. A run already mentioned on that issue is not mentioned again, so
+# re-running this workflow by hand does not repeat a comment.
+#
+# Nothing here is read from an issue: the only text written into one is the
+# run's id, URL, conclusion, start time and commit, all from the Actions API,
+# and fixed sentences below. No checkout, no action, no build.
+jobs:
+  file-issues:
+    name: File or close an issue per watched scheduled workflow
+    runs-on: ubuntu-26.04
+    # A handful of API calls; anything past 5 minutes is a hang.
+    timeout-minutes: 5
+    permissions:
+      # Read run results.
+      actions: read
+      # Open, comment on and close the issues this job files.
+      issues: write
+    steps:
+      - name: File or close issues for scheduled runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # The bot's login as `gh issue list` reports an issue's author. A
+          # comment's author is reported without the `app/` prefix.
+          bot="app/github-actions"
+          max_age_hours=48
+          now="$(date -u +%s)"
+
+          for workflow in build.yml nightly-compliance.yml; do
+            case "${workflow}" in
+              build.yml)
+                what="the daily image build"
+                impact="The published images were not refreshed by this run, so installed systems get no updates until a scheduled build succeeds again."
+                ;;
+              nightly-compliance.yml)
+                what="the nightly compliance checks"
+                impact="One of the checks that can stop holding without any commit (repository invariants, the bootc pin, or the published signatures) failed. See docs/ci-cd.md, section \"Nightly compliance\"."
+                ;;
+            esac
+            marker="<!-- auto-issues:${workflow} -->"
+
+            runs="$(gh run list --repo "${REPO}" --workflow "${workflow}" \
+              --branch main --event schedule --status completed --limit 1 \
+              --json databaseId,conclusion,url,createdAt,headSha)"
+
+            issue="$(gh issue list --repo "${REPO}" --state open --limit 1000 \
+              --json number,author,body |
+              jq -r --arg bot "${bot}" --arg marker "${marker}" \
+                '[.[] | select(.author.login == $bot and (.body | contains($marker)))]
+                 | sort_by(.number) | first | .number // empty')"
+
+            if [[ "$(jq length <<<"${runs}")" == "0" ]]; then
+              state="never"
+              run_id="none"
+              conclusion="none"
+            else
+              run_id="$(jq -r '.[0].databaseId' <<<"${runs}")"
+              conclusion="$(jq -r '.[0].conclusion' <<<"${runs}")"
+              run_url="$(jq -r '.[0].url' <<<"${runs}")"
+              started="$(jq -r '.[0].createdAt' <<<"${runs}")"
+              commit="$(jq -r '.[0].headSha' <<<"${runs}")"
+              age_hours=$(((now - $(date -u -d "${started}" +%s)) / 3600))
+              if ((age_hours >= max_age_hours)); then
+                state="stale"
+              else
+                case "${conclusion}" in
+                  failure | timed_out | startup_failure) state="failed" ;;
+                  success) state="passed" ;;
+                  *) state="ignored" ;;
+                esac
+              fi
+            fi
+            echo "${workflow}: newest completed scheduled run ${run_id} (${conclusion}) -> ${state}; open issue: ${issue:-none}"
+
+            case "${state}" in
+              never | ignored)
+                # No scheduled run yet (a fork that just enabled Actions), or a
+                # cancelled or skipped one: neither says anything is wrong.
+                continue
+                ;;
+              passed)
+                if [[ -n "${issue}" ]]; then
+                  gh issue close "${issue}" --repo "${REPO}" --reason completed \
+                    --comment "The scheduled run of ${what} on \`main\` succeeded again: ${run_url} (started ${started}, commit ${commit}). Closing; a new issue is opened if it fails again."
+                  echo "closed #${issue}"
+                fi
+                continue
+                ;;
+              failed)
+                title="Scheduled run of ${what} failed on main"
+                line="The newest scheduled run of ${what} on \`main\` ended with \`${conclusion}\`."
+                ;;
+              stale)
+                title="Scheduled run of ${what} has stopped running on main"
+                line="The newest completed scheduled run of ${what} on \`main\` started at ${started}, more than ${max_age_hours} hours ago. It runs daily, so the schedule has stopped: the workflow may be disabled, or GitHub may have paused scheduled runs."
+                impact=""
+                ;;
+            esac
+
+            # Keyed by state as well as run, so a failed run that is still the
+            # newest two days later gets the "stopped running" comment too.
+            run_marker="<!-- auto-issues-run:${run_id}:${state} -->"
+            body="$(mktemp)"
+            {
+              echo "${line}"
+              echo
+              echo "- Run: ${run_url}"
+              echo "- Started: ${started}"
+              echo "- Commit: ${commit}"
+              if [[ -n "${impact}" ]]; then
+                echo
+                echo "${impact}"
+              fi
+              echo
+              echo "Open the run and read the failing job's log. This issue is closed automatically when a later scheduled run succeeds."
+              echo
+              echo "${run_marker}"
+            } >"${body}"
+
+            if [[ -z "${issue}" ]]; then
+              {
+                echo
+                echo "${marker}"
+                echo
+                echo "<sub>Opened by \`.github/workflows/auto-issues.yml\`. It reads run results and changes nothing else.</sub>"
+              } >>"${body}"
+              gh issue create --repo "${REPO}" --title "${title}" --body-file "${body}"
+              continue
+            fi
+
+            seen="$(gh issue view "${issue}" --repo "${REPO}" --json body,comments |
+              jq --arg run "${run_marker}" '[.body, .comments[].body] | any(contains($run))')"
+            if [[ "${seen}" == "true" ]]; then
+              echo "#${issue} already mentions run ${run_id}"
+              continue
+            fi
+            gh issue comment "${issue}" --repo "${REPO}" --body-file "${body}"
+          done
