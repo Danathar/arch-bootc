@@ -226,8 +226,8 @@ run_step >/dev/null 2>&1
 assert_status "two green scheduled runs exit 0" 0 "$?"
 assert_equal "two green scheduled runs write nothing" "" "$(writes)"
 assert_equal "each workflow's newest completed scheduled run on main is what is read" \
-  "run list --repo Danathar/arch-bootc --workflow build.yml --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha
-run list --repo Danathar/arch-bootc --workflow nightly-compliance.yml --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha" \
+  "run list --repo Danathar/arch-bootc --workflow build.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha
+run list --repo Danathar/arch-bootc --workflow nightly-compliance.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha" \
   "$(grep '^run list' "${GH_LOG}")"
 
 # --- A failed build opens one issue ------------------------------------------

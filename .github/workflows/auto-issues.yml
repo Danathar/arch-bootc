@@ -80,7 +80,10 @@ jobs:
             esac
             marker="<!-- auto-issues:${workflow} -->"
 
-            runs="$(gh run list --repo "${REPO}" --workflow "${workflow}" \
+            # --all: gh documents that --workflow skips disabled workflows
+            # without it. A disabled build.yml must reach the "stale" branch
+            # below, not fail this step.
+            runs="$(gh run list --repo "${REPO}" --workflow "${workflow}" --all \
               --branch main --event schedule --status completed --limit 1 \
               --json databaseId,conclusion,url,createdAt,headSha)"
 
