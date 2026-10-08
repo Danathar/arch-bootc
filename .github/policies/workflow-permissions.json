@@ -23,6 +23,12 @@
         "work-order": {"contents": "read", "issues": "write", "pull-requests": "write"}
       }
     },
+    "auto-issues.yml": {
+      "workflow": null,
+      "jobs": {
+        "file-issues": {"actions": "read", "issues": "write"}
+      }
+    },
     "build.yml": {
       "workflow": null,
       "jobs": {
