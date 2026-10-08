@@ -1996,7 +1996,7 @@ if ((renovate_readable)); then
 
   # A packageRule that names a dependency no custom manager produces is a rule
   # that matches nothing. Renovate does not warn about it, and the two rules
-  # here that carry a safety decision -- never digest-pin chunkah/shellcheck,
+  # here that carry a safety decision -- never digest-pin shellcheck,
   # never automerge a major bootc -- would both fail open that way.
   unmatched_rule_deps=""
   while IFS= read -r ruled_dep; do
@@ -7230,7 +7230,7 @@ else
   done < <(tr ';' '\n' <<<"${quality_covered_claim}")
 
   assert_equal "every test file the document credits with a workflow body was checked" \
-    "${quality_clauses_checked}" "5"
+    "${quality_clauses_checked}" "6"
 
   # "One more ... is read for its `env:` block but never executed" -- the suite
   # step is the one body a test names without running, so it must stay on the
@@ -9547,10 +9547,12 @@ RUNBOOK_QUOTES
     "${NIGHTLY_WORKFLOW}" 'cron: "40 5 \* \* \*"'
   assert_present "agent-audit.yml still runs monthly on the 1st at 05:23 UTC, as the runbook says" \
     ".github/workflows/agent-audit.yml" 'cron: "23 5 1 \* \*"'
+  assert_present "auto-issues.yml still runs daily at 13:17 UTC, as the runbook says" \
+    ".github/workflows/auto-issues.yml" 'cron: "17 13 \* \* \*"'
   runbook_scheduled="$(grep -lE '^  schedule:' .github/workflows/*.y*ml | LC_ALL=C sort | tr '\n' ' ')"
-  assert_equal "agent-audit.yml, build.yml and nightly-compliance.yml are the only scheduled workflows, as the runbook says" \
+  assert_equal "agent-audit.yml, auto-issues.yml, build.yml and nightly-compliance.yml are the only scheduled workflows, as the runbook says" \
     "${runbook_scheduled}" \
-    ".github/workflows/agent-audit.yml .github/workflows/build.yml .github/workflows/nightly-compliance.yml "
+    ".github/workflows/agent-audit.yml .github/workflows/auto-issues.yml .github/workflows/build.yml .github/workflows/nightly-compliance.yml "
   # The "scheduled run is missing" section queries each scheduled workflow on
   # its own, by file, so one running cannot hide the other's absence. Derive
   # the expected pair from the tree rather than restating it.
@@ -10203,7 +10205,9 @@ assert_equal "${SUPPLY_DOC}'s custom-manager rows name every dependency renovate
 supply_wrong_pin=""
 while IFS=$'\t' read -r name datasource digest; do
   [[ -n "${name}" ]] || continue
-  if [[ "${digest}" == "true" ]]; then
+  if [[ "${digest}" == "true" && "${datasource}" == "docker" ]]; then
+    expected="digest"
+  elif [[ "${digest}" == "true" ]]; then
     expected="commit"
   elif [[ "${datasource}" == "docker" ]]; then
     expected="Version tag"
@@ -10728,6 +10732,212 @@ else
   # The manual check the last criterion names has to still be a VM procedure.
   assert_present "CLAUDE.md, which the Project status section names as the manual VM check, still runs virt-install" \
     "CLAUDE.md" 'virt-install'
+fi
+
+# ---------------------------------------------------------------------------
+group "Agent boundaries page (docs/agent-boundaries.md: each limit an agent works inside, and what enforces it)"
+
+# docs/agent-boundaries.md sorts the limits an agent works inside by what holds
+# them: GitHub, the required check, the agent's tool, or instruction only. Every
+# row is a claim about a file the page does not own -- the ruleset, the two
+# copies of the required job, .claude/settings.json, renovate.json, the Cursor
+# rule, and the signing step in build.yml. Any of those can move without anyone
+# opening the page, and a limit that silently moved from "GitHub" to
+# "instruction only" is the one a reader most needs to hear about.
+#
+# The sharpest claim is the last one: that push access reaches SIGNING_SECRET,
+# because a pull request from a branch here runs its own workflow files with
+# this repository's secrets and no GitHub environment guards the key. That is
+# asserted from the tree (the trigger, the one step that reads the secret, the
+# absence of any `environment:` key), so the day a protected environment is
+# added, this fails and the page is corrected rather than left alarming a
+# reader about a gap that closed.
+#
+# What the tree cannot show -- the live ruleset, and whether the secret is a
+# repository or an environment secret on GitHub -- is left to
+# docs/branch-protection.md's commands.
+
+AB_DOC="docs/agent-boundaries.md"
+AB_RULESET=".github/rulesets/main.json"
+AB_SETTINGS=".claude/settings.json"
+AB_CURSOR_RULE=".cursor/rules/arch-bootc-safety.mdc"
+AB_DOCS_TESTS=".github/workflows/docs-tests.yml"
+
+if [[ ! -f "${AB_DOC}" ]]; then
+  fail "the agent boundaries page exists" "${AB_DOC} is missing"
+elif ! jq -e '.rules | type == "array"' "${AB_RULESET}" >/dev/null 2>&1; then
+  fail "the agent boundaries page can be joined to the ruleset" \
+    "${AB_RULESET} is missing, is not JSON, or has no .rules array"
+elif ! jq -e '.permissions | type == "object"' "${AB_SETTINGS}" >/dev/null 2>&1; then
+  fail "the agent boundaries page can be joined to the permission table" \
+    "${AB_SETTINGS} is missing, is not JSON, or has no .permissions object"
+else
+  pass "the agent boundaries page exists"
+
+  # The page with line breaks collapsed, so a sentence that wraps still matches.
+  ab_flat="$(tr '\n' ' ' <"${AB_DOC}" | tr -s ' ')"
+
+  ab_says() { # description fixed-text
+    if grep -Fq -- "$2" <<<"${ab_flat}"; then
+      pass "$1"
+    else
+      fail "$1" "${AB_DOC} no longer says: $2"
+    fi
+  }
+
+  # --- The sections -------------------------------------------------------------
+
+  for ab_heading in \
+    "How the boundaries are enforced" \
+    "Enforced by GitHub" \
+    "Enforced by the required check" \
+    "Enforced by the agent's tool" \
+    "Instruction only" \
+    "What none of this stops" \
+    "Changing a boundary"; do
+    if grep -qxF "## ${ab_heading}" "${AB_DOC}"; then
+      pass "the agent boundaries page has the '${ab_heading}' section"
+    else
+      fail "the agent boundaries page has the '${ab_heading}' section" "no '## ${ab_heading}' heading in ${AB_DOC}"
+    fi
+  done
+
+  # --- Enforced by GitHub ---------------------------------------------------------
+
+  # "is the ruleset on `main`" holds only while it is enforced and scoped to the
+  # default branch; rules and bypass list alone would still pass a ruleset set
+  # to "disabled" or "evaluate", or moved to another branch.
+  assert_equal "the ruleset the page cites is enforced, not evaluated or disabled" \
+    "$(jq -r '.enforcement' "${AB_RULESET}")" "active"
+  assert_equal "the ruleset the page cites applies to main and nothing else" \
+    "$(jq -r '[.target, (.conditions.ref_name.include // [] | join(",")), (.conditions.ref_name.exclude // [] | length)] | join(" ")' "${AB_RULESET}")" \
+    "branch ~DEFAULT_BRANCH 0"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ab_says "the page says the ruleset is the one on main" 'is the ruleset on `main`'
+  assert_equal "nothing may bypass the ruleset, as the page says" \
+    "$(jq -r '.bypass_actors // [] | length' "${AB_RULESET}")" "0"
+  ab_says "the page says the ruleset has no bypass actor" "It has no bypass actor"
+  # The three limits the page lists, one rule each.
+  for ab_rule in pull_request deletion non_fast_forward required_status_checks; do
+    if jq -e --arg t "${ab_rule}" 'any(.rules[]; .type == $t)' "${AB_RULESET}" >/dev/null; then
+      pass "the ruleset has the ${ab_rule} rule the page describes"
+    else
+      fail "the ruleset has the ${ab_rule} rule the page describes" "no rule of type ${ab_rule} in ${AB_RULESET}"
+    fi
+  done
+  assert_equal "a pull request needs no approval, as the page says" \
+    "$(jq -r '.rules[] | select(.type == "pull_request") | .parameters.required_approving_review_count' "${AB_RULESET}")" "0"
+  ab_says "the page says the ruleset needs no approval" "It needs no approval"
+  ab_contexts="$(jq -r '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context' "${AB_RULESET}")"
+  assert_equal "the ruleset requires one check, the one the page names" "${ab_contexts}" "Shell tests and coverage"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ab_says "the page names the required check" '`Shell tests and coverage`'
+
+  # --- Enforced by the required check ---------------------------------------------
+
+  # Both copies of the required job carry the name and run the invariants, which
+  # is what makes "the second one is where most boundaries become mechanical"
+  # true for a documentation-only pull request as well as for any other.
+  for ab_workflow in "${BUILD_WORKFLOW}" "${AB_DOCS_TESTS}"; do
+    assert_present "${ab_workflow} names a job 'Shell tests and coverage', as the page says" \
+      "${ab_workflow}" '^[[:space:]]+name: Shell tests and coverage$'
+    assert_present "${ab_workflow}'s required job runs tests/check-invariants.sh" \
+      "${ab_workflow}" 'run: \./tests/check-invariants\.sh'
+  done
+  ab_says "the page names the documentation-only copy of the required job" "](../${AB_DOCS_TESTS})"
+
+  # --- Enforced by the agent's tool -----------------------------------------------
+
+  assert_equal "the permission table's hooks block registers the gate the page names" \
+    "$(jq -r '[.hooks.PreToolUse[]?.hooks[]?.command] | map(select(test("/\\.claude/hooks/gate-git-diff\\.sh"))) | length' "${AB_SETTINGS}")" "1"
+  for ab_deny in 'Read(./cosign.key)' 'Bash(git reset --hard*)' 'Bash(git push --force*)' 'Bash(podman system prune*)'; do
+    if jq -e --arg r "${ab_deny}" '.permissions.deny | index($r)' "${AB_SETTINGS}" >/dev/null; then
+      pass "the permission table denies ${ab_deny}, as the page says"
+    else
+      fail "the permission table denies ${ab_deny}, as the page says" "no '${ab_deny}' in .permissions.deny"
+    fi
+  done
+  for ab_ask in 'Bash(sudo *)' 'Bash(git push*)' 'Bash(gh pr create*)' 'Bash(gh pr merge*)'; do
+    if jq -e --arg r "${ab_ask}" '.permissions.ask | index($r)' "${AB_SETTINGS}" >/dev/null; then
+      pass "the permission table prompts for ${ab_ask}, as the page says"
+    else
+      fail "the permission table prompts for ${ab_ask}, as the page says" "no '${ab_ask}' in .permissions.ask"
+    fi
+  done
+  # The page names this knob as unset, and so a limit of the table. Setting it
+  # closes that limit, and the page has to stop listing it.
+  assert_equal "permissions.disableBypassPermissionsMode is unset, as the page says" \
+    "$(jq -r '.permissions.disableBypassPermissionsMode // "unset"' "${AB_SETTINGS}")" "unset"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ab_says "the page says the bypass knob is not set" '`permissions.disableBypassPermissionsMode` is not set'
+  assert_equal "no .claude/settings.local.json is tracked, as the page says" \
+    "$(git ls-files -- .claude/settings.local.json)" ""
+  assert_equal "renovate.json does not automerge a major bootc-dev/bootc bump, as the page says" \
+    "$(jq -r '[.packageRules[] | select(.matchPackageNames == ["bootc-dev/bootc"]) | select(.matchUpdateTypes == ["major"]) | .automerge] | first' renovate.json)" "false"
+
+  # --- Instruction only -------------------------------------------------------------
+
+  assert_present "the Cursor rule applies to every session, as the page says" "${AB_CURSOR_RULE}" '^alwaysApply: true$'
+  assert_present "AGENTS.md still lists the consent gates the page summarizes" AGENTS.md \
+    '^Treat these as separate consent gates:$'
+
+  # --- What none of this stops ------------------------------------------------------
+
+  # Three facts carry the claim that push access reaches SIGNING_SECRET: build.yml
+  # runs on pull_request, the secret is read by one step only (so the step's `if:`
+  # is the only thing keeping it out of a pull request build), and no workflow
+  # names a GitHub environment that could hold the key back for approval.
+  assert_present "build.yml runs on pull_request, as the page says" "${BUILD_WORKFLOW}" '^  pull_request:$'
+  ab_secret_reads="$(cat "${workflows[@]}" | grep -Ev '^[[:space:]]*#' | grep -c 'secrets\.SIGNING_SECRET')"
+  assert_equal "SIGNING_SECRET is read in exactly one place, as the page says" "${ab_secret_reads}" "1"
+  ab_sign_step="$(awk '/^      - name: Sign container image$/{ inside = 1; print; next } inside && /^      - /{ exit } inside' "${BUILD_WORKFLOW}")"
+  if grep -Fq 'secrets.SIGNING_SECRET' <<<"${ab_sign_step}"; then
+    pass "the one read of SIGNING_SECRET is in the 'Sign container image' step"
+  else
+    fail "the one read of SIGNING_SECRET is in the 'Sign container image' step" \
+      "no secrets.SIGNING_SECRET inside that step of ${BUILD_WORKFLOW}"
+  fi
+  if grep -Fq "if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)" <<<"${ab_sign_step}"; then
+    pass "the signing step runs only on the default branch and never on a pull request, as the page says"
+  else
+    fail "the signing step runs only on the default branch and never on a pull request, as the page says" \
+      "the 'Sign container image' step's if: changed"
+  fi
+  assert_absent_in "no workflow names a GitHub environment, as the page says" \
+    '^[[:space:]]+environment:' "${workflows[@]}"
+  ab_says "the page says no environment guards the key" "No GitHub environment guards the key"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ab_says "the page names the step that reads the key" '`Sign container image`'
+
+  # --- Changing a boundary ----------------------------------------------------------
+
+  # Every boundary file the page calls T3 has to be T3 in docs/risk-tiers.md, or
+  # the page hands a reader a tier the classification page does not give.
+  ab_t3="$(awk '/^## T3 — /{ inside = 1; next } inside && /^## /{ exit } inside' docs/risk-tiers.md)"
+  for ab_path in '.github/rulesets/**' .claude/settings.json '.claude/hooks/**' '.claude/skills/**' \
+    "${AB_CURSOR_RULE}" .github/policies/workflow-permissions.json; do
+    if grep -Fq "\`${ab_path}\`" <<<"${ab_t3}"; then
+      pass "docs/risk-tiers.md tiers ${ab_path} as T3, as the page says"
+    else
+      fail "docs/risk-tiers.md tiers ${ab_path} as T3, as the page says" "no \`${ab_path}\` in its T3 section"
+    fi
+  done
+  ab_says "the page says a change to a boundary is T3" "are all T3"
+
+  # --- Every path and link the page names -------------------------------------------
+
+  # Every backticked repository path, except the one the page names precisely
+  # because it is not tracked.
+  ab_missing=""
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  while IFS= read -r ab_path; do
+    [[ "${ab_path}" == .claude/settings.local.json ]] && continue
+    [[ -e "${ab_path}" ]] || ab_missing+="${ab_path} "
+  done < <(grep -oE '`[A-Za-z0-9_.][A-Za-z0-9_./-]*/[A-Za-z0-9_./-]*\.(md|mdc|yml|json|sh)`' "${AB_DOC}" | tr -d '`' | LC_ALL=C sort -u)
+  assert_equal "every repository path the page names exists" "${ab_missing}" ""
+  assert_doc_links_resolve "${AB_DOC}" \
+    "no relative links found; the hand-offs to branch-protection.md, risk-tiers.md and SECURITY-AI.md are gone"
+  assert_present "README.md's documentation table links to the page" README.md '\]\(docs/agent-boundaries\.md\)'
 fi
 
 # ---------------------------------------------------------------------------

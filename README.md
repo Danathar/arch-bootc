@@ -68,6 +68,7 @@ tools, and manual alternatives.
 |            [Change risk tiers](docs/risk-tiers.md) |                                                How a change is classified before it is written, and the evidence each tier needs |
 |     [Branch protection](docs/branch-protection.md) |                          The ruleset that keeps `main` behind a pull request, the check it requires, and how to check it is live |
 |          [Multi-agent work](docs/multi-agent.md) |                                    Which Hive agents work here, how work reaches them, how they avoid each other, and who merges |
+|       [Agent boundaries](docs/agent-boundaries.md) |       The limits agents work inside, and what enforces each one: GitHub, a required check, the agent's tool, or instruction only |
 | [AI security policy](docs/security/SECURITY-AI.md) |                          What agent-assisted changes defend, which inputs are untrusted, and the invariants that hold regardless |
 |    [AI operations runbook](docs/ai-ops-runbook.md) |                              What to do when a workflow goes red, a scheduled run goes missing, or an agent's output looks wrong |
 |                       [Security](SECURITY.md) |                                                                      How to privately report a vulnerability in the image build or CI/CD pipeline |
