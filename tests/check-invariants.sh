@@ -1996,7 +1996,7 @@ if ((renovate_readable)); then
 
   # A packageRule that names a dependency no custom manager produces is a rule
   # that matches nothing. Renovate does not warn about it, and the two rules
-  # here that carry a safety decision -- never digest-pin chunkah/shellcheck,
+  # here that carry a safety decision -- never digest-pin shellcheck,
   # never automerge a major bootc -- would both fail open that way.
   unmatched_rule_deps=""
   while IFS= read -r ruled_dep; do
@@ -7230,7 +7230,7 @@ else
   done < <(tr ';' '\n' <<<"${quality_covered_claim}")
 
   assert_equal "every test file the document credits with a workflow body was checked" \
-    "${quality_clauses_checked}" "5"
+    "${quality_clauses_checked}" "6"
 
   # "One more ... is read for its `env:` block but never executed" -- the suite
   # step is the one body a test names without running, so it must stay on the
@@ -9547,10 +9547,12 @@ RUNBOOK_QUOTES
     "${NIGHTLY_WORKFLOW}" 'cron: "40 5 \* \* \*"'
   assert_present "agent-audit.yml still runs monthly on the 1st at 05:23 UTC, as the runbook says" \
     ".github/workflows/agent-audit.yml" 'cron: "23 5 1 \* \*"'
+  assert_present "auto-issues.yml still runs daily at 13:17 UTC, as the runbook says" \
+    ".github/workflows/auto-issues.yml" 'cron: "17 13 \* \* \*"'
   runbook_scheduled="$(grep -lE '^  schedule:' .github/workflows/*.y*ml | LC_ALL=C sort | tr '\n' ' ')"
-  assert_equal "agent-audit.yml, build.yml and nightly-compliance.yml are the only scheduled workflows, as the runbook says" \
+  assert_equal "agent-audit.yml, auto-issues.yml, build.yml and nightly-compliance.yml are the only scheduled workflows, as the runbook says" \
     "${runbook_scheduled}" \
-    ".github/workflows/agent-audit.yml .github/workflows/build.yml .github/workflows/nightly-compliance.yml "
+    ".github/workflows/agent-audit.yml .github/workflows/auto-issues.yml .github/workflows/build.yml .github/workflows/nightly-compliance.yml "
   # The "scheduled run is missing" section queries each scheduled workflow on
   # its own, by file, so one running cannot hide the other's absence. Derive
   # the expected pair from the tree rather than restating it.
@@ -9582,6 +9584,257 @@ RUNBOOK_QUOTES
     "${BUILD_WORKFLOW}" '--min-versions-to-keep 30'
   assert_absent "renovate.json does not set rebaseWhen to never, which the runbook warns against" \
     "renovate.json" '"rebaseWhen"[[:space:]]*:[[:space:]]*"never"'
+
+  # --- The page's own copies of the triggers, jobs, gates and commands --------
+  #
+  # The checks above read the workflow side: the cron lines, the `needs:` gate,
+  # the matrices. The page says each of those again in its own words -- the
+  # "Starts on" column, "daily 10:05 UTC", "Five jobs", "`build_push` needs
+  # `lint` and `test`" -- and the reader acts on those words, not on the YAML.
+  # Rewording the page to say 11:05, or dropping a trigger from a workflow while
+  # the table still lists it, used to pass. Each claim below is derived from the
+  # workflow and compared with what the page says, both ways.
+
+  # The jobs of one workflow, in file order.
+  runbook_jobs() {
+    awk '
+      /^jobs:$/ { in_jobs = 1; next }
+      /^[A-Za-z_]/ { in_jobs = 0 }
+      in_jobs && /^  [A-Za-z_][A-Za-z0-9_-]*:$/ { print substr($0, 3, length($0) - 3) }
+    ' "$1"
+  }
+
+  # The `types:` listed under the `issues:` and `pull_request:` triggers.
+  runbook_event_types() {
+    awk '
+      /^on:/ { in_on = 1; next }
+      in_on && /^[^[:space:]#]/ { exit }
+      in_on && /^  [A-Za-z_]+:/ { event = $1; next }
+      in_on && /^    [A-Za-z_]+:/ { key = $1; next }
+      in_on && (event == "issues:" || event == "pull_request:") && key == "types:" && /^      - / { print $2 }
+    ' "$1" | LC_ALL=C sort -u
+  }
+
+  # One cron line in the page's words: "daily HH:MM UTC" or "monthly on the
+  # 1st, HH:MM UTC". Anything else prints nothing, so a new kind of schedule
+  # fails below until the page and this function learn to say it.
+  runbook_cron_words() {
+    local minute hour dom month dow
+    read -r minute hour dom month dow <<<"$1"
+    [[ "${minute}" =~ ^[0-9]+$ && "${hour}" =~ ^[0-9]+$ && "${month}" == "*" && "${dow}" == "*" ]] || return 0
+    case "${dom}" in
+      "*") printf 'daily %02d:%02d UTC' "$((10#${hour}))" "$((10#${minute}))" ;;
+      1) printf 'monthly on the 1st, %02d:%02d UTC' "$((10#${hour}))" "$((10#${minute}))" ;;
+    esac
+  }
+
+  # The table's "Starts on" cell: every trigger the workflow has, and none it
+  # does not. Event types are matched in the page's words.
+  runbook_type_words="opened|opened
+reopened|reopened
+synchronize|pushed to
+ready_for_review|ready for review
+labeled|labelled"
+  runbook_sched_section="$(runbook_section 'A scheduled run is missing' | tr '\n' ' ' | tr -s ' ')"
+  runbook_sched_stated=0
+  while IFS= read -r runbook_wf; do
+    [[ -n "${runbook_wf}" ]] || continue
+    runbook_cell="$(grep -F -- "| \`${runbook_wf}\` |" "${RUNBOOK_DOC}" | head -n 1 | awk -F'|' '{ print tolower($4) }')"
+    runbook_triggers=" $(cicd_triggers "${runbook_wf}") "
+    runbook_cell_bad=""
+
+    runbook_has_manual=no
+    [[ "${runbook_triggers}" == *" workflow_dispatch "* ]] && runbook_has_manual=yes
+    runbook_says_manual=no
+    grep -qwF -- "manual" <<<"${runbook_cell}" && runbook_says_manual=yes
+    [[ "${runbook_has_manual}" == "${runbook_says_manual}" ]] ||
+      runbook_cell_bad+="workflow_dispatch is '${runbook_has_manual}' but the cell's 'manual' is '${runbook_says_manual}'; "
+
+    runbook_has_issues=no
+    [[ "${runbook_triggers}" == *" issues "* ]] && runbook_has_issues=yes
+    runbook_says_issue=no
+    grep -qwF -- "issue" <<<"${runbook_cell}" && runbook_says_issue=yes
+    [[ "${runbook_has_issues}" == "${runbook_says_issue}" ]] ||
+      runbook_cell_bad+="the issues trigger is '${runbook_has_issues}' but the cell's 'issue' is '${runbook_says_issue}'; "
+
+    runbook_types="$(runbook_event_types "${runbook_wf}")"
+    while IFS='|' read -r runbook_type runbook_words; do
+      runbook_has_type=no
+      grep -qxF -- "${runbook_type}" <<<"${runbook_types}" && runbook_has_type=yes
+      runbook_says_type=no
+      grep -qF -- "${runbook_words}" <<<"${runbook_cell}" && runbook_says_type=yes
+      [[ "${runbook_has_type}" == "${runbook_says_type}" ]] ||
+        runbook_cell_bad+="event type ${runbook_type} is '${runbook_has_type}' but the cell's '${runbook_words}' is '${runbook_says_type}'; "
+    done <<<"${runbook_type_words}"
+    runbook_unworded="$(comm -23 <(printf '%s\n' "${runbook_types}" | grep -v '^$') \
+      <(cut -d'|' -f1 <<<"${runbook_type_words}" | LC_ALL=C sort -u) | tr '\n' ' ')"
+    [[ -z "${runbook_unworded}" ]] ||
+      runbook_cell_bad+="event types this check has no words for: ${runbook_unworded}; "
+
+    runbook_crons="$(sed -nE 's/^ *- cron: "([^"]+)".*$/\1/p' "${runbook_wf}")"
+    if [[ -z "${runbook_crons}" ]]; then
+      grep -qiE -- 'daily|weekly|monthly|utc' <<<"${runbook_cell}" &&
+        runbook_cell_bad+="the cell gives a schedule but the workflow has none; "
+    else
+      while IFS= read -r runbook_cron; do
+        runbook_cron_text="$(runbook_cron_words "${runbook_cron}")"
+        if [[ -z "${runbook_cron_text}" ]]; then
+          runbook_cell_bad+="cron '${runbook_cron}' is a schedule this check cannot word; "
+          continue
+        fi
+        grep -qF -- "${runbook_cron_text,,}" <<<"${runbook_cell}" ||
+          runbook_cell_bad+="cron '${runbook_cron}' is '${runbook_cron_text}', not in the cell; "
+        runbook_sched_stated=$((runbook_sched_stated + 1))
+        grep -qiF -- "\`${runbook_wf##*/}\` (${runbook_cron_text})" <<<"${runbook_sched_section}" ||
+          runbook_cell_bad+="'A scheduled run is missing' does not say \`${runbook_wf##*/}\` (${runbook_cron_text}); "
+      done <<<"${runbook_crons}"
+    fi
+
+    if [[ -z "${runbook_cell}" ]]; then
+      fail "the runbook's 'Starts on' cell for ${runbook_wf} is the workflow's triggers" "no table row for it"
+    elif [[ -z "${runbook_cell_bad}" ]]; then
+      pass "the runbook's 'Starts on' cell for ${runbook_wf} is the workflow's triggers"
+    else
+      fail "the runbook's 'Starts on' cell for ${runbook_wf} is the workflow's triggers" "${runbook_cell_bad}"
+    fi
+  done <<<"${runbook_tree_workflows}"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  assert_equal "'A scheduled run is missing' gives a time for every schedule and for nothing else" \
+    "$(grep -oiE -- '`[A-Za-z0-9_.-]+\.ya?ml` \((daily|weekly|monthly)[^)]*\)' <<<"${runbook_sched_section}" | grep -c .)" \
+    "${runbook_sched_stated}"
+
+  # "Five jobs: `lint`, ...", "One job, `test`", "one job (`audit`)": the count
+  # word, and the backticked job names when the sentence gives them, are the
+  # workflow's jobs in file order. A job the sentence marks "`main` only" is
+  # exactly a job whose `if:` refuses pull requests and every branch but the
+  # default one.
+  runbook_main_only_if="    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+  runbook_counted=0
+  runbook_number_alt="$(IFS='|'; printf '%s' "${NUMBER_WORDS[*]:1}")"
+  while IFS= read -r runbook_wf; do
+    [[ -n "${runbook_wf}" ]] || continue
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    runbook_wf_flat="$(runbook_section "\`${runbook_wf}\`" | tr '\n' ' ' | tr -s ' ')"
+    # A sentence ends at a full stop followed by a space, so `build.yml` does
+    # not end one.
+    runbook_jobs_sentence="$(grep -oiE -- "(^|[^A-Za-z])(${runbook_number_alt}) jobs?[,:( ]([^.]|\\.[^ ])*\\.( |\$)" <<<"${runbook_wf_flat}" |
+      head -n 1 | sed -E 's/^[^A-Za-z]+//; s/ $//')"
+    [[ -n "${runbook_jobs_sentence}" ]] || continue
+    runbook_counted=$((runbook_counted + 1))
+    runbook_tree_jobs="$(runbook_jobs "${runbook_wf}")"
+    runbook_tree_count="$(grep -c . <<<"${runbook_tree_jobs}")"
+    assert_equal "the runbook's job count for ${runbook_wf} is the number of jobs it has" \
+      "$(awk '{ print tolower($1) }' <<<"${runbook_jobs_sentence}")" \
+      "$(number_word "${runbook_tree_count}")"
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    runbook_named_jobs="$(grep -oE -- '`[A-Za-z_][A-Za-z0-9_-]*`' <<<"${runbook_jobs_sentence%%, one *}" |
+      tr -d '`' | grep -vxF -- 'main' | awk '!seen[$0]++')"
+    [[ -n "${runbook_named_jobs}" ]] || continue
+    assert_equal "the jobs the runbook lists for ${runbook_wf} are its jobs, in order" \
+      "${runbook_named_jobs//$'\n'/ }" "${runbook_tree_jobs//$'\n'/ }"
+    runbook_main_only_bad=""
+    while IFS= read -r runbook_job; do
+      # shellcheck disable=SC2016 # the backticks are the page's own markup
+      runbook_note="$(grep -oE -- "\`${runbook_job}\`( \([^)]*\))?" <<<"${runbook_jobs_sentence}" | head -n 1)"
+      runbook_says_main=no
+      # shellcheck disable=SC2016 # the backticks are the page's own markup
+      [[ "${runbook_note}" == *'`main` only'* ]] && runbook_says_main=yes
+      runbook_is_main=no
+      grep -qxF -- "${runbook_main_only_if}" <<<"$(cicd_job "${runbook_wf}" "${runbook_job}")" && runbook_is_main=yes
+      [[ "${runbook_says_main}" == "${runbook_is_main}" ]] ||
+        runbook_main_only_bad+="${runbook_job}: page '${runbook_says_main}', workflow '${runbook_is_main}'; "
+    done <<<"${runbook_tree_jobs}"
+    assert_equal "the jobs the runbook marks \`main\` only in ${runbook_wf} are the ones whose if: refuses pull requests and other branches" \
+      "${runbook_main_only_bad}" ""
+  done <<<"${runbook_tree_workflows}"
+  assert_equal "six workflow sections still say how many jobs they have" "${runbook_counted}" "6"
+
+  # "Three jobs, one checking step each": each nightly job has exactly one.
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  assert_present "the runbook still says each nightly job has one checking step" \
+    "${RUNBOOK_DOC}" '^Three jobs, one checking step each\.'
+  assert_equal "each nightly job has exactly one checking step" \
+    "$(cut -d'|' -f1 <<<"${runbook_nightly_tree}" | uniq -d | tr '\n' ' ')$(comm -23 \
+      <(runbook_jobs "${NIGHTLY_WORKFLOW}" | LC_ALL=C sort) \
+      <(cut -d'|' -f1 <<<"${runbook_nightly_tree}" | LC_ALL=C sort -u) | tr '\n' ' ')" ""
+
+  # zizmor: "one checking step (`Run zizmor`, after `Checkout` and `Install uv`)".
+  # agent-audit: "one step (`Audit merged agent pull requests`)".
+  assert_equal "zizmor.yaml's steps are the three the runbook lists, checking step last" \
+    "$(runbook_job_steps .github/workflows/zizmor.yaml zizmor | tr '\n' '|')$(runbook_run_steps .github/workflows/zizmor.yaml | tr '\n' '|')" \
+    "Checkout|Install uv|Run zizmor|zizmor|Run zizmor|"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  if grep -qF -- 'one job, one checking step (`Run zizmor`, after `Checkout` and `Install uv`)' <<<"${runbook_flat}"; then
+    pass "the runbook still lists zizmor.yaml's one job and its steps in that order"
+  else
+    fail "the runbook still lists zizmor.yaml's one job and its steps in that order" "the sentence is gone or now says something else"
+  fi
+  assert_equal "agent-audit.yml's audit job has the one step the runbook names" \
+    "$(runbook_job_steps .github/workflows/agent-audit.yml audit | tr '\n' '|')" \
+    "Audit merged agent pull requests|"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  if grep -qF -- 'one job (`audit`), one step (`Audit merged agent pull requests`)' <<<"${runbook_flat}"; then
+    pass "the runbook still says agent-audit.yml has one job with one step"
+  else
+    fail "the runbook still says agent-audit.yml has one job with one step" "the sentence is gone or now says something else"
+  fi
+
+  # The gate and the matrices, as the prose words them.
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  runbook_needs="$(cicd_job "${BUILD_WORKFLOW}" build_push | sed -nE 's/^    needs: \[(.+)\]$/\1/p' |
+    sed -E 's/([A-Za-z_]+)/`\1`/g; s/, ([^,]+)$/ and \1/')"
+  if grep -qF -- "\`build_push\` needs ${runbook_needs}," <<<"${runbook_flat}"; then
+    pass "the runbook's 'build_push needs' sentence lists build_push's needs: (${runbook_needs})"
+  else
+    fail "the runbook's 'build_push needs' sentence lists build_push's needs: (${runbook_needs})" \
+      "no '\`build_push\` needs ${runbook_needs},' on the page"
+  fi
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  for runbook_ff in "the matrix has \`fail-fast: false\`" "The \`signatures\` matrix has \`fail-fast: false\`"; do
+    if grep -qF -- "${runbook_ff}" <<<"${runbook_flat}"; then
+      pass "the runbook still says: ${runbook_ff}"
+    else
+      fail "the runbook still says: ${runbook_ff}" "the sentence is gone or now says something else"
+    fi
+  done
+  assert_present "labeler.yml still sets sync-labels: true, which the runbook says removes unsupported labels" \
+    ".github/workflows/labeler.yml" '^          sync-labels: true$'
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  if grep -qF -- '(`sync-labels` removes ones the paths do not support)' <<<"${runbook_flat}"; then
+    pass "the runbook still says sync-labels removes labels the paths do not support"
+  else
+    fail "the runbook still says sync-labels removes labels the paths do not support" "the sentence is gone"
+  fi
+
+  # --- Every gh command names the repository and a real workflow --------------
+  #
+  # The page says `-R` is given because this repository is a fork and a bare
+  # `gh` defaults to the parent. A command without it, or one that names a
+  # workflow file that does not exist, returns somebody else's runs or nothing.
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  runbook_gh_cmds="$( {
+    awk '/^```/ { fence = !fence; next } fence && /^gh / { print }' "${RUNBOOK_DOC}"
+    # A span that is only `gh <noun> <verb>` names an API call a workflow
+    # makes (`gh label list`), not a command for the reader to run.
+    grep -oE '`gh [^`]+`' <<<"${runbook_flat}" | tr -d '`' | grep -vxE 'gh [a-z]+ [a-z]+'
+  } )"
+  runbook_gh_count="$(grep -c . <<<"${runbook_gh_cmds}")"
+  runbook_gh_repos="$(grep -oE -- ' -R [^ ]+' <<<"${runbook_gh_cmds}" | LC_ALL=C sort -u | tr '\n' ' ')"
+  runbook_gh_bare="$(grep -vE -- ' -R [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+( |$)' <<<"${runbook_gh_cmds}" | tr '\n' ';')"
+  if ((runbook_gh_count < 10)); then
+    fail "every gh command on the runbook passes -R" "only ${runbook_gh_count} gh command(s) found; the extractor is broken"
+  else
+    assert_equal "every gh command on the runbook passes -R (${runbook_gh_count} checked)" "${runbook_gh_bare}" ""
+  fi
+  assert_equal "every gh command on the runbook names the same repository" \
+    "$(wc -w <<<"${runbook_gh_repos}" | tr -d ' ')" "2"
+  runbook_gh_ghosts=""
+  while IFS= read -r runbook_gh_wf; do
+    [[ -n "${runbook_gh_wf}" ]] || continue
+    [[ -f ".github/workflows/${runbook_gh_wf}" ]] || runbook_gh_ghosts+="${runbook_gh_wf} "
+  done < <(grep -oE -- '--workflow [^ ]+' <<<"${runbook_gh_cmds}" | cut -d' ' -f2 | LC_ALL=C sort -u)
+  assert_equal "every --workflow a gh command on the runbook names is a file under .github/workflows/" \
+    "${runbook_gh_ghosts}" ""
 
   # --- Repository paths in backticks exist -------------------------------------
 
@@ -10203,7 +10456,9 @@ assert_equal "${SUPPLY_DOC}'s custom-manager rows name every dependency renovate
 supply_wrong_pin=""
 while IFS=$'\t' read -r name datasource digest; do
   [[ -n "${name}" ]] || continue
-  if [[ "${digest}" == "true" ]]; then
+  if [[ "${digest}" == "true" && "${datasource}" == "docker" ]]; then
+    expected="digest"
+  elif [[ "${digest}" == "true" ]]; then
     expected="commit"
   elif [[ "${datasource}" == "docker" ]]; then
     expected="Version tag"
@@ -10728,6 +10983,212 @@ else
   # The manual check the last criterion names has to still be a VM procedure.
   assert_present "CLAUDE.md, which the Project status section names as the manual VM check, still runs virt-install" \
     "CLAUDE.md" 'virt-install'
+fi
+
+# ---------------------------------------------------------------------------
+group "Agent boundaries page (docs/agent-boundaries.md: each limit an agent works inside, and what enforces it)"
+
+# docs/agent-boundaries.md sorts the limits an agent works inside by what holds
+# them: GitHub, the required check, the agent's tool, or instruction only. Every
+# row is a claim about a file the page does not own -- the ruleset, the two
+# copies of the required job, .claude/settings.json, renovate.json, the Cursor
+# rule, and the signing step in build.yml. Any of those can move without anyone
+# opening the page, and a limit that silently moved from "GitHub" to
+# "instruction only" is the one a reader most needs to hear about.
+#
+# The sharpest claim is the last one: that push access reaches SIGNING_SECRET,
+# because a pull request from a branch here runs its own workflow files with
+# this repository's secrets and no GitHub environment guards the key. That is
+# asserted from the tree (the trigger, the one step that reads the secret, the
+# absence of any `environment:` key), so the day a protected environment is
+# added, this fails and the page is corrected rather than left alarming a
+# reader about a gap that closed.
+#
+# What the tree cannot show -- the live ruleset, and whether the secret is a
+# repository or an environment secret on GitHub -- is left to
+# docs/branch-protection.md's commands.
+
+AB_DOC="docs/agent-boundaries.md"
+AB_RULESET=".github/rulesets/main.json"
+AB_SETTINGS=".claude/settings.json"
+AB_CURSOR_RULE=".cursor/rules/arch-bootc-safety.mdc"
+AB_DOCS_TESTS=".github/workflows/docs-tests.yml"
+
+if [[ ! -f "${AB_DOC}" ]]; then
+  fail "the agent boundaries page exists" "${AB_DOC} is missing"
+elif ! jq -e '.rules | type == "array"' "${AB_RULESET}" >/dev/null 2>&1; then
+  fail "the agent boundaries page can be joined to the ruleset" \
+    "${AB_RULESET} is missing, is not JSON, or has no .rules array"
+elif ! jq -e '.permissions | type == "object"' "${AB_SETTINGS}" >/dev/null 2>&1; then
+  fail "the agent boundaries page can be joined to the permission table" \
+    "${AB_SETTINGS} is missing, is not JSON, or has no .permissions object"
+else
+  pass "the agent boundaries page exists"
+
+  # The page with line breaks collapsed, so a sentence that wraps still matches.
+  ab_flat="$(tr '\n' ' ' <"${AB_DOC}" | tr -s ' ')"
+
+  ab_says() { # description fixed-text
+    if grep -Fq -- "$2" <<<"${ab_flat}"; then
+      pass "$1"
+    else
+      fail "$1" "${AB_DOC} no longer says: $2"
+    fi
+  }
+
+  # --- The sections -------------------------------------------------------------
+
+  for ab_heading in \
+    "How the boundaries are enforced" \
+    "Enforced by GitHub" \
+    "Enforced by the required check" \
+    "Enforced by the agent's tool" \
+    "Instruction only" \
+    "What none of this stops" \
+    "Changing a boundary"; do
+    if grep -qxF "## ${ab_heading}" "${AB_DOC}"; then
+      pass "the agent boundaries page has the '${ab_heading}' section"
+    else
+      fail "the agent boundaries page has the '${ab_heading}' section" "no '## ${ab_heading}' heading in ${AB_DOC}"
+    fi
+  done
+
+  # --- Enforced by GitHub ---------------------------------------------------------
+
+  # "is the ruleset on `main`" holds only while it is enforced and scoped to the
+  # default branch; rules and bypass list alone would still pass a ruleset set
+  # to "disabled" or "evaluate", or moved to another branch.
+  assert_equal "the ruleset the page cites is enforced, not evaluated or disabled" \
+    "$(jq -r '.enforcement' "${AB_RULESET}")" "active"
+  assert_equal "the ruleset the page cites applies to main and nothing else" \
+    "$(jq -r '[.target, (.conditions.ref_name.include // [] | join(",")), (.conditions.ref_name.exclude // [] | length)] | join(" ")' "${AB_RULESET}")" \
+    "branch ~DEFAULT_BRANCH 0"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ab_says "the page says the ruleset is the one on main" 'is the ruleset on `main`'
+  assert_equal "nothing may bypass the ruleset, as the page says" \
+    "$(jq -r '.bypass_actors // [] | length' "${AB_RULESET}")" "0"
+  ab_says "the page says the ruleset has no bypass actor" "It has no bypass actor"
+  # The three limits the page lists, one rule each.
+  for ab_rule in pull_request deletion non_fast_forward required_status_checks; do
+    if jq -e --arg t "${ab_rule}" 'any(.rules[]; .type == $t)' "${AB_RULESET}" >/dev/null; then
+      pass "the ruleset has the ${ab_rule} rule the page describes"
+    else
+      fail "the ruleset has the ${ab_rule} rule the page describes" "no rule of type ${ab_rule} in ${AB_RULESET}"
+    fi
+  done
+  assert_equal "a pull request needs no approval, as the page says" \
+    "$(jq -r '.rules[] | select(.type == "pull_request") | .parameters.required_approving_review_count' "${AB_RULESET}")" "0"
+  ab_says "the page says the ruleset needs no approval" "It needs no approval"
+  ab_contexts="$(jq -r '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context' "${AB_RULESET}")"
+  assert_equal "the ruleset requires one check, the one the page names" "${ab_contexts}" "Shell tests and coverage"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ab_says "the page names the required check" '`Shell tests and coverage`'
+
+  # --- Enforced by the required check ---------------------------------------------
+
+  # Both copies of the required job carry the name and run the invariants, which
+  # is what makes "the second one is where most boundaries become mechanical"
+  # true for a documentation-only pull request as well as for any other.
+  for ab_workflow in "${BUILD_WORKFLOW}" "${AB_DOCS_TESTS}"; do
+    assert_present "${ab_workflow} names a job 'Shell tests and coverage', as the page says" \
+      "${ab_workflow}" '^[[:space:]]+name: Shell tests and coverage$'
+    assert_present "${ab_workflow}'s required job runs tests/check-invariants.sh" \
+      "${ab_workflow}" 'run: \./tests/check-invariants\.sh'
+  done
+  ab_says "the page names the documentation-only copy of the required job" "](../${AB_DOCS_TESTS})"
+
+  # --- Enforced by the agent's tool -----------------------------------------------
+
+  assert_equal "the permission table's hooks block registers the gate the page names" \
+    "$(jq -r '[.hooks.PreToolUse[]?.hooks[]?.command] | map(select(test("/\\.claude/hooks/gate-git-diff\\.sh"))) | length' "${AB_SETTINGS}")" "1"
+  for ab_deny in 'Read(./cosign.key)' 'Bash(git reset --hard*)' 'Bash(git push --force*)' 'Bash(podman system prune*)'; do
+    if jq -e --arg r "${ab_deny}" '.permissions.deny | index($r)' "${AB_SETTINGS}" >/dev/null; then
+      pass "the permission table denies ${ab_deny}, as the page says"
+    else
+      fail "the permission table denies ${ab_deny}, as the page says" "no '${ab_deny}' in .permissions.deny"
+    fi
+  done
+  for ab_ask in 'Bash(sudo *)' 'Bash(git push*)' 'Bash(gh pr create*)' 'Bash(gh pr merge*)'; do
+    if jq -e --arg r "${ab_ask}" '.permissions.ask | index($r)' "${AB_SETTINGS}" >/dev/null; then
+      pass "the permission table prompts for ${ab_ask}, as the page says"
+    else
+      fail "the permission table prompts for ${ab_ask}, as the page says" "no '${ab_ask}' in .permissions.ask"
+    fi
+  done
+  # The page names this knob as unset, and so a limit of the table. Setting it
+  # closes that limit, and the page has to stop listing it.
+  assert_equal "permissions.disableBypassPermissionsMode is unset, as the page says" \
+    "$(jq -r '.permissions.disableBypassPermissionsMode // "unset"' "${AB_SETTINGS}")" "unset"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ab_says "the page says the bypass knob is not set" '`permissions.disableBypassPermissionsMode` is not set'
+  assert_equal "no .claude/settings.local.json is tracked, as the page says" \
+    "$(git ls-files -- .claude/settings.local.json)" ""
+  assert_equal "renovate.json does not automerge a major bootc-dev/bootc bump, as the page says" \
+    "$(jq -r '[.packageRules[] | select(.matchPackageNames == ["bootc-dev/bootc"]) | select(.matchUpdateTypes == ["major"]) | .automerge] | first' renovate.json)" "false"
+
+  # --- Instruction only -------------------------------------------------------------
+
+  assert_present "the Cursor rule applies to every session, as the page says" "${AB_CURSOR_RULE}" '^alwaysApply: true$'
+  assert_present "AGENTS.md still lists the consent gates the page summarizes" AGENTS.md \
+    '^Treat these as separate consent gates:$'
+
+  # --- What none of this stops ------------------------------------------------------
+
+  # Three facts carry the claim that push access reaches SIGNING_SECRET: build.yml
+  # runs on pull_request, the secret is read by one step only (so the step's `if:`
+  # is the only thing keeping it out of a pull request build), and no workflow
+  # names a GitHub environment that could hold the key back for approval.
+  assert_present "build.yml runs on pull_request, as the page says" "${BUILD_WORKFLOW}" '^  pull_request:$'
+  ab_secret_reads="$(cat "${workflows[@]}" | grep -Ev '^[[:space:]]*#' | grep -c 'secrets\.SIGNING_SECRET')"
+  assert_equal "SIGNING_SECRET is read in exactly one place, as the page says" "${ab_secret_reads}" "1"
+  ab_sign_step="$(awk '/^      - name: Sign container image$/{ inside = 1; print; next } inside && /^      - /{ exit } inside' "${BUILD_WORKFLOW}")"
+  if grep -Fq 'secrets.SIGNING_SECRET' <<<"${ab_sign_step}"; then
+    pass "the one read of SIGNING_SECRET is in the 'Sign container image' step"
+  else
+    fail "the one read of SIGNING_SECRET is in the 'Sign container image' step" \
+      "no secrets.SIGNING_SECRET inside that step of ${BUILD_WORKFLOW}"
+  fi
+  if grep -Fq "if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)" <<<"${ab_sign_step}"; then
+    pass "the signing step runs only on the default branch and never on a pull request, as the page says"
+  else
+    fail "the signing step runs only on the default branch and never on a pull request, as the page says" \
+      "the 'Sign container image' step's if: changed"
+  fi
+  assert_absent_in "no workflow names a GitHub environment, as the page says" \
+    '^[[:space:]]+environment:' "${workflows[@]}"
+  ab_says "the page says no environment guards the key" "No GitHub environment guards the key"
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ab_says "the page names the step that reads the key" '`Sign container image`'
+
+  # --- Changing a boundary ----------------------------------------------------------
+
+  # Every boundary file the page calls T3 has to be T3 in docs/risk-tiers.md, or
+  # the page hands a reader a tier the classification page does not give.
+  ab_t3="$(awk '/^## T3 — /{ inside = 1; next } inside && /^## /{ exit } inside' docs/risk-tiers.md)"
+  for ab_path in '.github/rulesets/**' .claude/settings.json '.claude/hooks/**' '.claude/skills/**' \
+    "${AB_CURSOR_RULE}" .github/policies/workflow-permissions.json; do
+    if grep -Fq "\`${ab_path}\`" <<<"${ab_t3}"; then
+      pass "docs/risk-tiers.md tiers ${ab_path} as T3, as the page says"
+    else
+      fail "docs/risk-tiers.md tiers ${ab_path} as T3, as the page says" "no \`${ab_path}\` in its T3 section"
+    fi
+  done
+  ab_says "the page says a change to a boundary is T3" "are all T3"
+
+  # --- Every path and link the page names -------------------------------------------
+
+  # Every backticked repository path, except the one the page names precisely
+  # because it is not tracked.
+  ab_missing=""
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  while IFS= read -r ab_path; do
+    [[ "${ab_path}" == .claude/settings.local.json ]] && continue
+    [[ -e "${ab_path}" ]] || ab_missing+="${ab_path} "
+  done < <(grep -oE '`[A-Za-z0-9_.][A-Za-z0-9_./-]*/[A-Za-z0-9_./-]*\.(md|mdc|yml|json|sh)`' "${AB_DOC}" | tr -d '`' | LC_ALL=C sort -u)
+  assert_equal "every repository path the page names exists" "${ab_missing}" ""
+  assert_doc_links_resolve "${AB_DOC}" \
+    "no relative links found; the hand-offs to branch-protection.md, risk-tiers.md and SECURITY-AI.md are gone"
+  assert_present "README.md's documentation table links to the page" README.md '\]\(docs/agent-boundaries\.md\)'
 fi
 
 # ---------------------------------------------------------------------------

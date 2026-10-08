@@ -48,6 +48,7 @@ the daily scheduled build and a manual dispatch also build, publish and sign
 | `.github/workflows/labeler.yml` | `Label pull requests` | PR opened, reopened, pushed to, ready for review | [Labeler](#githubworkflowslabeleryml) |
 | `.github/workflows/ai-fix.yml` | `AI fix work order` | An issue or PR labelled, manual | [Work order](#githubworkflowsai-fixyml) |
 | `.github/workflows/agent-audit.yml` | `Agent audit trail` | Monthly on the 1st, 05:23 UTC, manual | [Agent audit](#githubworkflowsagent-audityml) |
+| `.github/workflows/auto-issues.yml` | `File issues for failed scheduled runs` | Daily 13:17 UTC, manual | [Auto issues](#githubworkflowsauto-issuesyml) |
 
 What each signal proves, and what it cannot see, is in
 [quality.md](quality.md#the-dashboard). Read that before deciding a green check
@@ -178,21 +179,39 @@ narrower window, or check that pull request yourself. A T3 path in a row is a
 place to look first, not a failure. Detail:
 [ci-cd.md](ci-cd.md#agent-audit-trail).
 
+## `.github/workflows/auto-issues.yml`
+
+`File issues for failed scheduled runs`, one job (`file-issues`), one step
+(`File or close issues for scheduled runs`). It reads the newest completed
+scheduled run of `build.yml` and of `nightly-compliance.yml` on `main`. A
+failed, timed-out or never-started run, or one older than 48 hours, opens an
+issue titled `Scheduled run of ... failed on main` or
+`... has stopped running on main`, or comments on the one already open. A
+later successful run closes it. The issue is a pointer, not a diagnosis: go to
+the section for the workflow it names. A cancelled run is ignored. It writes
+issues only, and only ones it opened itself. If it is red, the step's log names
+the API call that failed; that is a token or permission error, not a finding.
+Detail: [ci-cd.md](ci-cd.md#auto-issues-for-failed-scheduled-runs).
+
 ## A scheduled run is missing
 
-`build.yml` (daily 10:05 UTC), `nightly-compliance.yml` (daily 05:40 UTC) and
-`agent-audit.yml` (monthly on the 1st, 05:23 UTC) are the only scheduled
-workflows. GitHub disables scheduled workflows in a public
+`build.yml` (daily 10:05 UTC), `nightly-compliance.yml` (daily 05:40 UTC),
+`auto-issues.yml` (daily 13:17 UTC) and `agent-audit.yml` (monthly on the 1st,
+05:23 UTC) are the only scheduled workflows. GitHub disables scheduled workflows in a public
 repository after 60 days with no repository activity, and a forked repository
 starts with them disabled
 ([GitHub's page](https://docs.github.com/en/actions/managing-workflow-runs/disabling-and-enabling-a-workflow)).
-A missing run is silent: no red check, just no new row.
+A missing run is silent: no red check, just no new row. `auto-issues.yml`
+opens an issue when a daily workflow's newest scheduled run is more than 48
+hours old, but it is scheduled too: the 60-day rule switches it off along with
+the rest, and then nothing is filed.
 
 ```bash
 gh workflow list -R Danathar/arch-bootc --all
 gh run list -R Danathar/arch-bootc --workflow build.yml --event schedule --limit 3
 gh run list -R Danathar/arch-bootc --workflow nightly-compliance.yml --event schedule --limit 3
 gh run list -R Danathar/arch-bootc --workflow agent-audit.yml --event schedule --limit 3
+gh run list -R Danathar/arch-bootc --workflow auto-issues.yml --event schedule --limit 3
 ```
 
 Check each separately: one can keep running while another is absent.
@@ -202,7 +221,8 @@ switched off by the 60-day rule. Re-enabling it is an Actions write: ask the
 maintainer. While `build.yml` has no scheduled run, no daily rebuild pulls fresh
 Arch packages. While `nightly-compliance.yml` has none, nothing re-checks the
 bootc pin or the published signatures. While `agent-audit.yml` has none, nothing
-reads back the agent pull requests' signature lines and sign-offs. Any of these
+reads back the agent pull requests' signature lines and sign-offs. While
+`auto-issues.yml` has none, a red scheduled run files no issue. Any of these
 gaps is a blind spot, not a pass.
 
 ## Renovate automerge went wrong
