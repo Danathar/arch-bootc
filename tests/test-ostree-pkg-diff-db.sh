@@ -369,6 +369,42 @@ test_cleanup_survives_a_failing_umount() {
   assert_eq "a failing umount does not fail cleanup" "0" "${status}"
 }
 
+test_cleanup_finishes_under_errexit_when_umount_fails() {
+  # The program runs with `set -euo pipefail`, and errexit stays on inside an
+  # EXIT trap. A failing umount without its `|| true` would end the trap right
+  # there: the new image stays mounted and nothing after it runs. The case
+  # above turns errexit off for the whole suite, so it cannot see that; this
+  # one turns it back on inside the subshell, the way the program has it.
+  local case_dir stub_dir status umounted
+  case_dir="$(new_case_dir)"
+  mkdir -p "${case_dir}/mnt-old" "${case_dir}/mnt-new"
+  : >"${case_dir}/list-old"
+  : >"${case_dir}/list-new"
+  stub_dir="$(install_mount_stubs "${case_dir}" 0 32)"
+
+  (
+    set -e
+    PATH="${stub_dir}:${PATH}"
+    cleanup_mnt_old="${case_dir}/mnt-old"
+    cleanup_mnt_new="${case_dir}/mnt-new"
+    cleanup_list_old="${case_dir}/list-old"
+    cleanup_list_new="${case_dir}/list-new"
+    cleanup
+  )
+  status=$?
+  umounted="$(read_log "${stub_dir}/umount.log")"
+
+  assert_eq "cleanup under errexit returns zero past a failing umount" \
+    "0" "${status}"
+  assert_eq "both umounts are attempted under errexit, old first" \
+    "${case_dir}/mnt-old
+${case_dir}/mnt-new" "${umounted}"
+  assert_missing "the old listing is removed under errexit" \
+    "${case_dir}/list-old"
+  assert_missing "the new listing is removed under errexit" \
+    "${case_dir}/list-new"
+}
+
 test_cleanup_survives_a_non_empty_mount_directory() {
   local case_dir stub_dir status
   case_dir="$(new_case_dir)"
@@ -470,6 +506,7 @@ main() {
     test_cleanup_unmounts_and_removes_both_mounts \
     test_cleanup_skips_umount_when_not_mounted \
     test_cleanup_survives_a_failing_umount \
+    test_cleanup_finishes_under_errexit_when_umount_fails \
     test_cleanup_survives_a_non_empty_mount_directory \
     test_cleanup_removes_the_package_listings \
     test_cleanup_with_nothing_recorded_is_a_no_op \
