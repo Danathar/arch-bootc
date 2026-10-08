@@ -9747,7 +9747,7 @@ labeled|labelled"
     assert_equal "the jobs the runbook marks \`main\` only in ${runbook_wf} are the ones whose if: refuses pull requests and other branches" \
       "${runbook_main_only_bad}" ""
   done <<<"${runbook_tree_workflows}"
-  assert_equal "five workflow sections still say how many jobs they have" "${runbook_counted}" "5"
+  assert_equal "six workflow sections still say how many jobs they have" "${runbook_counted}" "6"
 
   # "Three jobs, one checking step each": each nightly job has exactly one.
   # shellcheck disable=SC2016 # the backticks are the page's own markup
