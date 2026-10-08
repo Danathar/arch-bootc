@@ -1996,7 +1996,7 @@ if ((renovate_readable)); then
 
   # A packageRule that names a dependency no custom manager produces is a rule
   # that matches nothing. Renovate does not warn about it, and the two rules
-  # here that carry a safety decision -- never digest-pin chunkah/shellcheck,
+  # here that carry a safety decision -- never digest-pin shellcheck,
   # never automerge a major bootc -- would both fail open that way.
   unmatched_rule_deps=""
   while IFS= read -r ruled_dep; do
@@ -10456,7 +10456,9 @@ assert_equal "${SUPPLY_DOC}'s custom-manager rows name every dependency renovate
 supply_wrong_pin=""
 while IFS=$'\t' read -r name datasource digest; do
   [[ -n "${name}" ]] || continue
-  if [[ "${digest}" == "true" ]]; then
+  if [[ "${digest}" == "true" && "${datasource}" == "docker" ]]; then
+    expected="digest"
+  elif [[ "${digest}" == "true" ]]; then
     expected="commit"
   elif [[ "${datasource}" == "docker" ]]; then
     expected="Version tag"

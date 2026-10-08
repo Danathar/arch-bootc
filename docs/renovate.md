@@ -32,7 +32,7 @@ skips forks by default; without that line nothing would run at all.
 | `actions/labeler` | commit SHA | `labeler.yml` | `github-actions` manager |
 | `astral-sh/setup-uv` | commit SHA | `zizmor.yaml` | `github-actions` manager |
 | cosign CLI | `cosign-release: vX.Y.Z` | `build.yml` | custom regex manager |
-| chunkah image | `quay.io/coreos/chunkah:vX.Y.Z` | `build.yml` env | custom regex manager |
+| chunkah image | `quay.io/coreos/chunkah:v…@sha256:…` | `build.yml` env | custom regex manager (with digest) |
 | shellcheck image | `docker.io/koalaman/shellcheck:vX.Y.Z` | `build.yml` `SHELLCHECK_IMAGE` env | custom regex manager |
 | zizmor | `ZIZMOR_VERSION: X.Y.Z` | `zizmor.yaml` env | custom regex manager (`pypi`) |
 | runner image | `ubuntu-26.04` | `build.yml` `runs-on` | `github-actions` manager |
@@ -88,14 +88,22 @@ bootc's; the peeled commit comes from the `^{}` row of:
 git ls-remote --tags https://github.com/SELinuxProject/selinux.git 'X.Y*'
 ```
 
-**chunkah and shellcheck** are pinned by tag only. A `packageRule` explicitly disables
-`digest`/`pin`/`pinDigest` updates for both, so Renovate offers new tagged releases but never
-rewrites either reference into a digest. Both are tracked via custom regex managers whose
-`matchStrings` capture only a semver tag — no digest capture group — so letting Renovate's
-default digest-pinning apply to them fails to find anywhere to write the digest and errors the
-branch (this happened for real: chunkah in #18, shellcheck in #68). Any future custom regex
-manager on the `docker` datasource needs the same exclusion unless its `matchStrings` also
-captures a digest.
+**chunkah** is pinned by tag and digest. Its manager's `matchStrings` capture an optional
+`@sha256:` after the tag, the same pattern `zfs-kinoite-complex` uses for its chunkah pin, so
+Renovate can read and rewrite the digest. The reference carries the multi-arch index digest, and
+every tag bump moves tag and digest together. The digest matters here more
+than for most pins: chunkah rewrites each flavor's image on `main` immediately before the
+push and `cosign sign` steps, so a tag that was moved upstream would put unreviewed content
+into an image that this repository's key then signs.
+
+**shellcheck** is pinned by tag only. A `packageRule` explicitly disables
+`digest`/`pin`/`pinDigest` updates for it, so Renovate offers new tagged releases but never
+rewrites the reference into a digest. Its custom regex manager's `matchStrings` capture only
+a semver tag, with no digest capture group, so letting Renovate's default digest-pinning apply
+to it fails to find anywhere to write the digest and errors the branch. This happened for
+real: to chunkah in #18, before its manager captured a digest, and to shellcheck in #68. Any
+future custom regex manager on the `docker` datasource needs the same exclusion unless its
+`matchStrings` also captures a digest.
 
 **ublue-os/brew** is pinned on a `FROM … AS brew` line rather than on the `COPY --from=` that
 uses it. The `dockerfile` manager finds it either way; the stage name is what lets the
@@ -185,8 +193,7 @@ That trade is accepted deliberately: this is an experimental image, not producti
 update surfaces either as a red build on `main` (GitHub notifies) or on the next
 `bootc upgrade`, and is then investigated.
 
-The two exceptions are chunkah and shellcheck digest updates, which are disabled entirely (see
-above).
+The one exception is shellcheck digest updates, which are disabled entirely (see above).
 
 ## Why merging is Renovate's job
 
@@ -384,7 +391,7 @@ an old validator will reject `managerFilePatterns` as unknown, which is a false 
 
 **Stop a specific dependency from updating** — add a `packageRule` with
 `"enabled": false` and `matchPackageNames`. Later rules win, so place it after the automerge
-rule, as the chunkah rule does.
+rule, as the shellcheck rule does.
 
 ## Gotchas
 
