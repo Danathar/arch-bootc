@@ -337,6 +337,38 @@ EOF
     "bbbbbbbb.1" "$(status_previous "${status}" arch aaaaaaaa.0)"
 }
 
+test_status_previous_fallback_takes_only_the_first_other_deployment() {
+  # Three deployments of one stateroot and no rollback marker -- a pinned
+  # deployment kept alongside the usual two. The fallback must stop at the
+  # first match: two ids on two lines are not a deployment id, and the path
+  # built from them names nothing on disk.
+  local status
+  status="$(
+    cat <<'EOF'
+* arch aaaaaaaa.0
+  arch bbbbbbbb.1
+  arch cccccccc.2
+EOF
+  )"
+  assert_eq "only the first other deployment is the unmarked previous" \
+    "bbbbbbbb.1" "$(status_previous "${status}" arch aaaaaaaa.0)"
+}
+
+test_status_previous_ignores_another_stateroots_rollback() {
+  # The (rollback) marker belongs to whichever stateroot ostree put it on. A
+  # second stateroot's rollback is not this one's previous deployment.
+  local status
+  status="$(
+    cat <<'EOF'
+* arch aaaaaaaa.0
+  fedora ffffffff.0 (rollback)
+  arch bbbbbbbb.1
+EOF
+  )"
+  assert_eq "another stateroot's rollback marker is not used" \
+    "bbbbbbbb.1" "$(status_previous "${status}" arch aaaaaaaa.0)"
+}
+
 test_status_previous_single_deployment_is_empty() {
   local status
   status="$(printf '* arch aaaaaaaa.0\n    Version: 20260903.0\n')"
@@ -552,6 +584,11 @@ args=("$@")
 printf '%s\n' "$*" >>"${stub_dir}/mount.argv"
 image="${args[$# - 2]}"
 target="${args[$# - 1]}"
+# A case makes one image fail to mount by putting a `.mount-fails` file beside
+# it; the exit status is the one mount(8) uses for a mount failure.
+if [[ -f "${image}.mount-fails" ]]; then
+  exit 32
+fi
 mkdir -p "${target}/usr/lib/sysimage/lib/pacman"
 if [[ -f "${image}.listing" ]]; then
   cp "${image}.listing" "${target}/usr/lib/sysimage/lib/pacman/listing"
@@ -750,6 +787,10 @@ test_program_composefs_diffs_previous_against_booted() {
   assert_contains "the images are mounted read-only through a loop device" \
     "${first_mount}" "-o loop,ro"
   assert_contains "the images are mounted as erofs" "${first_mount}" "-t erofs"
+  assert_contains "the booted image is mounted read-only through a loop device too" \
+    "${second_mount}" "-o loop,ro"
+  assert_contains "the booted image is mounted as erofs too" \
+    "${second_mount}" "-t erofs"
   assert_eq "exactly two images are mounted" \
     "2" "$(wc -l <"${bin}/mount.argv")"
   # No bootc.status fixture, so bootc could not be asked: the mtime fallback
@@ -899,6 +940,11 @@ test_program_composefs_rejects_a_sole_deployment() {
   assert_eq "nothing to diff against exits 1" "1" "${status}"
   assert_contains "the searched deployment directory is named" \
     "${output}" "No previous deployment found under ${root}/state/deploy."
+  # Stopped there: with that exit gone, the empty id resolves to the images
+  # directory itself and the image-file check further down refuses instead.
+  assert_not_contains "the sole-deployment refusal comes before any image is resolved" \
+    "${output}" "Unable to resolve composefs image files."
+  assert_missing "nothing is mounted for a sole deployment" "${bin}/mount.argv"
 }
 
 test_program_composefs_rejects_a_previous_without_an_image() {
@@ -947,6 +993,228 @@ test_program_composefs_rejects_an_image_that_is_not_a_file() {
     "${output}" "Unable to resolve composefs image files."
   assert_missing "no mount is attempted for an unresolvable image" \
     "${bin}/mount.argv"
+}
+
+test_program_composefs_fallback_picks_the_newest_other_directory() {
+  # bootc cannot be asked, so the previous deployment is the newest entry
+  # under state/deploy that is not the booted one. Three deployments: the
+  # middle one by modification time is the answer, the oldest is not. A stray
+  # regular file, newer than all of them, is not a deployment at all and must
+  # not be picked just for being newest.
+  local dir bin root cmdline output status
+  dir="$(case_dir composefs-fallback-order)"
+  bin="${dir}/bin"
+  root="${dir}/sysroot"
+  write_program_stubs "${bin}"
+  write_composefs_layout "${root}" old111 mid222 new333
+  printf 'not a deployment\n' >"${root}/state/deploy/stray.file"
+  touch -d '2026-09-01T00:00:00' "${root}/state/deploy/old111"
+  touch -d '2026-09-02T00:00:00' "${root}/state/deploy/mid222"
+  touch -d '2026-09-03T00:00:00' "${root}/state/deploy/new333"
+  touch -d '2026-09-04T00:00:00' "${root}/state/deploy/stray.file"
+  write_db_listing "${root}/composefs/images/old111.listing" 'ancient 1.0'
+  write_db_listing "${root}/composefs/images/mid222.listing" 'gone 2.0'
+  write_db_listing "${root}/composefs/images/new333.listing" 'added 3.0'
+  cmdline="$(write_cmdline composefs-fallback-order-cmdline \
+    'root=UUID=1234 composefs=new333 rw')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
+    "OSTREE_SYSROOT=${root}")"
+  status=$?
+
+  assert_eq "the modification-time fallback with three deployments exits 0" \
+    "0" "${status}"
+  assert_contains "the newest non-booted directory is mounted as the old side" \
+    "$(sed -n 1p "${bin}/mount.argv" 2>/dev/null)" "mid222"
+  assert_not_contains "the oldest deployment is not compared" \
+    "$(cat "${bin}/mount.argv" 2>/dev/null)" "old111"
+  assert_not_contains "a regular file under state/deploy is not a deployment" \
+    "${output}" "stray.file"
+  assert_contains "the middle deployment's packages are the old side" \
+    "${output}" "- gone 2.0"
+}
+
+test_program_composefs_cleans_up_when_a_mount_fails() {
+  # The booted image refuses to mount after the previous one did. Under
+  # `set -e` that ends the program, and the EXIT trap set before the first
+  # mount is what removes the mount points it made: without it the empty
+  # directory for the booted image is left in TMPDIR on every failed run.
+  local dir bin root cmdline output status leftovers
+  dir="$(case_dir composefs-mount-fails)"
+  bin="${dir}/bin"
+  root="${dir}/sysroot"
+  write_program_stubs "${bin}"
+  write_composefs_layout "${root}" old111 new222
+  : >"${root}/composefs/images/new222.mount-fails"
+  cmdline="$(write_cmdline composefs-mount-fails-cmdline \
+    'root=UUID=1234 composefs=new222 rw')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
+    "OSTREE_SYSROOT=${root}")"
+  status=$?
+
+  assert_eq "a failed mount ends the program with mount's status" \
+    "32" "${status}"
+  assert_missing "no package database is read after a failed mount" \
+    "${bin}/pacman.argv"
+  assert_eq "cleanup checks both mount points" \
+    "2" "$(wc -l <"${bin}/mountpoint.argv" 2>/dev/null || echo 0)"
+  leftovers="$(find "${dir}/tmp" -mindepth 1 -maxdepth 1 -type d -empty)"
+  assert_empty "no empty mount point is left behind" "${leftovers}"
+}
+
+test_program_composefs_discovers_the_layout_at_mnt() {
+  # No OSTREE_SYSROOT: the composefs root is found by probing, and /mnt is the
+  # probe a live-environment recovery mount answers.
+  local dir bin src cmdline output status
+  dir="$(case_dir composefs-at-mnt)"
+  bin="${dir}/bin"
+  src="${dir}/src"
+  write_program_stubs "${bin}"
+  write_composefs_layout "${src}" old111 new222
+  write_db_listing "${src}/composefs/images/old111.listing" 'gone 2.0'
+  write_db_listing "${src}/composefs/images/new222.listing" 'added 3.0'
+  cmdline="$(write_cmdline composefs-at-mnt-cmdline \
+    'root=UUID=1234 composefs=new222 rw')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "${src}" /mnt)"
+  status=$?
+
+  assert_eq "a composefs layout at /mnt exits 0" "0" "${status}"
+  assert_contains "the previous image under /mnt is mounted" \
+    "$(sed -n 1p "${bin}/mount.argv" 2>/dev/null)" \
+    "/mnt/composefs/images/old111"
+  assert_contains "the composefs layout at /mnt is compared" \
+    "${output}" "+ added 3.0"
+  assert_missing "the ostree-repo fallback is not reached" "${bin}/ostree.argv"
+}
+
+# A composefs root needs both composefs/images and state/deploy. Each of the
+# next two cases points OSTREE_SYSROOT at a directory with only one of them and
+# puts a complete layout at /mnt: the half layout must be passed over, not
+# chosen and then failed on.
+composefs_half_layout_case() {
+  local name="$1" keep="$2"
+  local dir bin src decoy cmdline output status
+  dir="$(case_dir "composefs-only-${name}")"
+  bin="${dir}/bin"
+  src="${dir}/src"
+  decoy="${dir}/decoy"
+  write_program_stubs "${bin}"
+  write_composefs_layout "${src}" old111 new222
+  write_db_listing "${src}/composefs/images/old111.listing" 'gone 2.0'
+  write_db_listing "${src}/composefs/images/new222.listing" 'added 3.0'
+  write_composefs_layout "${decoy}" old111 new222
+  if [[ "${keep}" == images ]]; then
+    rm -rf "${decoy}/state"
+  else
+    rm -rf "${decoy}/composefs"
+  fi
+  cmdline="$(write_cmdline "composefs-only-${name}-cmdline" \
+    'root=UUID=1234 composefs=new222 rw')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "${src}" /mnt \
+    "OSTREE_SYSROOT=${decoy}")"
+  status=$?
+
+  assert_eq "a root with only ${keep} is passed over, exiting 0" "0" "${status}"
+  assert_contains "the complete layout at /mnt is used, not the one with only ${keep}" \
+    "$(sed -n 1p "${bin}/mount.argv" 2>/dev/null)" \
+    "/mnt/composefs/images/old111"
+}
+
+test_program_composefs_passes_over_a_root_without_state_deploy() {
+  composefs_half_layout_case no-state images
+}
+
+test_program_composefs_passes_over_a_root_without_images() {
+  composefs_half_layout_case no-images state/deploy
+}
+
+test_program_ostree_fallback_ignores_origin_files() {
+  # An ostree deploy directory holds a `<checksum>.<serial>.origin` file beside
+  # each deployment directory. When the booted deployment comes from the kernel
+  # argument and the previous one from modification times, a freshly rewritten
+  # origin file is the newest entry there, and it is not a deployment.
+  #
+  # OSTREE_SYSROOT carries a trailing slash here, the way a user types a
+  # directory; the program trims it before handing the sysroot to ostree.
+  local dir bin root base cmdline output status
+  dir="$(case_dir ostree-origin-files)"
+  bin="${dir}/bin"
+  root="${dir}/sysroot"
+  base="${root}/ostree/deploy/arch/deploy"
+  write_program_stubs "${bin}"
+  write_ostree_layout "${root}" arch 1111aaaa.0 def456.1 abc123.0
+  : >"${base}/1111aaaa.0.origin"
+  : >"${base}/def456.1.origin"
+  : >"${base}/abc123.0.origin"
+  touch -d '2026-09-01T00:00:00' "${base}/1111aaaa.0"
+  touch -d '2026-09-02T00:00:00' "${base}/def456.1"
+  touch -d '2026-09-03T00:00:00' "${base}/abc123.0"
+  touch -d '2026-09-04T00:00:00' "${base}/1111aaaa.0.origin"
+  write_db_listing "$(ostree_db_listing "${root}" arch 1111aaaa.0)" 'ancient 1.0'
+  write_db_listing "$(ostree_db_listing "${root}" arch def456.1)" 'gone 2.0'
+  write_db_listing "$(ostree_db_listing "${root}" arch abc123.0)" 'added 3.0'
+  cmdline="$(write_cmdline ostree-origin-files-cmdline \
+    'ostree=/ostree/boot.1/arch/abc123/0 rw')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
+    "OSTREE_SYSROOT=${root}/")"
+  status=$?
+
+  assert_eq "an origin file newer than every deployment still diffs, exiting 0" \
+    "0" "${status}"
+  assert_eq "ostree is handed the sysroot without its trailing slash" \
+    "admin --sysroot=${root} status" "$(cat "${bin}/ostree.argv" 2>/dev/null)"
+  assert_contains "the newest deployment directory is the old side" \
+    "${output}" "- gone 2.0"
+  assert_not_contains "an origin file is not taken for a deployment" \
+    "$(cat "${bin}/pacman.argv" 2>/dev/null)" ".origin"
+}
+
+test_program_ostree_layout_names_a_stateroot_with_no_deploy_directory() {
+  # The kernel argument names a stateroot the sysroot has no deploy directory
+  # for (a stale entry, or the wrong sysroot). The program has to say which
+  # stateroot it looked for, not die inside the directory listing.
+  local dir bin root cmdline output status
+  dir="$(case_dir ostree-missing-stateroot)"
+  bin="${dir}/bin"
+  root="${dir}/sysroot"
+  write_program_stubs "${bin}"
+  write_ostree_layout "${root}" arch abc123.0 def456.1
+  cmdline="$(write_cmdline ostree-missing-stateroot-cmdline \
+    'ostree=/ostree/boot.1/other/abc123/0 rw')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
+    "OSTREE_SYSROOT=${root}")"
+  status=$?
+
+  assert_eq "a stateroot with no deploy directory exits 1" "1" "${status}"
+  assert_contains "the missing stateroot is named" \
+    "${output}" "No previous deployment found for stateroot 'other'."
+}
+
+test_program_search_reaches_five_levels_down() {
+  # The search is documented as reaching five levels below /, and
+  # /mnt/a/b/ostree/repo is exactly five.
+  local dir bin root output status cmdline
+  dir="$(case_dir ostree-search-depth)"
+  bin="${dir}/bin"
+  root="${dir}/sysroot"
+  write_program_stubs "${bin}"
+  printf '%s\n' "${STATUS_TYPICAL}" >"${bin}/ostree.status"
+  write_ostree_layout "${root}" arch e4f2c1a0b3d5.0 9a8b7c6d5e4f.1
+  write_db_listing "$(ostree_db_listing "${root}" arch 9a8b7c6d5e4f.1)" 'gone 2.0'
+  write_db_listing "$(ostree_db_listing "${root}" arch e4f2c1a0b3d5.0)" 'added 3.0'
+  cmdline="$(write_cmdline ostree-search-depth-cmdline 'root=UUID=1234 rw quiet')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "${root}" /mnt/a/b)"
+  status=$?
+
+  assert_eq "a repo five levels down is found, exiting 0" "0" "${status}"
+  assert_contains "the five-level search hit becomes the sysroot" \
+    "$(cat "${bin}/ostree.argv" 2>/dev/null)" "admin --sysroot=/mnt/a/b status"
 }
 
 test_program_ostree_layout_diffs_the_rollback_deployment() {
@@ -1256,6 +1524,8 @@ main() {
     test_status_previous_prefers_rollback_over_earlier_entry \
     test_status_previous_falls_back_to_first_other_deployment \
     test_status_previous_ignores_other_stateroots \
+    test_status_previous_fallback_takes_only_the_first_other_deployment \
+    test_status_previous_ignores_another_stateroots_rollback \
     test_status_previous_single_deployment_is_empty \
     test_status_rollback_verity_picks_rollback_not_staged \
     test_status_rollback_verity_without_rollback_is_empty \
@@ -1284,6 +1554,11 @@ main() {
     test_program_composefs_rejects_a_sole_deployment
     test_program_composefs_rejects_a_previous_without_an_image
     test_program_composefs_rejects_an_image_that_is_not_a_file
+    test_program_composefs_fallback_picks_the_newest_other_directory
+    test_program_composefs_cleans_up_when_a_mount_fails
+    test_program_composefs_discovers_the_layout_at_mnt
+    test_program_composefs_passes_over_a_root_without_state_deploy
+    test_program_composefs_passes_over_a_root_without_images
     test_program_ostree_layout_diffs_the_rollback_deployment
     test_program_ostree_layout_falls_back_to_the_kernel_argument
     test_program_ostree_layout_rejects_an_undeterminable_deployment
@@ -1292,6 +1567,9 @@ main() {
     test_program_discovers_the_sysroot_at_mnt
     test_program_discovers_a_sysroot_the_named_probes_miss
     test_program_refuses_when_no_layout_is_found
+    test_program_ostree_fallback_ignores_origin_files
+    test_program_ostree_layout_names_a_stateroot_with_no_deploy_directory
+    test_program_search_reaches_five_levels_down
   )
   if namespaces_available; then
     for test_fn in "${program_tests[@]}"; do
