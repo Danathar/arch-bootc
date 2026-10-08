@@ -7230,7 +7230,7 @@ else
   done < <(tr ';' '\n' <<<"${quality_covered_claim}")
 
   assert_equal "every test file the document credits with a workflow body was checked" \
-    "${quality_clauses_checked}" "5"
+    "${quality_clauses_checked}" "6"
 
   # "One more ... is read for its `env:` block but never executed" -- the suite
   # step is the one body a test names without running, so it must stay on the
@@ -9547,10 +9547,12 @@ RUNBOOK_QUOTES
     "${NIGHTLY_WORKFLOW}" 'cron: "40 5 \* \* \*"'
   assert_present "agent-audit.yml still runs monthly on the 1st at 05:23 UTC, as the runbook says" \
     ".github/workflows/agent-audit.yml" 'cron: "23 5 1 \* \*"'
+  assert_present "auto-issues.yml still runs daily at 13:17 UTC, as the runbook says" \
+    ".github/workflows/auto-issues.yml" 'cron: "17 13 \* \* \*"'
   runbook_scheduled="$(grep -lE '^  schedule:' .github/workflows/*.y*ml | LC_ALL=C sort | tr '\n' ' ')"
-  assert_equal "agent-audit.yml, build.yml and nightly-compliance.yml are the only scheduled workflows, as the runbook says" \
+  assert_equal "agent-audit.yml, auto-issues.yml, build.yml and nightly-compliance.yml are the only scheduled workflows, as the runbook says" \
     "${runbook_scheduled}" \
-    ".github/workflows/agent-audit.yml .github/workflows/build.yml .github/workflows/nightly-compliance.yml "
+    ".github/workflows/agent-audit.yml .github/workflows/auto-issues.yml .github/workflows/build.yml .github/workflows/nightly-compliance.yml "
   # The "scheduled run is missing" section queries each scheduled workflow on
   # its own, by file, so one running cannot hide the other's absence. Derive
   # the expected pair from the tree rather than restating it.

@@ -427,7 +427,9 @@ Stated plainly so nobody mistakes silence for coverage:
   its fish cases a failure rather than a skip in CI; and
   `tests/test-agent-audit.sh` runs `agent-audit.yml`'s
   `Audit merged agent pull requests`, the monthly read-back of the record an
-  agent pull request leaves. The work-order case covers
+  agent pull request leaves; and `tests/test-auto-issues.sh` runs
+  `auto-issues.yml`'s `File or close issues for scheduled runs`, which turns a
+  red scheduled run into an issue. The work-order case covers
   what neither side can see alone — that the script is reached by the relative
   path Actions gives it, that its **non-zero exit is the normal result** and
   does not abort the job before the comment is posted, that its stderr is
