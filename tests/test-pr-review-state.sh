@@ -117,6 +117,13 @@ cat >"${STUB_DIR}/gh" <<'STUB'
 #!/usr/bin/env bash
 case "$1 ${2:-}" in
   "api graphql")
+    # Keep the query text the script sent, so a case can check it asks for
+    # every field the fixtures hand back.
+    if [[ -n "${GH_STUB_QUERY:-}" ]]; then
+      for arg in "$@"; do
+        [[ "${arg}" == query=* ]] && printf '%s\n' "${arg#query=}" >"${GH_STUB_QUERY}"
+      done
+    fi
     if [[ -n "${GH_STUB_FAIL:-}" ]]; then
       printf 'HTTP 502: Bad gateway\n' >&2
       exit 1
@@ -370,6 +377,22 @@ assert_status "a workflow that could not start fails the gate" 1 "$?"
 assert_contains "the workflow that could not start is named" "${output}" "STARTUP_FAILUR  Build"
 assert_contains "a startup failure reaches the outstanding line" "${output}" "1 failing check(s)"
 
+output="$(run_script --json --repo Danathar/arch-bootc 77)"
+if printf '%s' "${output}" | jq -e '.failing == [{"name": "Build", "state": "STARTUP_FAILURE", "url": "https://example.invalid/suite"}]' >/dev/null 2>&1; then
+  check "--json names the suite's workflow, state and run URL" 0
+else
+  check "--json names the suite's workflow, state and run URL" 1 "got: ${output}"
+fi
+
+# A finished suite with no runs and no conclusion said nothing about the
+# commit. The script names that state UNKNOWN, and like any state it does not
+# list, UNKNOWN fails the gate.
+write_fixture "[]" "[]" null "" "${FIXTURE}" \
+  "[$(check_suite 'Build' COMPLETED null 0)]"
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "a finished suite with no conclusion fails the gate" 1 "$?"
+assert_contains "a suite with no conclusion is reported as UNKNOWN" "${output}" "UNKNOWN         Build"
+
 # The suite is read only when it has no runs to speak for it. A suite whose runs
 # are already in the rollup, one still queued, and one that is not an Actions
 # workflow (other apps leave empty suites behind on every push) add nothing.
@@ -444,6 +467,35 @@ write_fixture \
 output="$(run_script --repo Danathar/arch-bootc 77)"
 assert_status "requested and expected checks do not fail the gate" 0 "$?"
 assert_contains "requested and expected checks are both counted as running" "${output}" "0 failing check(s), 2 still running"
+
+# PENDING is the state a commit status sits in until the service that posted
+# it reports back, the most common way for an external check to be unfinished.
+# The CheckRun rows above never reach it, so only a StatusContext shows it is
+# read as running rather than failed.
+write_fixture "[]" "[$(status_context 'ci/external-signer' PENDING), $(check_run 'Lint shell scripts' SUCCESS)]" PENDING
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "a pending commit status does not fail the gate" 0 "$?"
+assert_contains "a pending commit status is counted as running" "${output}" "0 failing check(s), 1 still running"
+
+# --- the query asks for what the fixtures answer -------------------------
+#
+# The stub serves a fixture whatever query it is sent, so every case above
+# would still pass if the query stopped asking for a field the jq reads. On
+# GitHub that field would then be missing: without `workflowRun` every suite
+# looks like another app's and is skipped, and a workflow that could not start
+# passes again (#500). Read the query the script sent and check that the
+# commit's selection still names each field the fixtures supply. Comments are
+# dropped and whitespace folded so only the selection itself is compared.
+
+query_file="${WORK_DIR}/query.graphql"
+write_fixture "[]" "[$(check_run 'Shell tests and coverage' SUCCESS)]" SUCCESS
+GH_STUB_QUERY="${query_file}" run_script --repo Danathar/arch-bootc 77 >/dev/null
+sent_query="$(sed 's/#.*$//' "${query_file}" 2>/dev/null | tr -s ' \n' '  ')"
+for selection in \
+  'statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on CheckRun { name conclusion status detailsUrl } ... on StatusContext { context state targetUrl } } } }' \
+  'checkSuites(first: 100) { nodes { status conclusion workflowRun { url workflow { name } } checkRuns(first: 1) { totalCount } } }'; do
+  assert_contains "the query selects ${selection%% *}" "${sent_query}" "${selection}"
+done
 
 # --- classic commit statuses ----------------------------------------------
 #
