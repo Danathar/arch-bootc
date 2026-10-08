@@ -401,6 +401,17 @@ used as a gate:
 | `1` | Something is outstanding |
 | `2` | Usage or API error |
 
+A check counts as **failing** unless its state means it passed (`SUCCESS`,
+`NEUTRAL`, `SKIPPED`) or that it is still running (`REQUESTED`, `QUEUED`,
+`IN_PROGRESS`, `WAITING`, `PENDING`, `EXPECTED`). The list is of what passes,
+not of what fails, so a check that never started (`STARTUP_FAILURE`), went
+`STALE`, or reports a state GitHub adds later fails the gate instead of passing
+it by omission. A workflow that fails before it creates a job (invalid YAML, a
+bad `uses:`) leaves no check run behind, only a check suite, so the script also
+reads each finished Actions check suite that has no check runs and counts it by
+its conclusion. A check still running does not fail the gate: exit `0` with
+checks still running means nothing has failed *yet*.
+
 Review threads are **paginated**, and that is load-bearing rather than tidy: an
 exit code of `0` has to mean the script looked at every thread, not at the first
 hundred. The loop is bounded and refuses to continue on a cursor that does not

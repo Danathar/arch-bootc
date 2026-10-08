@@ -214,7 +214,7 @@ chmod +x "${STUB_DIR}/gh"
 # Build a GraphQL response. Threads and checks are passed in as JSON arrays so
 # each case states only what it is actually testing.
 write_fixture() {
-  local threads="$1" checks="$2" rollup="${3:-SUCCESS}" page_info="${4:-}" target="${5:-${FIXTURE}}"
+  local threads="$1" checks="$2" rollup="${3:-SUCCESS}" page_info="${4:-}" target="${5:-${FIXTURE}}" suites="${6:-[]}"
   [[ -z "${page_info}" ]] && page_info='{"hasNextPage": false, "endCursor": null}'
   cat >"${target}" <<JSON
 {"data":{"repository":{"pullRequest":{
@@ -224,7 +224,8 @@ write_fixture() {
   "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
   "reviewThreads": {"pageInfo": ${page_info}, "nodes": ${threads}},
   "commits": {"nodes": [{"commit": {"statusCheckRollup":
-    $(if [[ "${rollup}" == "null" ]]; then printf 'null'; else printf '{"state": "%s", "contexts": {"nodes": %s}}' "${rollup}" "${checks}"; fi)
+    $(if [[ "${rollup}" == "null" ]]; then printf 'null'; else printf '{"state": "%s", "contexts": {"nodes": %s}}' "${rollup}" "${checks}"; fi),
+    "checkSuites": {"nodes": ${suites}}
   }}]}
 }}}}
 JSON
@@ -250,6 +251,15 @@ running_check_run() { # name status
 # `targetUrl` under different names than a CheckRun does.
 status_context() { # context state
   printf '{"__typename":"StatusContext","context":"%s","state":"%s","targetUrl":"https://example.invalid/status"}' "$1" "$2"
+}
+
+# A check suite as the commit's checkSuites connection returns it. `runs` is
+# the suite's check-run count; a workflow that failed to start has none.
+check_suite() { # workflow status conclusion runs
+  local conclusion="null"
+  [[ "$3" != "null" ]] && conclusion="\"$3\""
+  printf '{"status":"%s","conclusion":%s,"workflowRun":{"url":"https://example.invalid/suite","workflow":{"name":"%s"}},"checkRuns":{"totalCount":%s}}' \
+    "$2" "${conclusion}" "$1" "$4"
 }
 
 run_script() {
@@ -331,21 +341,59 @@ assert_contains "the failing check is counted" "${output}" "1 failing check(s)"
 
 # --- every state the gate counts as failing -------------------------------
 #
-# `FAILURE` above is the obvious one. The other four are in the filter because
-# each is a way for a check to stop without having passed, and the one that
-# matters most here is `CANCELLED`: a cancelled run is not a run that said
-# nothing, it is a run that did not finish, and treating it as neutral would
-# let a gate report "nothing outstanding" for a commit nothing verified.
+# `FAILURE` above is the obvious one. The others are each a way for a check to
+# stop without having passed, and the one that matters most here is
+# `CANCELLED`: a cancelled run is not a run that said nothing, it is a run that
+# did not finish, and treating it as neutral would let a gate report "nothing
+# outstanding" for a commit nothing verified. `STARTUP_FAILURE` (the workflow
+# could not start, e.g. invalid YAML) and `STALE` (GitHub gave up on the run)
+# are the same case: no result was ever reported.
 
-for failing_state in TIMED_OUT CANCELLED ERROR ACTION_REQUIRED; do
+for failing_state in TIMED_OUT CANCELLED ERROR ACTION_REQUIRED STARTUP_FAILURE STALE; do
   write_fixture "[]" "[$(check_run 'Shell tests and coverage' "${failing_state}")]" FAILURE
   output="$(run_script --repo Danathar/arch-bootc 77)"
   assert_status "${failing_state} is counted as failing" 1 "$?"
-  # The report's state column is 14 characters wide, so the one state longer
-  # than that is matched by its visible prefix rather than its full name.
+  # The report's state column is 14 characters wide, so the states longer
+  # than that are matched by their visible prefix rather than their full name.
   assert_contains "${failing_state} is reported in the check list" "${output}" "${failing_state:0:14}"
   assert_contains "${failing_state} reaches the outstanding line" "${output}" "1 failing check(s)"
 done
+
+# A workflow that fails before creating a job (invalid YAML, a bad `uses:`)
+# produces no check run at all, so the rollup can be empty or absent; GitHub
+# reports STARTUP_FAILURE only on the check suite. The gate has to read it
+# there, or that commit exits 0 with "no checks ran".
+write_fixture "[]" "[]" null "" "${FIXTURE}" \
+  "[$(check_suite 'Build' COMPLETED STARTUP_FAILURE 0)]"
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "a workflow that could not start fails the gate" 1 "$?"
+assert_contains "the workflow that could not start is named" "${output}" "STARTUP_FAILUR  Build"
+assert_contains "a startup failure reaches the outstanding line" "${output}" "1 failing check(s)"
+
+# The suite is read only when it has no runs to speak for it. A suite whose runs
+# are already in the rollup, one still queued, and one that is not an Actions
+# workflow (other apps leave empty suites behind on every push) add nothing.
+write_fixture "[]" "[$(check_run 'Shell tests and coverage' SUCCESS)]" SUCCESS "" "${FIXTURE}" \
+  "[$(check_suite 'Shell' COMPLETED FAILURE 1), $(check_suite 'Build' QUEUED null 0), {\"status\":\"COMPLETED\",\"conclusion\":\"STALE\",\"workflowRun\":null,\"checkRuns\":{\"totalCount\":0}}]"
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "suites with runs, queued suites and non-Actions suites add no checks" 0 "$?"
+assert_contains "only the rollup's check is counted" "${output}" "0 failing check(s), 0 still running"
+
+# The script lists the states that mean "passed" and "still running" and counts
+# everything else as failing. A state GitHub adds later must therefore fail the
+# gate rather than pass it by omission, which is what let STARTUP_FAILURE and
+# STALE through when the script listed failing states instead (#500).
+write_fixture "[]" "[$(check_run 'Shell tests and coverage' SOME_NEW_STATE)]" FAILURE
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "a state the script has never heard of fails the gate" 1 "$?"
+assert_contains "an unknown state reaches the outstanding line" "${output}" "1 failing check(s), 0 still running"
+
+# The passing side of the same rule: every state that means "passed" keeps the
+# gate at 0, so the allow-list is not narrower than GitHub's success states.
+write_fixture "[]" "[$(check_run 'Shell tests and coverage' SUCCESS), $(check_run 'Lint shell scripts' NEUTRAL), $(check_run 'Build and push image (kde)' SKIPPED), $(status_context 'ci/mirror' SUCCESS)]" SUCCESS
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "SUCCESS, NEUTRAL and SKIPPED all pass the gate" 0 "$?"
+assert_contains "passing states are neither failing nor running" "${output}" "0 failing check(s), 0 still running"
 
 # The truncation above is a property of the human-readable column only. Anything
 # consuming the exit code and `--json` has to see the state GitHub actually
@@ -384,6 +432,18 @@ write_fixture \
 output="$(run_script --repo Danathar/arch-bootc 77)"
 assert_status "queued and waiting checks do not fail the gate" 0 "$?"
 assert_contains "queued and waiting checks are both counted as running" "${output}" "2 still running"
+
+# REQUESTED is the CheckRun status before QUEUED; EXPECTED is a required commit
+# status that has not been posted yet. Neither is a result, so both count as
+# still running rather than as passed or failed.
+write_fixture \
+  "[]" \
+  "[$(running_check_run 'Shell tests and coverage' REQUESTED), $(status_context 'ci/external-signer' EXPECTED)]" \
+  PENDING
+
+output="$(run_script --repo Danathar/arch-bootc 77)"
+assert_status "requested and expected checks do not fail the gate" 0 "$?"
+assert_contains "requested and expected checks are both counted as running" "${output}" "0 failing check(s), 2 still running"
 
 # --- classic commit statuses ----------------------------------------------
 #
