@@ -47,7 +47,7 @@ prefix. The roster below is read from pull requests and issues up to
 Older issues from `sec-check` carry `agent/security`. The `dashboard` role does
 not use an `agent/` label: it files the `[ACMM Lx]` maturity issues, labeled
 `acmm`. The README's
-[*Maintained with Hive*](../README.md#maintained-with-hive-acmm-l5) section
+[*Maintained with Hive*](../README.md#maintained-with-hive-acmm-l6) section
 names the reviewer, the architect and the strategist.
 
 Not every pull request comes from Hive:
@@ -144,18 +144,18 @@ It prints `false`.
 
 ## Who merges
 
-A maintainer merges. The README states the policy: every pull request an agent
-opens gets a `hold` label, a maintainer reviews agent pull requests in
-batches, and none merges on its own. Hive applies `hold`. No workflow in this
-repository does. Every Hive pull request merged so far was merged by the
-maintainer:
+At ACMM L6 Hive agents open pull requests and auto-merge them when checks
+pass. The README states the policy: non-outreach pull requests have no level
+hold, and outreach pull requests remain held for human review. Hive applies
+`hold`. No workflow in this repository does. The merger of each Hive pull
+request is recorded on GitHub:
 
 ```bash
 gh pr list --repo Danathar/arch-bootc --state merged --limit 1000 --json mergedBy,body \
   --jq '[.[] | select((.body // "") | test("— hive:")) | .mergedBy.login] | unique'
 ```
 
-It prints `["Danathar"]`.
+The output lists every login that has merged one.
 
 The ruleset adds two limits no agent can talk its way past. It has no bypass
 actor, so nothing pushes to `main` outside a pull request. It requires
