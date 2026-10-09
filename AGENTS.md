@@ -273,7 +273,7 @@ invalidates the reasoning behind the others, so treat it as a security change
 and say so.
 
 Likewise, `system_files/etc/containers/policy.json` requires a valid signature
-for this repository's published namespace, and `cosign.pub` at the repository
+for this repository's published images, and `cosign.pub` at the repository
 root is the single source of truth copied into the image. Do not relax the
 policy, do not duplicate the key, and do not disable signature verification to
 make something work.

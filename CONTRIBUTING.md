@@ -89,7 +89,7 @@ These are load-bearing, and each has a rationale recorded in place.
   and `passwd --expire`. Loosening any one of them invalidates the reasoning
   behind the others. Treat it as a security change and say so.
 - **The signature policy.** `system_files/etc/containers/policy.json` requires a
-  valid cosign signature for this repository's published namespace, and
+  valid cosign signature for this repository's published images, and
   `cosign.pub` at the repository root is the single source of truth copied into
   the image. Do not relax it, duplicate the key, or disable verification to make
   something work.

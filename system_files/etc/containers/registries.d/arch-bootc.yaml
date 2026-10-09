@@ -1,3 +1,7 @@
 docker:
-  ghcr.io/danathar:
+  ghcr.io/danathar/arch-bootc-base:
+    use-sigstore-attachments: true
+  ghcr.io/danathar/arch-bootc-kde:
+    use-sigstore-attachments: true
+  ghcr.io/danathar/arch-bootc-xfce:
     use-sigstore-attachments: true

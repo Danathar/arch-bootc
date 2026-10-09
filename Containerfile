@@ -146,21 +146,25 @@ COPY system_files/ /
 
 # Install this repo's cosign public key so the signature verification policy
 # shipped above (system_files/etc/containers/policy.json) can check images
-# published from ghcr.io/danathar. cosign.pub is NOT duplicated under
-# system_files/: it already lives at the repo root as the single source of
-# truth CI signs against and that docs/ci-cd.md tells users to commit, so
-# COPYing it directly here keeps one copy in sync rather than requiring both
-# to be updated whenever the key rotates.
+# published as ghcr.io/danathar/arch-bootc-<flavor>. cosign.pub is NOT
+# duplicated under system_files/: it already lives at the repo root as the
+# single source of truth CI signs against and that docs/ci-cd.md tells users
+# to commit, so COPYing it directly here keeps one copy in sync rather than
+# requiring both to be updated whenever the key rotates.
 #
-# Only ghcr.io/danathar is scoped to require a signature; the "default"
-# entry in policy.json stays insecureAcceptAnything so `bootc switch` /
-# `podman pull` of any third-party image keeps working unmodified. Forks
-# must regenerate their own keypair (see docs/ci-cd.md) AND edit the
-# namespace in both system_files/etc/containers/policy.json and
+# Only this repo's own published repositories (one policy entry per flavor,
+# ghcr.io/danathar/arch-bootc-{base,kde,xfce}) are scoped to require a
+# signature -- not the whole ghcr.io/danathar account, whose other projects
+# are signed with different keys or keylessly and would otherwise be refused.
+# The "default" entry in policy.json stays insecureAcceptAnything so
+# `bootc switch` / `podman pull` of any other image keeps working unmodified.
+# Forks must regenerate their own keypair (see docs/ci-cd.md) AND edit every
+# per-flavor key in both system_files/etc/containers/policy.json and
 # system_files/etc/containers/registries.d/arch-bootc.yaml from
-# "ghcr.io/danathar" to their own "ghcr.io/<their-github-username-or-org>"
-# (CI already publishes to ghcr.io/${{ github.repository_owner }}
-# automatically; the policy files do not follow that automatically).
+# "ghcr.io/danathar/arch-bootc-<flavor>" to their own
+# "ghcr.io/<their-github-username-or-org>/<their-repo-name>-<flavor>"
+# (CI already publishes there automatically; the policy files do not follow
+# that automatically).
 COPY cosign.pub /etc/pki/containers/arch-bootc.pub
 
 # Default root credential, reachable ONLY from a physical console.

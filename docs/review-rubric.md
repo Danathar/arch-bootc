@@ -31,7 +31,7 @@ deliberate security change.
 - [ ] No default password is extended to a non-root user, and no new remote or
       graphical path to root is introduced.
 - [ ] `system_files/etc/containers/policy.json` still requires a signature for
-      the published namespace; `cosign.pub` is not duplicated or bypassed.
+      the published images; `cosign.pub` is not duplicated or bypassed.
 - [ ] No third-party pacman repository or signing key is added to the image.
 - [ ] `PACMAN_CACHE_BUST` is intact and package installation has not moved above
       it.
