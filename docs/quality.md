@@ -257,7 +257,7 @@ than being pasted in as raw text. See [ci-cd.md](ci-cd.md) for the detail.
 
 **cosign signing.** Only images pushed from `main` are signed, and the in-image
 policy at `system_files/etc/containers/policy.json` requires a valid signature
-for this repository's published namespace. A signature proves the image came
+for this repository's published images. A signature proves the image came
 from this pipeline; it says nothing about whether the contents are correct.
 
 **Renovate.** Keeps `bootc`, the base image digest, the pinned actions, and the

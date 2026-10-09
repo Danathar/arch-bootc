@@ -53,7 +53,7 @@ everything below except where a flavor is called out.
 - `qemu-guest-agent` installed for host-driven VM access (udev-activated only when run under QEMU/libvirt)
 - `nano` removed from the image
 - `base-devel` is **not** shipped in the final image. `bootc` is compiled from source during the build (see below), but only `rust make go-md2man elfutils clang` are installed for that and removed again by name in the same layer — see [installation.md](installation.md#customizing-the-build-aur-packages) if you need a compiler toolchain for a local package build
-- Container images pulled from `ghcr.io/danathar` (this repo's own published images) require a valid cosign signature; every other registry/namespace is unrestricted. See [ci-cd.md](ci-cd.md) if you fork this repo.
+- Container images pulled from this repo's own published repositories (`ghcr.io/danathar/arch-bootc-base`, `ghcr.io/danathar/arch-bootc-kde`, `ghcr.io/danathar/arch-bootc-xfce`) require a valid cosign signature; every other repository, including the owner's other projects in the same ghcr.io/danathar account, is unrestricted. See [ci-cd.md](ci-cd.md) if you fork this repo.
 - Local `just build-containerfile` / `build-base` / `build-xfce` (aliases for `just build-flavor kde/base/xfce`) use `--security-opt label=disable` for more reliable rebuilds
 
 ## Upstream Bootcrew Compatibility Work (Why This Image Works)

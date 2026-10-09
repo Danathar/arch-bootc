@@ -5,7 +5,21 @@
             "": [{"type": "insecureAcceptAnything"}]
         },
         "docker": {
-            "ghcr.io/danathar": [
+            "ghcr.io/danathar/arch-bootc-base": [
+                {
+                    "type": "sigstoreSigned",
+                    "keyPath": "/etc/pki/containers/arch-bootc.pub",
+                    "signedIdentity": {"type": "matchRepository"}
+                }
+            ],
+            "ghcr.io/danathar/arch-bootc-kde": [
+                {
+                    "type": "sigstoreSigned",
+                    "keyPath": "/etc/pki/containers/arch-bootc.pub",
+                    "signedIdentity": {"type": "matchRepository"}
+                }
+            ],
+            "ghcr.io/danathar/arch-bootc-xfce": [
                 {
                     "type": "sigstoreSigned",
                     "keyPath": "/etc/pki/containers/arch-bootc.pub",

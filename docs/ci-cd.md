@@ -28,25 +28,39 @@ git push origin main
 
 The built image ships `/etc/containers/policy.json` and
 `/etc/containers/registries.d/arch-bootc.yaml`, which require a valid cosign
-signature (from the key above) for anything pulled from the `ghcr.io/danathar`
-namespace — every other registry/namespace is left at `insecureAcceptAnything`,
-so this doesn't affect ordinary `bootc switch` / `podman pull` of third-party
-images.
+signature (from the key above) for anything pulled from this repository's own
+published repositories — one entry per flavor:
+`ghcr.io/danathar/arch-bootc-base`, `ghcr.io/danathar/arch-bootc-kde` and
+`ghcr.io/danathar/arch-bootc-xfce`. Every other repository is left at
+`insecureAcceptAnything`, so this doesn't affect ordinary `bootc switch` /
+`podman pull` of third-party images, including the owner's other projects
+under `ghcr.io/danathar`, which are signed with different keys (or keylessly).
+The entries are per repository rather than one `ghcr.io/danathar` namespace key
+for exactly that reason: a namespace key matches every repository under it.
 
-CI automatically publishes a fork's images to `ghcr.io/<your-username-or-org>`
-(`IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"` in
-`build.yml`), but the policy files above do **not** pick that up
-automatically — they still say `ghcr.io/danathar`. If you don't update them,
+CI automatically publishes a fork's images to
+`ghcr.io/<your-username-or-org>/<your-repo-name>-<flavor>`
+(`IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"` and
+`IMAGE_NAME=${IMAGE_NAME,,}-${{ matrix.flavor }}` in `build.yml`), but the
+policy files above do **not** pick that up automatically — they still say
+`ghcr.io/danathar/arch-bootc-<flavor>`. If you don't update them,
 your fork's images simply won't match the scoped policy and will fall through
 to the `insecureAcceptAnything` default (harmless, but the in-image
 verification you presumably wanted won't do anything). To fix:
 
-1. In `system_files/etc/containers/policy.json`, change the
-   `transports.docker` key from `"ghcr.io/danathar"` to
-   `"ghcr.io/<your-username-or-org>"`.
+1. In `system_files/etc/containers/policy.json`, change each of the three
+   `transports.docker` keys — `"ghcr.io/danathar/arch-bootc-base"`,
+   `"ghcr.io/danathar/arch-bootc-kde"` and `"ghcr.io/danathar/arch-bootc-xfce"`
+   — to `"ghcr.io/<your-username-or-org>/<your-repo-name>-<flavor>"`.
 2. In `system_files/etc/containers/registries.d/arch-bootc.yaml`, change the
-   `docker:` key the same way.
-3. Commit both, alongside your own `cosign.pub` from the step above.
+   three keys under `docker:` the same way.
+3. In `tests/check-invariants.sh`, change `signed_registry` and `signed_repo`
+   in the "Signature chain" group to match; that check compares the policy
+   keys against every flavor in `build.yml`'s matrix.
+4. Commit all three, alongside your own `cosign.pub` from the step above.
+
+If you add a flavor to the build matrix, add its repository to both policy
+files too; `tests/check-invariants.sh` fails until you do.
 
 ### Rotating the signing key
 
@@ -58,7 +72,7 @@ to verify anything newly signed with the new key until they pick up a build
 that ships the new `cosign.pub`. Make sure a new build has actually reached
 those machines (via a normal `bootc upgrade`) before CI fully switches to
 signing with the rotated key, or they can end up unable to verify — and
-therefore unable to pull — anything from `ghcr.io/danathar` in the meantime.
+therefore unable to pull — any `ghcr.io/danathar/arch-bootc-<flavor>` image in the meantime.
 
 ## Shell tests and coverage gate
 

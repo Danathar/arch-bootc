@@ -30,8 +30,8 @@ Three assets, in the order an attacker would want them:
 1. **The signing key** (`SIGNING_SECRET`). It is the reason the update path is
    trusted at all. Compromise means arbitrary images accepted as genuine by
    every installed system, because `system_files/etc/containers/policy.json`
-   requires a valid signature for `ghcr.io/danathar` and treats that signature
-   as sufficient.
+   requires a valid signature for each published `ghcr.io/danathar/arch-bootc-<flavor>`
+   repository and treats that signature as sufficient.
 2. **The image contents.** Anything reachable from the `Containerfile` — package
    lists, `system_files/`, the compiled `bootc` binary — runs as root on the
    installed machine.
@@ -105,7 +105,7 @@ must be described as such.
   forcing a change on first use. The four hold together; removing one
   invalidates the reasoning behind the others.
 - **Signature verification.** `policy.json` requires a valid signature for this
-  repository's published namespace, and `cosign.pub` at the repository root is
+  repository's published images, and `cosign.pub` at the repository root is
   the single source of truth copied into the image as
   `/etc/pki/containers/arch-bootc.pub`. Do not relax the policy, duplicate the
   key, or disable verification to make something work.

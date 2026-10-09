@@ -504,7 +504,7 @@ fi
 # ---------------------------------------------------------------------------
 group "Signature chain (docs/ci-cd.md, docs/security/SECURITY-AI.md)"
 
-assert_present "the published namespace requires a sigstore signature" \
+assert_present "the published repositories require a sigstore signature" \
   "${POLICY}" '"type": "sigstoreSigned"'
 
 assert_present "the signature is bound to the repository that published it" \
@@ -542,14 +542,36 @@ else
   fail "cosign.key is ignored by Git" "no .gitignore rule matches cosign.key"
 fi
 
-# The namespace that requires a signature and the namespace configured to
-# locate signatures have to be the same one.
-policy_namespace="$(sed -nE 's/.*"(ghcr\.io\/[a-z0-9._-]+)".*/\1/p' "${POLICY}" | head -1)"
-if [[ -n "${policy_namespace}" ]] && grep -Fq "${policy_namespace}" "${REGISTRIES_D}"; then
-  pass "registries.d configures the same namespace policy.json protects (${policy_namespace})"
+# The signature rule is scoped to this repository's own published images, one
+# key per flavor, and not to the whole ghcr.io/danathar account: a namespace
+# key matches every repository under it, so the owner's other projects --
+# signed with their own keys, or keyless -- would be refused on an arch-bootc
+# host (#514). build.yml publishes ${IMAGE_REGISTRY}/${IMAGE_NAME}-${flavor},
+# both taken from the GitHub context at run time, so the owner and repository
+# name are spelled out here; a fork changes them alongside the policy files
+# (docs/ci-cd.md). The flavor list is read from the build matrix, so adding a
+# flavor fails here until both policy files cover it.
+signed_registry="ghcr.io/danathar"
+signed_repo="arch-bootc"
+signed_flavors="$(sed -n 's/^[[:space:]]*flavor:[[:space:]]*\[\(.*\)\].*/\1/p' "${BUILD_WORKFLOW}" |
+  tr -d ' ' | tr ',' '\n' | sed '/^$/d' | sort -u)"
+signed_expected_keys="$(awk -v prefix="${signed_registry}/${signed_repo}-" '{ print prefix $0 }' <<<"${signed_flavors}" |
+  LC_ALL=C sort -u | tr '\n' ' ')"
+signed_expected_keys="${signed_expected_keys% }"
+if [[ -z "${signed_flavors}" ]]; then
+  fail "the published flavors can be read from ${BUILD_WORKFLOW}" "the flavor matrix extraction is empty"
+elif ! command -v jq >/dev/null 2>&1 || ! jq -e . "${POLICY}" >/dev/null 2>&1; then
+  fail "policy.json requires a signature for exactly the repositories build.yml publishes" \
+    "jq is not on PATH or ${POLICY} is not valid JSON"
 else
-  fail "registries.d configures the same namespace policy.json protects" \
-    "policy.json protects '${policy_namespace}', which does not appear in ${REGISTRIES_D}"
+  assert_equal "policy.json requires a signature for exactly the repositories build.yml publishes" \
+    "$(jq -r '.transports.docker | keys[]' "${POLICY}" | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')" \
+    "${signed_expected_keys}"
+  # The repositories that require a signature and the repositories configured
+  # to locate signatures have to be the same ones.
+  assert_equal "registries.d configures sigstore attachments for exactly the repositories policy.json protects" \
+    "$(sed -nE 's/^[[:space:]]+(ghcr\.io\/[^:[:space:]]+):[[:space:]]*$/\1/p' "${REGISTRIES_D}" | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')" \
+    "${signed_expected_keys}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -6431,18 +6453,20 @@ assert_present "that drop-in is installed 0440, so visudo and sudo will read it"
 assert_absent "wheel sudo still prompts for a password, as ${CUSTOM_DOC} says" \
   "${CONTAINERFILE}" 'NOPASSWD'
 
-# "Container images pulled from `ghcr.io/danathar` ... require a valid cosign
-# signature": the namespace the document names is the namespace policy.json
-# protects. The signature chain itself is asserted in its own group above; what
-# is checked here is that the document names the same namespace.
+# "Container images pulled from this repo's own published repositories
+# (`ghcr.io/danathar/arch-bootc-base`, ...) require a valid cosign signature":
+# the repositories the document names are the ones policy.json protects. The
+# signature chain itself is asserted in its own group above; what is checked
+# here is that the document names the same set.
 # shellcheck disable=SC2016  # the backticks are the document's own markup, matched literally
-custom_doc_namespace="$(grep -oE '`ghcr\.io/[a-z0-9-]+`' "${CUSTOM_DOC}" | tr -d '`' | sort -u | head -n 1)"
+custom_doc_signed="$(grep -E 'require a valid cosign signature' "${CUSTOM_DOC}" |
+  grep -oE '`ghcr\.io/[a-z0-9._/-]+`' | tr -d '`' | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')"
 if command -v jq >/dev/null 2>&1 && jq -e . "${POLICY}" >/dev/null 2>&1; then
-  assert_equal "the namespace ${CUSTOM_DOC} says is signature-gated is the one policy.json gates" \
-    "${custom_doc_namespace}" \
-    "$(jq -r '.transports.docker | keys[]' "${POLICY}" | sort -u | head -n 1)"
+  assert_equal "the repositories ${CUSTOM_DOC} says are signature-gated are the ones policy.json gates" \
+    "${custom_doc_signed}" \
+    "$(jq -r '.transports.docker | keys[]' "${POLICY}" | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')"
 else
-  fail "the namespace ${CUSTOM_DOC} says is signature-gated is the one policy.json gates" \
+  fail "the repositories ${CUSTOM_DOC} says are signature-gated are the ones policy.json gates" \
     "jq is not on PATH or ${POLICY} is not valid JSON"
 fi
 
