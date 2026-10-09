@@ -555,7 +555,8 @@ signed_registry="ghcr.io/danathar"
 signed_repo="arch-bootc"
 signed_flavors="$(sed -n 's/^[[:space:]]*flavor:[[:space:]]*\[\(.*\)\].*/\1/p' "${BUILD_WORKFLOW}" |
   tr -d ' ' | tr ',' '\n' | sed '/^$/d' | sort -u)"
-signed_expected_keys="$(sed "s|^|${signed_registry}/${signed_repo}-|" <<<"${signed_flavors}" | LC_ALL=C sort -u | tr '\n' ' ')"
+signed_expected_keys="$(awk -v prefix="${signed_registry}/${signed_repo}-" '{ print prefix $0 }' <<<"${signed_flavors}" |
+  LC_ALL=C sort -u | tr '\n' ' ')"
 signed_expected_keys="${signed_expected_keys% }"
 if [[ -z "${signed_flavors}" ]]; then
   fail "the published flavors can be read from ${BUILD_WORKFLOW}" "the flavor matrix extraction is empty"
