@@ -197,7 +197,8 @@ new_stub_bin() {
 
   # findmnt is called two ways: with --mountpoint=<path> by is_genuine_esp, to
   # describe one mountpoint, and with -t vfat -o TARGET by find_esps, to list
-  # candidates. The stub answers for STUB_ESP only and fails for every other
+  # candidates. Both stubs append their arguments to STUB_CALL_LOG when it is
+  # set, so a test can tell whether discovery ran at all. The stub answers for STUB_ESP only and fails for every other
   # mountpoint, so the well-known /boot/efi, /boot and /efi candidates the
   # script always tries are refused before anything looks at the host.
   local tool_name
@@ -206,6 +207,7 @@ new_stub_bin() {
       findmnt)
         cat >"${bin}/findmnt" <<'STUB'
 #!/usr/bin/env bash
+[[ -z "${STUB_CALL_LOG:-}" ]] || printf 'findmnt %s\n' "$*" >>"${STUB_CALL_LOG}"
 mountpoint=""
 for arg in "$@"; do
   case "${arg}" in
@@ -225,6 +227,7 @@ STUB
       lsblk)
         cat >"${bin}/lsblk" <<'STUB'
 #!/usr/bin/env bash
+[[ -z "${STUB_CALL_LOG:-}" ]] || printf 'lsblk %s\n' "$*" >>"${STUB_CALL_LOG}"
 [[ "${STUB_DEV_STATUS:-0}" == "0" ]] || exit "${STUB_DEV_STATUS}"
 printf '%s\n' "${STUB_DEV_INFO}"
 STUB
@@ -273,23 +276,36 @@ assert_refused_by_genuineness_check() {
 }
 
 # --- argument handling -----------------------------------------------------
+#
+# The help tests hand the script a prunable ESP on purpose. Printing usage is
+# only half of what --help promises; the other half is stopping there. If the
+# `exit 0` after usage went missing, the case statement would fall through
+# with dry_run=0 and a user asking for help would get a real prune run.
 
 test_help_exits_zero() {
   local esp output
-  esp="$(new_esp help-esp)"
+  esp="$(new_esp help-esp current old)"
+  write_bls_entry "${esp}" current current
   run_prune "${esp}" --help
   output="${RUN_OUTPUT}"
   assert_eq "--help exits 0" "0" "${RUN_STATUS}"
   assert_contains "--help prints usage" "${output}" "Usage: arch-bootc-prune-esp"
+  check "--help prints nothing but usage" \
+    "$(not_contains_result "${output}" "arch-bootc-prune-esp:")"
+  assert_dir_exists "--help leaves an unreferenced deployment alone" "${esp}/EFI/Linux/old"
 }
 
 test_short_help_exits_zero() {
   local esp output
-  esp="$(new_esp short-help-esp)"
+  esp="$(new_esp short-help-esp current old)"
+  write_bls_entry "${esp}" current current
   run_prune "${esp}" -h
   output="${RUN_OUTPUT}"
   assert_eq "-h exits 0" "0" "${RUN_STATUS}"
   assert_contains "-h prints usage" "${output}" "Usage: arch-bootc-prune-esp"
+  check "-h prints nothing but usage" \
+    "$(not_contains_result "${output}" "arch-bootc-prune-esp:")"
+  assert_dir_exists "-h leaves an unreferenced deployment alone" "${esp}/EFI/Linux/old"
 }
 
 test_unknown_argument_exits_two() {
@@ -329,6 +345,35 @@ test_nonexistent_path_is_not_a_candidate() {
   output="${RUN_OUTPUT}"
   assert_eq "nonexistent ESP path exits 0" "0" "${RUN_STATUS}"
   assert_contains "nonexistent ESP path reports no ESP found" "${output}" "no mounted ESP with EFI/Linux and loader/entries found"
+}
+
+# BOOTC_PRUNE_ESP_PATH replaces discovery; it does not add to it. If
+# find_esps fell through to its discovery loop after honoring the variable,
+# every run that names an ESP -- including every other test in this file --
+# would also probe the host's mount table, and on a machine with a genuine ESP
+# mounted, prune that too. The stubs log every call, so "discovery did not run"
+# is observable without a block device: the log stays empty.
+test_escape_hatch_skips_discovery() {
+  local esp bin output call_log
+  esp="$(new_esp escape-hatch-esp current old)"
+  write_bls_entry "${esp}" current current
+  bin="$(new_stub_bin escape-hatch findmnt lsblk)"
+  call_log="${WORK_DIR}/escape-hatch-calls"
+  : >"${call_log}"
+  env "BOOTC_PRUNE_ESP_PATH=${esp}" \
+    "PATH=${bin}" \
+    "STUB_ESP=${WORK_DIR}/escape-hatch-other-esp" \
+    "STUB_MOUNT_INFO=" \
+    "STUB_DEV_INFO=" \
+    "STUB_CALL_LOG=${call_log}" \
+    "${BASH}" "${PRUNE_ESP}" --dry-run >"${WORK_DIR}/.run-output" 2>&1
+  RUN_STATUS=$?
+  output="$(cat "${WORK_DIR}/.run-output")"
+  assert_eq "the escape hatch exits 0" "0" "${RUN_STATUS}"
+  assert_contains "the escape hatch prunes the ESP it names" \
+    "${output}" "would prune EFI/Linux/old"
+  assert_eq "the escape hatch never calls findmnt or lsblk" \
+    "" "$(cat "${call_log}")"
 }
 
 # --- prune behaviour -------------------------------------------------------
@@ -606,6 +651,9 @@ test_findmnt_output_without_fstype_is_not_genuine() {
   assert_refused_by_genuineness_check "findmnt output with no FSTYPE field" "${output}"
 }
 
+# This one cannot reach the filesystem check on its own: /dev/nonexistent is
+# refused by the block-device test whatever FSTYPE says. The device-class group
+# below repeats it on a real node, where FSTYPE is the only thing wrong.
 test_non_vfat_filesystem_is_not_genuine() {
   local esp bin output
   esp="$(new_discovery_fixture ext4-esp)"
@@ -623,7 +671,11 @@ test_source_that_is_not_a_block_device_is_not_genuine() {
   # out: vfat and present in the mount table, but with no block device node.
   backing="${WORK_DIR}/backing-file"
   printf 'not a device\n' >"${backing}"
-  run_discovery "${bin}" "${esp}" "SOURCE=\"${backing}\" FSTYPE=\"vfat\"" ""
+  # lsblk would call it a fixed internal ESP, so the block-device test is the
+  # only thing left to refuse it. With lsblk answering nothing, the PARTTYPE
+  # parse below would refuse it too and the -b test could go unnoticed.
+  run_discovery "${bin}" "${esp}" "SOURCE=\"${backing}\" FSTYPE=\"vfat\"" \
+    "PARTTYPE=\"${ESP_PARTTYPE_GUID}\" RM=\"0\" HOTPLUG=\"0\""
   output="${RUN_OUTPUT}"
   assert_refused_by_genuineness_check "a vfat mount whose source is not a block device" "${output}"
 }
@@ -765,6 +817,44 @@ test_hotplug_device_is_not_genuine() {
     "PARTTYPE=\"${ESP_PARTTYPE_GUID}\" RM=\"0\" HOTPLUG=\"1\""
   assert_refused_by_genuineness_check "a correctly typed ESP on a hotplug bus" \
     "${RUN_OUTPUT}"
+}
+
+# The vfat test above stops at the block-device check. On a real node with
+# lsblk calling it a fixed internal ESP, the filesystem type is all that is
+# left. exfat is the case that matters: it is what Ventoy sticks use, and a
+# match on "anything with fat in the name" would let one through.
+test_non_vfat_filesystem_on_a_device_is_not_genuine() {
+  local fstype esp bin
+  if ! have_block_device; then
+    skip "a non-vfat filesystem on a fixed ESP partition is not genuine" "${no_block_device_reason}"
+    skip "an exfat filesystem on a fixed ESP partition is not genuine" "${no_block_device_reason}"
+    return
+  fi
+  for fstype in ext4 exfat; do
+    esp="$(new_discovery_fixture "${fstype}-device-esp")"
+    bin="$(new_stub_bin "${fstype}-device" findmnt lsblk)"
+    run_discovery "${bin}" "${esp}" \
+      "SOURCE=\"${BLOCK_DEVICE}\" FSTYPE=\"${fstype}\"" \
+      "PARTTYPE=\"${ESP_PARTTYPE_GUID}\" RM=\"0\" HOTPLUG=\"0\""
+    assert_refused_by_genuineness_check "an ${fstype} filesystem on a fixed ESP partition" \
+      "${RUN_OUTPUT}"
+  done
+}
+
+# Fails closed on shape, not only on value: an RM or HOTPLUG field that is
+# present but empty is not "0", so it is not a fixed device.
+test_empty_rm_or_hotplug_value_is_not_genuine() {
+  if ! have_block_device; then
+    skip "an empty RM value is not genuine" "${no_block_device_reason}"
+    skip "an empty HOTPLUG value is not genuine" "${no_block_device_reason}"
+    return
+  fi
+  run_device_class_discovery empty-rm \
+    "PARTTYPE=\"${ESP_PARTTYPE_GUID}\" RM=\"\" HOTPLUG=\"0\""
+  assert_refused_by_genuineness_check "an empty RM value" "${RUN_OUTPUT}"
+  run_device_class_discovery empty-hotplug \
+    "PARTTYPE=\"${ESP_PARTTYPE_GUID}\" RM=\"0\" HOTPLUG=\"\""
+  assert_refused_by_genuineness_check "an empty HOTPLUG value" "${RUN_OUTPUT}"
 }
 
 test_fixed_internal_esp_is_genuine() {
@@ -1050,6 +1140,7 @@ main() {
     test_no_candidate_when_layout_missing \
     test_no_candidate_when_loader_entries_missing \
     test_nonexistent_path_is_not_a_candidate \
+    test_escape_hatch_skips_discovery \
     test_prunes_unreferenced_keeps_referenced \
     test_keeps_every_referenced_deployment \
     test_keeps_deployment_referenced_only_by_a_staged_entry \
@@ -1081,6 +1172,8 @@ main() {
     test_non_esp_partition_type_is_not_genuine \
     test_removable_device_is_not_genuine \
     test_hotplug_device_is_not_genuine \
+    test_non_vfat_filesystem_on_a_device_is_not_genuine \
+    test_empty_rm_or_hotplug_value_is_not_genuine \
     test_fixed_internal_esp_is_genuine \
     test_service_execstart_runs_the_script_this_repo_ships \
     test_service_condition_guards_the_path_execstart_uses \
