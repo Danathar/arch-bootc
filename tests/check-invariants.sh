@@ -9253,10 +9253,10 @@ else
   ma_says "the page links to the README's Hive section by its current anchor" \
     "](../README.md#${ma_readme_anchor})"
   # shellcheck disable=SC2016 # the backticks are the README's own markup
-  assert_present "the README says an agent pull request gets a hold label" README.md \
-    'gets a `hold` label'
-  assert_present "the README says no agent pull request merges on its own" README.md \
-    'no agent pull request merges on its own'
+  assert_present "the README says non-outreach agent pull requests have no level hold" README.md \
+    'Non-outreach pull requests have no level hold'
+  assert_present "the README says outreach pull requests stay held for human review" README.md \
+    'outreach pull requests remain held for human review'
   assert_equal "renovate.json automerges by default" \
     "$(jq -r '[.packageRules[] | select((.matchUpdateTypes // []) | index("major")) | select(.matchPackageNames == null) | .automerge] | first' renovate.json)" "true"
   assert_equal "renovate.json does not automerge a major bootc-dev/bootc bump" \

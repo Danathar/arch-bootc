@@ -112,8 +112,9 @@ Renovate update merges on its own once the build is green
   is applied to every Cursor session and points it at `AGENTS.md`.
   [`.github/copilot-instructions.md`](../.github/copilot-instructions.md) does
   the same for Copilot. Neither tool enforces anything from them.
-- **Who merges.** The README says every agent pull request gets a `hold` label
-  and that a maintainer merges it. Hive applies the label
+- **Who merges.** The README says that at ACMM L6 non-outreach agent pull
+  requests merge once checks pass and outreach pull requests stay held for
+  human review. Hive applies any `hold` label
   ([Multi-agent work](multi-agent.md#who-merges)). GitHub does not enforce it:
   the ruleset requires no approval, so anyone who can merge a green pull
   request can merge an agent's.
