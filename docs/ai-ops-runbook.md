@@ -183,9 +183,9 @@ place to look first, not a failure. Detail:
 
 `File issues for failed scheduled runs`, one job (`file-issues`), one step
 (`File or close issues for scheduled runs`). It reads the newest completed
-scheduled run of `build.yml` and of `nightly-compliance.yml` on `main`. A
-failed, timed-out or never-started run, or one older than 48 hours, opens an
-issue titled `Scheduled run of ... failed on main` or
+scheduled run of `build.yml`, `nightly-compliance.yml` and `agent-audit.yml` on
+`main`. A failed, timed-out or never-started run, or one older than 48 hours
+(33 days for the monthly audit), opens an issue titled `Scheduled run of ... failed on main` or
 `... has stopped running on main`, or comments on the one already open. A
 later successful run closes it. The issue is a pointer, not a diagnosis: go to
 the section for the workflow it names. A cancelled run is ignored. It writes
@@ -203,7 +203,7 @@ starts with them disabled
 ([GitHub's page](https://docs.github.com/en/actions/managing-workflow-runs/disabling-and-enabling-a-workflow)).
 A missing run is silent: no red check, just no new row. `auto-issues.yml`
 opens an issue when a daily workflow's newest scheduled run is more than 48
-hours old, but it is scheduled too: the 60-day rule switches it off along with
+hours old, or the monthly audit's is more than 33 days old, but it is scheduled too: the 60-day rule switches it off along with
 the rest, and then nothing is filed.
 
 ```bash

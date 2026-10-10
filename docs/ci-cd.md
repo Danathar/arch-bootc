@@ -692,14 +692,18 @@ a red row in the Actions tab and an email to whoever is subscribed, and the
 images quietly stop being refreshed. It runs daily at 13:17 UTC, after both
 daily workflows have finished, and on `workflow_dispatch`.
 
-It reads two workflows, each on its own: `build.yml` and
-`nightly-compliance.yml`. For each, it takes the newest **completed**
-**scheduled** run on `main` and decides:
+It reads every scheduled workflow except itself, each on its own: `build.yml`,
+`nightly-compliance.yml` and `agent-audit.yml`. The audit is included because
+its findings fail its run on purpose ([Agent audit trail](#agent-audit-trail)),
+and a failed monthly run nobody opens is a finding nobody reads.
+`tests/test-auto-issues.sh` fails when a scheduled workflow is added and not
+read here. For each, it takes the newest **completed** **scheduled** run on
+`main` and decides:
 
 | Newest run | What the job does |
 | --- | --- |
 | `failure`, `timed_out` or `startup_failure` | Opens an issue, or comments on the one already open |
-| Started more than 48 hours ago, whatever its result | Opens or comments the same way: the schedule stopped running |
+| Started more than 48 hours ago (33 days for the monthly `agent-audit.yml`), whatever its result | Opens or comments the same way: the schedule stopped running |
 | `success` | Closes the open issue, if any, with a comment linking the run |
 | `cancelled` or anything else | Nothing; a cancelled run says nothing about the image |
 | No scheduled run at all | Nothing; a fork that just enabled Actions has none yet |
@@ -726,7 +730,8 @@ disables every scheduled workflow at once, this one included.
 `gh` stub serving staged JSON and the real `jq`: a first failure, `timed_out`
 and `startup_failure`, a comment on the open issue, a person's look-alike
 issue, a run already reported, a close on success, a cancelled run, a stale
-schedule on either side of 48 hours, no runs at all, and a failed API read,
+schedule on either side of 48 hours, a failed agent audit and an audit
+schedule on either side of 33 days, no runs at all, and a failed API read,
 which must fail the step rather than open a duplicate.
 
 ## Pruning old package versions
