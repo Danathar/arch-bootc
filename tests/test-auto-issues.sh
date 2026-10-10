@@ -227,8 +227,16 @@ assert_status "two green scheduled runs exit 0" 0 "$?"
 assert_equal "two green scheduled runs write nothing" "" "$(writes)"
 assert_equal "each workflow's newest completed scheduled run on main is what is read" \
   "run list --repo Danathar/arch-bootc --workflow build.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha
-run list --repo Danathar/arch-bootc --workflow nightly-compliance.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha" \
+run list --repo Danathar/arch-bootc --workflow nightly-compliance.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha
+run list --repo Danathar/arch-bootc --workflow agent-audit.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha" \
   "$(grep '^run list' "${GH_LOG}")"
+
+# Every scheduled workflow but this one is read. A new scheduled workflow, or
+# one dropped from the loop, fails here instead of going red unseen.
+watched="$(sed -nE 's/^for workflow in (.*); do$/\1/p' <<<"${step_run}" | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ')"
+scheduled="$(cd -- "${REPO_ROOT}/.github/workflows" && grep -lE '^  schedule:' -- *.y*ml | grep -vx 'auto-issues.yml' | LC_ALL=C sort | tr '\n' ' ')"
+assert_equal "the step reads every scheduled workflow except auto-issues.yml" \
+  "${scheduled}" "${watched}"
 
 # --- A failed build opens one issue ------------------------------------------
 reset_fixtures
@@ -332,6 +340,36 @@ assert_equal "a reported failure that is still the newest run two days on gets a
   "issue comment 43 --repo Danathar/arch-bootc --body-file" \
   "$(writes | sed -E 's/ [^ ]+$//')"
 assert_contains "the comment records the new state" "$(body_of comment)" "<!-- auto-issues-run:107:stale -->"
+
+# --- The monthly agent audit ------------------------------------------------
+#
+# It runs on the 1st, so a green run three weeks old is current, and only a
+# run older than 33 days means the schedule stopped.
+reset_fixtures
+stage_run agent-audit.yml 301 failure 9
+stage_issues </dev/null
+run_step >/dev/null 2>&1
+assert_equal "a failed agent audit opens exactly one issue, named for the audit" \
+  "issue create --repo Danathar/arch-bootc --title Scheduled run of the monthly agent audit failed on main --body-file" \
+  "$(writes | sed -E 's/ [^ ]+$//')"
+assert_contains "the issue points at the audit's run summary" "$(body_of create)" \
+  "The run summary lists each finding."
+assert_contains "the issue carries the audit's own marker" "$(body_of create)" \
+  "<!-- auto-issues:agent-audit.yml -->"
+
+reset_fixtures
+stage_run agent-audit.yml 302 success $((32 * 24))
+stage_issues </dev/null
+run_step >/dev/null 2>&1
+assert_equal "a green agent audit 32 days old is still current" "" "$(writes)"
+
+stage_run agent-audit.yml 302 success $((34 * 24))
+run_step >/dev/null 2>&1
+assert_equal "a newest agent audit older than 33 days opens a 'stopped running' issue" \
+  "issue create --repo Danathar/arch-bootc --title Scheduled run of the monthly agent audit has stopped running on main --body-file" \
+  "$(writes | sed -E 's/ [^ ]+$//')"
+assert_contains "the stopped issue names the monthly cadence" "$(body_of create)" \
+  "more than 33 days ago. It runs monthly, so the schedule has stopped"
 
 # --- No scheduled run at all, and an API failure ------------------------------
 reset_fixtures

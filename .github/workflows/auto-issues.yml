@@ -16,13 +16,13 @@ concurrency:
 # Turn a failed scheduled run into an issue, so the failure waits in the issue
 # list instead of only in a red row of the Actions tab or an email.
 #
-# The two scheduled workflows this reads are the ones whose failure means
-# something a user would notice: when build.yml's daily run fails, the
-# published images are not refreshed and installed systems receive no updates
-# that day; when nightly-compliance.yml fails, one of its checks (repository
-# invariants, the bootc pin, published signatures) stopped holding. Both are
-# exactly the kind of failure that can happen with no commit at all, so no
-# pull request is there to catch it.
+# It reads every scheduled workflow except itself. When build.yml's daily run
+# fails, the published images are not refreshed and installed systems receive
+# no updates that day; when nightly-compliance.yml fails, one of its checks
+# (repository invariants, the bootc pin, published signatures) stopped
+# holding; when agent-audit.yml's monthly run fails, an agent pull request
+# merged without its signature line or a sign-off. Each can fail with no
+# commit at all, so no pull request is there to catch it.
 #
 # Per watched workflow, read the newest *completed* scheduled run on main:
 #
@@ -31,7 +31,8 @@ concurrency:
 #   success     -- close the open issue, if any, with a comment
 #   cancelled, skipped, anything else
 #               -- leave everything alone; a cancelled run says nothing
-#   older than 48 hours, or none at all
+#   older than the workflow's longest gap between runs plus a day
+#   (48 hours for the daily ones, 33 days for the monthly audit)
 #               -- the schedule stopped running; treated like a failure
 #
 # One open issue per workflow at most. It is found by a marker comment in its
@@ -64,10 +65,12 @@ jobs:
           # The bot's login as `gh issue list` reports an issue's author. A
           # comment's author is reported without the `app/` prefix.
           bot="app/github-actions"
-          max_age_hours=48
           now="$(date -u +%s)"
 
-          for workflow in build.yml nightly-compliance.yml; do
+          for workflow in build.yml nightly-compliance.yml agent-audit.yml; do
+            cadence="daily"
+            max_age_hours=48
+            max_age_text="48 hours"
             case "${workflow}" in
               build.yml)
                 what="the daily image build"
@@ -76,6 +79,15 @@ jobs:
               nightly-compliance.yml)
                 what="the nightly compliance checks"
                 impact="One of the checks that can stop holding without any commit (repository invariants, the bootc pin, or the published signatures) failed. See docs/ci-cd.md, section \"Nightly compliance\"."
+                ;;
+              agent-audit.yml)
+                what="the monthly agent audit"
+                impact="An agent pull request merged in the audited window has no \`— hive:\` signature line, or one of its commits has no \`Signed-off-by\` trailer, or the audit refused its window. The run summary lists each finding. See docs/ci-cd.md, section \"Agent audit trail\"."
+                # It runs on the 1st of each month, so two runs can be 31 days
+                # apart.
+                cadence="monthly"
+                max_age_hours=$((33 * 24))
+                max_age_text="33 days"
                 ;;
             esac
             marker="<!-- auto-issues:${workflow} -->"
@@ -136,7 +148,7 @@ jobs:
                 ;;
               stale)
                 title="Scheduled run of ${what} has stopped running on main"
-                line="The newest completed scheduled run of ${what} on \`main\` started at ${started}, more than ${max_age_hours} hours ago. It runs daily, so the schedule has stopped: the workflow may be disabled, or GitHub may have paused scheduled runs."
+                line="The newest completed scheduled run of ${what} on \`main\` started at ${started}, more than ${max_age_text} ago. It runs ${cadence}, so the schedule has stopped: the workflow may be disabled, or GitHub may have paused scheduled runs."
                 impact=""
                 ;;
             esac
