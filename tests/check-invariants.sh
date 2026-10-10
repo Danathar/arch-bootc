@@ -572,6 +572,39 @@ else
   assert_equal "registries.d configures sigstore attachments for exactly the repositories policy.json protects" \
     "$(sed -nE 's/^[[:space:]]+(ghcr\.io\/[^:[:space:]]+):[[:space:]]*$/\1/p' "${REGISTRIES_D}" | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')" \
     "${signed_expected_keys}"
+
+  # The checks above read the keys, and the sigstoreSigned/matchRepository/
+  # keyPath checks at the top of this group are satisfied by any ONE entry.
+  # With three entries, one flavor's rule could become insecureAcceptAnything,
+  # point at another key, or lose its identity binding while every check stays
+  # green, and that flavor would install unsigned images. So every entry has to
+  # be exactly the one rule, naming the key the Containerfile installs.
+  signed_rule="$(jq -cn --arg key "${copied_key_path}" \
+    '[{type: "sigstoreSigned", keyPath: $key, signedIdentity: {type: "matchRepository"}}]')"
+  assert_equal "every policy.json repository entry is exactly the sigstoreSigned rule for ${copied_key_path:-the copied key}" \
+    "$(jq -r --argjson rule "${signed_rule}" \
+      '.transports.docker | to_entries[] | select(.value != $rule) | "\(.key): \(.value | tojson)"' "${POLICY}" |
+      tr '\n' ' ' | sed 's/ $//')" ""
+
+  # docs/ci-cd.md: "Every other repository is left at insecureAcceptAnything",
+  # which is what keeps `bootc switch` / `podman pull` of any other image
+  # working. A reject default (or a reject on the local daemon) would refuse
+  # every third-party image on an installed host.
+  assert_equal "policy.json leaves every other image at insecureAcceptAnything, as docs/ci-cd.md says" \
+    "$(jq -c '[.default, .transports["docker-daemon"][""]]' "${POLICY}")" \
+    '[[{"type":"insecureAcceptAnything"}],[{"type":"insecureAcceptAnything"}]]'
+
+  # Without use-sigstore-attachments: true, containers/image never fetches the
+  # signature, so a sigstoreSigned rule refuses every pull of that flavor. The
+  # key list above holds with the value flipped to false, dropped, or replaced
+  # by another setting, so read every setting under every repository.
+  assert_equal "registries.d enables sigstore attachments, and sets nothing else, for every protected repository" \
+    "$(awk '
+      /^  [^ ]/ { repo = $1; sub(/:$/, "", repo); next }
+      /^    [^ ]/ { line = $0; sub(/^ +/, "", line); print repo " " line }
+    ' "${REGISTRIES_D}" | LC_ALL=C sort | tr '\n' '|')" \
+    "$(awk '{ print $0 " use-sigstore-attachments: true" }' <<<"${signed_expected_keys// /$'\n'}" |
+      LC_ALL=C sort | tr '\n' '|')"
 fi
 
 # ---------------------------------------------------------------------------
