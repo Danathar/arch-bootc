@@ -238,6 +238,18 @@ scheduled="$(cd -- "${REPO_ROOT}/.github/workflows" && grep -lE '^  schedule:' -
 assert_equal "the step reads every scheduled workflow except auto-issues.yml" \
   "${scheduled}" "${watched}"
 
+# An issue tells the reader where to look: `See docs/ci-cd.md, section "X"`.
+# Each X must still be a heading there, or the pointer leads nowhere.
+pointers="$(grep -oE 'See docs/ci-cd\.md, section \\"[^\\]+\\"' <<<"${step_run}" |
+  sed -E 's/.*section \\"(.*)\\"$/\1/')"
+assert_equal "the step points at a docs/ci-cd.md section for nightly-compliance.yml and agent-audit.yml" \
+  "2" "$(grep -c . <<<"${pointers}")"
+while IFS= read -r section; do
+  [[ -n "${section}" ]] || continue
+  check "docs/ci-cd.md has the section \"${section}\" an issue points at" \
+    "$(grep -qxF "## ${section}" "${REPO_ROOT}/docs/ci-cd.md" && echo 0 || echo 1)"
+done <<<"${pointers}"
+
 # --- A failed build opens one issue ------------------------------------------
 reset_fixtures
 stage_run build.yml 102 failure 2
@@ -322,6 +334,21 @@ assert_equal "a newest run older than 48 hours opens a 'stopped running' issue" 
   "$(writes | sed -E 's/ [^ ]+$//')"
 assert_contains "the issue says when the last run started" "$(body_of create)" \
   "started at $(staged_start build.yml), more than 48 hours ago"
+assert_contains "the stopped issue names the daily cadence" "$(body_of create)" \
+  "more than 48 hours ago. It runs daily, so the schedule has stopped"
+# The build's failure impact says "this run" did not refresh the images. A
+# stale run may well have been green, so that sentence must not follow it.
+assert_absent "the stopped issue does not carry the failure impact" "$(body_of create)" \
+  "The published images were not refreshed by this run"
+
+# The limit is inclusive: a run exactly 48 hours old is already stale.
+reset_fixtures
+stage_run build.yml 106 success 48
+stage_issues </dev/null
+run_step >/dev/null 2>&1
+assert_equal "a newest run exactly 48 hours old opens a 'stopped running' issue" \
+  "issue create --repo Danathar/arch-bootc --title Scheduled run of the daily image build has stopped running on main --body-file" \
+  "$(writes | sed -E 's/ [^ ]+$//')"
 
 stage_run build.yml 106 success 47
 stage_issues < <(issue_entry 44 "${BOT}" "${BUILD_MARKER}")
@@ -352,8 +379,8 @@ run_step >/dev/null 2>&1
 assert_equal "a failed agent audit opens exactly one issue, named for the audit" \
   "issue create --repo Danathar/arch-bootc --title Scheduled run of the monthly agent audit failed on main --body-file" \
   "$(writes | sed -E 's/ [^ ]+$//')"
-assert_contains "the issue points at the audit's run summary" "$(body_of create)" \
-  "The run summary lists each finding."
+assert_contains "the issue says what a failed audit means, and where to read about it" "$(body_of create)" \
+  "An agent pull request merged in the audited window has no \`— hive:\` signature line, or one of its commits has no \`Signed-off-by\` trailer, or the audit refused its window. The run summary lists each finding. See docs/ci-cd.md, section \"Agent audit trail\"."
 assert_contains "the issue carries the audit's own marker" "$(body_of create)" \
   "<!-- auto-issues:agent-audit.yml -->"
 
@@ -370,6 +397,20 @@ assert_equal "a newest agent audit older than 33 days opens a 'stopped running' 
   "$(writes | sed -E 's/ [^ ]+$//')"
 assert_contains "the stopped issue names the monthly cadence" "$(body_of create)" \
   "more than 33 days ago. It runs monthly, so the schedule has stopped"
+
+# The 33-day limit is exact and inclusive, as the daily one is: one hour short
+# is current, the hour itself is stale.
+reset_fixtures
+stage_run agent-audit.yml 303 success $((33 * 24 - 1))
+stage_issues </dev/null
+run_step >/dev/null 2>&1
+assert_equal "a green agent audit one hour short of 33 days is still current" "" "$(writes)"
+
+stage_run agent-audit.yml 303 success $((33 * 24))
+run_step >/dev/null 2>&1
+assert_equal "a newest agent audit exactly 33 days old opens a 'stopped running' issue" \
+  "issue create --repo Danathar/arch-bootc --title Scheduled run of the monthly agent audit has stopped running on main --body-file" \
+  "$(writes | sed -E 's/ [^ ]+$//')"
 
 # --- No scheduled run at all, and an API failure ------------------------------
 reset_fixtures
