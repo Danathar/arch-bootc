@@ -1972,6 +1972,7 @@ if ((renovate_readable)); then
     pass "the ${dep} manager selects a file that exists"
 
     strict_matches=0
+    bounded_matches=0
     loose_matches=0
     literal_ok=1
     for match_string in "${match_strings[@]}"; do
@@ -1993,6 +1994,11 @@ if ((renovate_readable)); then
         # pair) match at all; -o then emits one NUL-terminated match each, so
         # counting NULs counts matches.
         strict_matches=$((strict_matches + $(grep -Pzo -- "${match_string}" "${target}" 2>/dev/null | tr -dc '\0' | wc -c)))
+        # The same matches, refused when a digit or `.digit` follows. A regex
+        # that stops short of the version (`\d+\.\d+` against `1.30.1`) still
+        # matches, so the strict count cannot see it, but Renovate then
+        # rewrites only the part it captured: `1.30.1` becomes `1.31.0.1`.
+        bounded_matches=$((bounded_matches + $(grep -Pzo -- "(?:${match_string})(?![.]?[0-9])" "${target}" 2>/dev/null | tr -dc '\0' | wc -c)))
         # Comments are stripped on this side only. Prose *about* a pin is not a
         # pin -- nightly-compliance.yml explains the cosign manager using the
         # words `cosign-release: vX.Y.Z` -- while the strict side deliberately
@@ -2013,6 +2019,9 @@ if ((renovate_readable)); then
         "${strict_matches}" "${loose_matches}"
     fi
 
+    assert_equal "every ${dep} match ends where its version ends" \
+      "${bounded_matches}" "${strict_matches}"
+
     if [[ "${datasource}" == "docker" ]]; then
       captures_digest=0
       for match_string in "${match_strings[@]}"; do
@@ -2030,6 +2039,20 @@ if ((renovate_readable)); then
   documented_managers="$(grep -c '^|.*custom regex manager' docs/renovate.md || true)"
   assert_equal "docs/renovate.md lists every custom regex manager" \
     "${documented_managers}" "${manager_count}"
+
+  # Two managers for one dependency are how one version written in two files
+  # (zizmor's workflow pin and docs/ci-cd.md's commands) moves in one Renovate
+  # PR. That holds only while both look the version up the same way: a second
+  # manager on another datasource or versioning scheme is offered a different
+  # version, or none, and the copies drift apart again.
+  split_lookup_deps="$(jq -r '
+    [ .customManagers | group_by(.depNameTemplate)[]
+      | select(length > 1)
+      | select(([.[].datasourceTemplate] | unique | length) > 1
+               or ([.[].versioningTemplate] | unique | length) > 1)
+      | .[0].depNameTemplate ] | join(" ")' "${RENOVATE}")"
+  assert_equal "managers sharing a dependency share its datasource and versioning" \
+    "${split_lookup_deps}" ""
 
   manager_deps=()
   while IFS= read -r manager_dep; do
