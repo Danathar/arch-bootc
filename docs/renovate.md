@@ -35,6 +35,7 @@ skips forks by default; without that line nothing would run at all.
 | chunkah image | `quay.io/coreos/chunkah:v…@sha256:…` | `build.yml` env | custom regex manager (with digest) |
 | shellcheck image | `docker.io/koalaman/shellcheck:vX.Y.Z` | `build.yml` `SHELLCHECK_IMAGE` env | custom regex manager |
 | zizmor | `ZIZMOR_VERSION: X.Y.Z` | `zizmor.yaml` env | custom regex manager (`pypi`) |
+| zizmor (local commands) | `uvx zizmor@…` | `docs/ci-cd.md` | custom regex manager (`pypi`), same branch as the row above |
 | runner image | `ubuntu-26.04` | `build.yml` `runs-on` | `github-actions` manager |
 
 Four of these need explanation.

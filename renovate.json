@@ -68,6 +68,19 @@
     },
     {
       "customType": "regex",
+      "description": "Track the zizmor version in docs/ci-cd.md's reproduce-locally commands. tests/check-invariants.sh requires them to name the version zizmor.yaml pins, so a bump that moved only the workflow would fail its own PR. Same depName, datasource and versioning as the workflow manager above, so Renovate puts both edits on one branch. A separate manager rather than a second matchString above: zizmor.yaml's own `zizmor@${ZIZMOR_VERSION}` line is not a pin, and the per-manager pin count in check-invariants would read it as one.",
+      "managerFilePatterns": [
+        "/^docs/ci-cd\\.md$/"
+      ],
+      "matchStrings": [
+        "zizmor@(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "zizmor",
+      "datasourceTemplate": "pypi",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
       "description": "Track bootc-dev/bootc release + pinned commit. github-tags (not github-releases) so Renovate can resolve BOOTC_COMMIT as the tag's digest and keep it in sync with BOOTC_VERSION on every bump, the same way GitHub Actions pins update their trailing-comment tag alongside the pinned SHA.",
       "managerFilePatterns": [
         "/^Containerfile$/"
