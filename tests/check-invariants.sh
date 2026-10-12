@@ -2140,6 +2140,28 @@ else
     assert_equal "the documented zizmor command runs the version CI pins" \
       "${documented_zizmor}" "${zizmor_pin}"
   fi
+
+  # The check above makes the documented copy a second pin, so Renovate has to
+  # move it in the same PR as the workflow. Otherwise every zizmor bump fails
+  # this file on its own branch and waits for a hand edit, while renovate.json
+  # automerges everything else. Each docs file holding a copy must be selected
+  # by a zizmor manager; the per-manager checks further down prove the regex
+  # matches every copy in it.
+  if ((renovate_readable)); then
+    zizmor_doc_patterns="$(jq -r '.customManagers[] | select(.depNameTemplate == "zizmor") | .managerFilePatterns[] | ltrimstr("/") | rtrimstr("/")' "${RENOVATE}")"
+    untracked_zizmor_docs=""
+    while IFS= read -r zizmor_doc; do
+      [[ -z "${zizmor_doc}" ]] && continue
+      tracked=0
+      while IFS= read -r zizmor_doc_pattern; do
+        [[ -n "${zizmor_doc_pattern}" ]] \
+          && printf '%s\n' "${zizmor_doc}" | grep -qP -- "${zizmor_doc_pattern}" && tracked=1
+      done <<<"${zizmor_doc_patterns}"
+      ((tracked)) || untracked_zizmor_docs+="${zizmor_doc} "
+    done < <(grep -l 'zizmor@[0-9]' docs/*.md)
+    assert_equal "Renovate moves every documented zizmor version with the workflow pin" \
+      "${untracked_zizmor_docs}" ""
+  fi
 fi
 
 # ---------------------------------------------------------------------------
