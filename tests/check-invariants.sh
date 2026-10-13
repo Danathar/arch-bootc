@@ -9122,6 +9122,157 @@ else
       "$(grep -vxF -f <(printf '%s\n' "${bp_contexts}") <<<"${bp_pr_jobs}" | tr '\n' '|')"
   fi
 
+  # Each of those bullets also says why its job is not required, and the reason
+  # is a claim about a workflow: the one file that defines the job, the if:
+  # that skips it on pull requests, the paths or label it waits for, the matrix
+  # it reports under. The names alone are joined above, so an if: dropped or a
+  # filter widened left the page calling a job optional for a reason that had
+  # stopped being true. Each reason is read back from the workflow here, and a
+  # bullet that gives none this check can read fails rather than passing empty.
+
+  # Where a check name comes from: `workflow<TAB>job id` for every workflow with
+  # a pull_request trigger that defines a job reporting under that name.
+  bp_job_homes() { # check name
+    local bp_w
+    for bp_w in "${bp_pr_workflows[@]+"${bp_pr_workflows[@]}"}"; do
+      bp_jobs "${bp_w}" | awk -F '\t' -v w="${bp_w}" -v n="$1" '$2 == n { print w "\t" $1 }'
+    done
+  }
+
+  # A job's `if:` as one line, a folded `>-` block joined with single spaces.
+  bp_job_if() { # workflow job
+    bp_active_job "$1" "$2" | awk '
+      /^    if:/ { inside = 1; sub(/^    if:[[:space:]]*/, ""); sub(/^>-?[[:space:]]*$/, ""); text = $0; next }
+      inside && /^    [A-Za-z_-]+:/ { exit }
+      inside { sub(/^[[:space:]]+/, ""); text = (text == "" ? $0 : text " " $0) }
+      END { print text }
+    '
+  }
+
+  while IFS= read -r bp_bullet; do
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    bp_name="$(sed -nE 's/^`([^`]+)`.*/\1/p' <<<"${bp_bullet}")"
+    [[ -n "${bp_name}" ]] || continue
+    bp_homes="$(bp_job_homes "${bp_name}")"
+    bp_home_workflow="$(head -n 1 <<<"${bp_homes}" | cut -f1)"
+    bp_home_job="$(head -n 1 <<<"${bp_homes}" | cut -f2)"
+    bp_reasons=0
+
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    bp_only_in="$(sed -nE 's/.*runs only in `([^`]+)`.*/\1/p' <<<"${bp_bullet}")"
+    if [[ -n "${bp_only_in}" ]]; then
+      bp_reasons=$((bp_reasons + 1))
+      assert_equal "'${bp_name}': the page says only ${bp_only_in} runs it on a pull request" \
+        "$(cut -f1 <<<"${bp_homes}" | sed 's|.*/||' | LC_ALL=C sort -u | tr '\n' ' ')" "${bp_only_in} "
+    fi
+
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    if grep -qF 'skipped on every pull request by its `if:`' <<<"${bp_bullet}"; then
+      bp_reasons=$((bp_reasons + 1))
+      bp_if="$(bp_job_if "${bp_home_workflow}" "${bp_home_job}")"
+      if grep -qE "^github\.event_name != 'pull_request'( && |$)" <<<"${bp_if}"; then
+        pass "'${bp_name}': its if: skips every pull request, as the page says"
+      else
+        fail "'${bp_name}': its if: skips every pull request, as the page says" \
+          "the if: in ${bp_home_workflow:-no workflow} does not open with github.event_name != 'pull_request' &&: ${bp_if:-none}"
+      fi
+    fi
+
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    bp_when="$(sed -nE 's/.*only when `([^`]+)` (itself )?changes.*/\1|\2/p' <<<"${bp_bullet}")"
+    if [[ -n "${bp_when}" ]]; then
+      bp_reasons=$((bp_reasons + 1))
+      bp_when_path="${bp_when%|*}"
+      [[ "${bp_when_path}" == */* ]] || bp_when_path=".github/workflows/${bp_when_path}"
+      assert_equal "'${bp_name}': a pull request starts it only when ${bp_when_path} changes, as the page says" \
+        "$(bp_trigger_list "${bp_home_workflow}" pull_request paths | tr '\n' ' ')|$(bp_trigger_list "${bp_home_workflow}" pull_request paths-ignore | tr '\n' ' ')" \
+        "${bp_when_path} |"
+      if [[ "${bp_when#*|}" == "itself " ]]; then
+        assert_equal "'${bp_name}': the file the page says changes is the job's own workflow" \
+          "${bp_home_workflow}" "${bp_when_path}"
+      fi
+    fi
+
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    bp_label="$(sed -nE 's/.*only when the `([^`]+)` label is added.*/\1/p' <<<"${bp_bullet}")"
+    if [[ -n "${bp_label}" ]]; then
+      bp_reasons=$((bp_reasons + 1))
+      assert_equal "'${bp_name}': a pull request starts its workflow only by being labeled, as the page says" \
+        "$(bp_trigger_list "${bp_home_workflow}" pull_request types | tr '\n' ' ')" "labeled "
+      bp_if="$(bp_job_if "${bp_home_workflow}" "${bp_home_job}")"
+      if grep -qF "github.event.label.name == '${bp_label}'" <<<"${bp_if}"; then
+        pass "'${bp_name}': its if: waits for the ${bp_label} label the page names"
+      else
+        fail "'${bp_name}': its if: waits for the ${bp_label} label the page names" \
+          "no github.event.label.name == '${bp_label}' in its if: ${bp_if:-none}"
+      fi
+    fi
+
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    if grep -qF 'its `if:` skips pull requests from forks' <<<"${bp_bullet}"; then
+      bp_reasons=$((bp_reasons + 1))
+      assert_equal "'${bp_name}': its if: skips pull requests from forks, as the page says" \
+        "$(bp_job_if "${bp_home_workflow}" "${bp_home_job}")" \
+        "github.event.pull_request.head.repo.full_name == github.repository"
+    fi
+
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    bp_reports="$(sed -nE 's/.*reports it as (`[^.]*)\.?$/\1/p' <<<"${bp_bullet}" | grep -oE '`[^`]*\(([^)`]+)\)`' | sed -E 's/.*\(([^)]+)\)`$/\1/')"
+    if [[ -n "${bp_reports}" ]]; then
+      bp_reasons=$((bp_reasons + 1))
+      assert_equal "'${bp_name}': the names the page says its matrix reports are the matrix's values" \
+        "$(tr '\n' ' ' <<<"${bp_reports}")" \
+        "$(bp_active_job "${bp_home_workflow}" "${bp_home_job}" | sed -nE 's/^        [A-Za-z_-]+: \[(.*)\]$/\1/p' | head -n 1 | sed 's/, */ /g') "
+    fi
+
+    if ((bp_reasons > 0)); then
+      pass "'${bp_name}': the page's reason it is not required was read (${bp_reasons})"
+    else
+      fail "'${bp_name}': the page's reason it is not required was read" \
+        "the bullet names no workflow it runs only in, no if: that skips it, and no path or label it waits for"
+    fi
+  done < <(bp_bullets "Checks that are not required")
+
+  # The required-check bullet counts the globs that make the two filters each
+  # other's complement; the count is the one in the workflow it names.
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  bp_glob_claim="$(sed -nE 's/.*the same ([a-z]+) globs as `([^`]+)`.s `paths-ignore`.*/\1 \2/p' <<<"${bp_check_bullet}")"
+  if [[ -z "${bp_glob_claim}" ]]; then
+    fail "the page says how many globs the two filters share" "no 'the same <number> globs as \`<workflow>\`'s \`paths-ignore\`' in the required-check bullet"
+  else
+    assert_equal "the number of globs the page says the two filters share is the count in ${bp_glob_claim#* }" \
+      "${bp_glob_claim%% *}" \
+      "$(number_word "$(bp_trigger_list ".github/workflows/${bp_glob_claim#* }" pull_request paths-ignore | grep -c .)")"
+  fi
+
+  # The page holds back two pull_request settings until there is a second
+  # reviewer. Each must be a setting the ruleset really has, spelled as GitHub
+  # spells it so the PUT that applies it later changes something, and must be
+  # off today: with one maintainer, an approval the last pusher cannot give is
+  # an approval nobody can give.
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  bp_later="$(awk '/^## When there is a second reviewer$/ { inside = 1; next } inside && /^## / { exit } inside' "${PROTECTION_DOC}" | grep -oE '`[a-z_]+`' | tr -d '`' | LC_ALL=C sort -u)"
+  if [[ -z "${bp_later}" ]]; then
+    fail "the page names the settings to change when there is a second reviewer" "no backticked setting under '## When there is a second reviewer'"
+  else
+    while IFS= read -r bp_setting; do
+      assert_equal "'${bp_setting}', saved for a second reviewer, is a pull_request setting the ruleset has, and is off" \
+        "$(bp_rs ".rules[] | select(.type == \"pull_request\") | .parameters | if has(\"${bp_setting}\") then (.\"${bp_setting}\" | if . == 0 or . == false then \"off\" else \"on: \\(.)\" end) else \"missing\" end")" \
+        "off"
+    done <<<"${bp_later}"
+  fi
+  # A code-owner review is an approval too, and the one owner cannot give it on
+  # their own pull request.
+  assert_equal "a pull request needs no code-owner review a sole maintainer cannot give" \
+    "$(bp_rs '.rules[] | select(.type == "pull_request") | .parameters.require_code_owner_review')" "false"
+
+  # The page says nothing pushes to `main` outside a pull request, Renovate
+  # included, because its automerge type is the default, `pr`. A branch
+  # automerge pushes straight to `main`, which the ruleset refuses, so Renovate
+  # would stop landing anything without a failing check to say why.
+  assert_equal "renovate.json never sets an automergeType other than pr, as the page says" \
+    "$(jq -r '[.. | objects | .automergeType? // empty | select(. != "pr")] | join(",")' renovate.json)" ""
+
   # --- The Status section and the commands --------------------------------------
 
   bp_flat="$(tr '\n' ' ' <"${PROTECTION_DOC}" | tr -s '[:space:]' ' ')"
