@@ -6,7 +6,7 @@
 # (docs/renovate.md, "What is tracked").
 FROM ghcr.io/ublue-os/brew:latest@sha256:5bdf54dc7c21c22db29df6550e3711788719c5123549ea6dc5645d5af47795e3 AS brew
 
-FROM docker.io/archlinux/archlinux:latest@sha256:86092797e32aa19d3f45a831b2873cf557c21c5280e9d197ca7a43c8ea79bcd3 AS base-core
+FROM docker.io/archlinux/archlinux:latest@sha256:5bf8d86cc2bc6a8406b5cefc7cbafb185202f8fa5faae5ef5e6e9b2424ca42a8 AS base-core
 
 # Move everything from `/var` to `/usr/lib/sysimage` so behavior around pacman remains the same on `bootc usroverlay`'d systems
 RUN grep "= */var" /etc/pacman.conf | sed "/= *\/var/s/.*=// ; s/ //" | xargs -n1 sh -c 'mkdir -p "/usr/lib/sysimage/$(dirname $(echo $1 | sed "s@/var/@@"))" && mv -v "$1" "/usr/lib/sysimage/$(echo "$1" | sed "s@/var/@@")"' '' && \
