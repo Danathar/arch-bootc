@@ -511,7 +511,11 @@ collect_admin_user() {
         sshkey_path=""
     fi
     if [ -n "${sshkey_path}" ] && confirm "Add SSH key ${sshkey_path} to ${ADMIN_USER}?"; then
-        read -r key_type key_blob _ < "${sshkey_path}" || die "could not read ${sshkey_path}"
+        # `read` returns 1 at EOF when the last line has no trailing newline, even
+        # though it filled the variables; only fail when nothing was read.
+        key_type=""
+        read -r key_type key_blob _ < "${sshkey_path}" || [ -n "${key_type}" ] \
+            || die "could not read ${sshkey_path}"
         case "${key_type}" in
             ssh-*|ecdsa-*|sk-*) ;;
             *) die "${sshkey_path} does not start with a recognized OpenSSH public-key type" ;;

@@ -363,6 +363,18 @@ check "a valid ed25519 key is accepted" "${QS_STATUS}" "${QS_OUTPUT}"
 assert_contains "the accepted key is reported against the admin user" "${QS_OUTPUT}" \
   'SSH key will be installed for fixtureadmin'
 
+# A key file written without a final newline (hand-edited, or made with printf)
+# still has to be accepted: bash's `read` returns 1 at EOF but fills the variables.
+no_newline_key="$(new_case no-newline-key)"
+mkdir -p "${no_newline_key}/home/.ssh"
+printf '%s' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixtureKeyMaterial fixture@example' \
+  >"${no_newline_key}/home/.ssh/id_ed25519.pub"
+run_quickstart "${no_newline_key}/bin" "${no_newline_key}/home" \
+  "$(ssh_input qs-no-newline-key "${no_newline_key}/out")"
+check "a key file without a trailing newline is accepted" "${QS_STATUS}" "${QS_OUTPUT}"
+assert_contains "the newline-less key is reported against the admin user" "${QS_OUTPUT}" \
+  'SSH key will be installed for fixtureadmin'
+
 # The RSA file is the fallback, reached only when no ed25519 key exists. A host
 # whose only key is `id_rsa.pub` would otherwise get a VM with no key in it and
 # nothing said about why.
