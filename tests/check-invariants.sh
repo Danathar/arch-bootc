@@ -134,6 +134,192 @@ assert_equal() {
 }
 
 # ---------------------------------------------------------------------------
+# Helpers more than one group uses.
+#
+# They are defined here, before the first group, rather than in the group that
+# needed them first. A group can then be deleted, moved, or put behind an
+# `if [[ -f <doc> ]]` without taking them away from the groups after it. That
+# matters because a call to a function that no longer exists is not a failure
+# in this script: bash prints "command not found", no check is counted, and
+# the run still passes with fewer checks than before.
+
+# The instructions of one stage, one per line: whole-line comments and blank
+# lines dropped, `\`-continued lines folded into their instruction, runs of
+# whitespace collapsed, so two copies compare equal whatever their indentation.
+stage_instructions() {
+  local stage="$1"
+  awk -v stage="${stage}" '
+    /^FROM / { inside = ($NF == stage) ; next }
+    !inside || /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    {
+      line = $0
+      gsub(/[[:space:]]+/, " ", line)
+      sub(/^ /, "", line)
+      if (line ~ / ?\\$/) { sub(/ ?\\$/, " ", line); held = held line; next }
+      print held line
+      held = ""
+    }
+  ' "${CONTAINERFILE}"
+}
+
+# Every relative link in a document, and every anchor on one, resolves to a
+# file and a heading in this tree.
+#
+# The empty case is a failure, not a pass: a document whose hand-offs were all
+# deleted has nothing left to resolve, and "every link resolves" would be
+# vacuously true of it.
+assert_doc_links_resolve() {
+  local doc="$1" empty_note="$2"
+  local doc_dir="${doc%/*}"
+  local link target anchor target_file slugs
+  local doc_link_failures="" doc_links_checked=0
+  while IFS= read -r link; do
+    [[ -n "${link}" ]] || continue
+    target="${link%%#*}"
+    anchor="${link#*#}"
+    [[ "${link}" == *#* ]] || anchor=""
+    if [[ -n "${target}" ]]; then
+      target_file="${doc_dir}/${target}"
+    else
+      target_file="${doc}"
+    fi
+    doc_links_checked=$((doc_links_checked + 1))
+    if [[ ! -f "${target_file}" ]]; then
+      doc_link_failures+="${link} (no such file) "
+      continue
+    fi
+    [[ -n "${anchor}" ]] || continue
+    # GitHub's slug: lowercase, drop anything that is not a letter, digit, space
+    # or hyphen, then spaces to hyphens. Explicit <a id="..."> anchors count too.
+    slugs="$(grep -E '^#{1,6} ' "${target_file}" | sed -E 's/^#{1,6} //' |
+      tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9 -]//g; s/ /-/g')"
+    slugs+=$'\n'"$(grep -o 'id="[^"]*"' "${target_file}" | sed 's/^id="//; s/"$//')"
+    grep -qx -- "${anchor}" <<<"${slugs}" || doc_link_failures+="${link} (no such anchor) "
+  done < <(grep -oE '\]\([^):]*\)' "${doc}" | sed 's/^](//; s/)$//' | sort -u)
+
+  if ((doc_links_checked == 0)); then
+    fail "${doc} still links to the documents it hands off to" "${empty_note}"
+  elif [[ -z "${doc_link_failures}" ]]; then
+    pass "every relative link and anchor in ${doc} resolves"
+  else
+    fail "every relative link and anchor in ${doc} resolves" "${doc_link_failures}"
+  fi
+}
+
+# Fenced blocks by info string, matching the runbook groups' extractor. Only
+# ```bash blocks are commands. The second argument names the document to read;
+# without one it is the metrics reference ($METRICS_DOC, set by that group).
+metrics_fenced() {
+  local want="$1" doc="${2:-${METRICS_DOC}}"
+  awk -v want="${want}" '
+    /^```/ { if (in_block) { in_block = 0 } else { in_block = (substr($0, 4) == want) } ; next }
+    in_block' "${doc}"
+}
+
+# Every gh invocation in a document (the metrics reference by default), as a (requested fields, jq program)
+# pair. Continuation lines are joined first; the jq programs themselves span
+# several physical lines inside their quotes, so the whole block set is read as
+# one string rather than line by line. A new invocation starts at each `gh`
+# token, which is what separates the `gh api` inside the review-friction loop
+# from the `gh pr list` that feeds it.
+metrics_jq_records() {
+  metrics_fenced bash "${1:-${METRICS_DOC}}" | awk -v RS=$'\a' '
+    {
+      text = $0
+      sep = sprintf("%c", 2)
+      fieldsep = sprintf("%c", 3)
+      recsep = sprintf("%c", 4)
+      quote = sprintf("%c", 39)
+      gsub(/\\\n[ \t]*/, " ", text)
+      gsub(/(^|[ \t(\n])gh /, sep "&", text)
+      n = split(text, segment, sep)
+      for (i = 1; i <= n; i++) {
+        seg = segment[i]
+        jqre = "--jq " quote
+        if (!match(seg, jqre)) continue
+        rest = substr(seg, RSTART + RLENGTH)
+        end = index(rest, quote)
+        if (end == 0) continue
+        program = substr(rest, 1, end - 1)
+        fields = ""
+        if (match(seg, /--json [A-Za-z0-9,]+/))
+          fields = substr(seg, RSTART + 7, RLENGTH - 7)
+        printf "%s%s%s%s", fields, fieldsep, program, recsep
+      }
+    }
+  '
+}
+
+# Every gh invocation in a document, whole: continuation lines joined, split at
+# each `gh` token the same way as above, one record per invocation.
+metrics_gh_commands() {
+  metrics_fenced bash "$1" | awk -v RS=$'\a' '
+    {
+      text = $0
+      sep = sprintf("%c", 2)
+      recsep = sprintf("%c", 4)
+      gsub(/\\\n[ \t]*/, " ", text)
+      gsub(/(^|[ \t(\n])gh /, sep "&", text)
+      n = split(text, segment, sep)
+      for (i = 2; i <= n; i++) {
+        seg = segment[i]
+        sub(/^[ \t(\n]/, "", seg)
+        printf "%s%s", seg, recsep
+      }
+    }
+  '
+}
+
+# Field names a jq program reads. Only the head of a dotted chain counts:
+# `.author.login` reads the `author` object gh was asked for, and `login` is a
+# key inside it rather than a second thing to request.
+metrics_program_fields() {
+  awk -v RS=$'\a' '
+    {
+      text = $0
+      while (match(text, /\.[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*/)) {
+        chain = substr(text, RSTART + 1, RLENGTH - 1)
+        split(chain, part, ".")
+        print part[1]
+        text = substr(text, RSTART + RLENGTH)
+      }
+    }
+  ' | sort -u
+}
+
+# Spelled-out counts, for the sentences that say how many files something covers.
+# The document counts in words and the tree counts in lines, which is exactly the
+# pair that drifts silently: adding a manifest entry is a one-line diff and
+# rewording a paragraph around it is not.
+NUMBER_WORDS=(zero one two three four five six seven eight nine ten eleven
+  twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty)
+
+number_word() {
+  local n="$1"
+  if ((n >= 0 && n < ${#NUMBER_WORDS[@]})); then
+    printf '%s' "${NUMBER_WORDS[n]}"
+  fi
+}
+
+# One job's block out of a workflow: from `  <job>:` to the next two-space key.
+cicd_job() {
+  awk -v job="$2" '
+    $0 == "  " job ":" { in_job = 1; next }
+    in_job && /^  [A-Za-z0-9_-]+:/ { exit }
+    in_job { print }
+  ' "$1"
+}
+
+# The keys directly under a workflow's top-level `on:`.
+cicd_triggers() {
+  awk '
+    /^on:/ { in_on = 1; next }
+    in_on && /^[^[:space:]#]/ { exit }
+    in_on && /^  [A-Za-z_]+:/ { sub(/^  /, ""); sub(/:.*/, ""); print }
+  ' "$1" | sort | tr '\n' ' ' | sed 's/ $//'
+}
+
+# ---------------------------------------------------------------------------
 group "Root-login model (AGENTS.md: 'Do not weaken the image's security model')"
 # The image ships a known default root password. That is safe only because every
 # remote, graphical and local-escalation path to root is closed at the same
@@ -937,25 +1123,6 @@ assert_equal "the Containerfile runs bootc container lint four times (base-core 
   "$(grep -c . <<<"${lint_lines}")" "4"
 assert_equal "every bootc container lint call carries --fatal-warnings and skips only runtime-deps" \
   "$(grep -vxF "${LINT_RUN}" <<<"${lint_lines}")" ""
-
-# The instructions of one stage, one per line: whole-line comments and blank
-# lines dropped, `\`-continued lines folded into their instruction, runs of
-# whitespace collapsed, so two copies compare equal whatever their indentation.
-stage_instructions() {
-  local stage="$1"
-  awk -v stage="${stage}" '
-    /^FROM / { inside = ($NF == stage) ; next }
-    !inside || /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
-    {
-      line = $0
-      gsub(/[[:space:]]+/, " ", line)
-      sub(/^ /, "", line)
-      if (line ~ / ?\\$/) { sub(/ ?\\$/, " ", line); held = held line; next }
-      print held line
-      held = ""
-    }
-  ' "${CONTAINERFILE}"
-}
 
 flavor_verify="$(stage_instructions base-core | grep -F 'systemd-analyze verify')"
 flavor_chunk_tag="$(stage_instructions base | grep -F 'CHUNK_TAG')"
@@ -2809,48 +2976,6 @@ group "Cross-document links (docs/installation.md hands the reader to three othe
 # Every relative link in the runbook, and every anchor on one. A heading
 # renamed in vm-workflow.md or first-boot.md silently turns the hand-off into a
 # link that lands at the top of the page -- or, for a renamed file, at a 404.
-#
-# The empty case is a failure, not a pass: a document whose hand-offs were all
-# deleted has nothing left to resolve, and "every link resolves" would be
-# vacuously true of it.
-assert_doc_links_resolve() {
-  local doc="$1" empty_note="$2"
-  local doc_dir="${doc%/*}"
-  local link target anchor target_file slugs
-  local doc_link_failures="" doc_links_checked=0
-  while IFS= read -r link; do
-    [[ -n "${link}" ]] || continue
-    target="${link%%#*}"
-    anchor="${link#*#}"
-    [[ "${link}" == *#* ]] || anchor=""
-    if [[ -n "${target}" ]]; then
-      target_file="${doc_dir}/${target}"
-    else
-      target_file="${doc}"
-    fi
-    doc_links_checked=$((doc_links_checked + 1))
-    if [[ ! -f "${target_file}" ]]; then
-      doc_link_failures+="${link} (no such file) "
-      continue
-    fi
-    [[ -n "${anchor}" ]] || continue
-    # GitHub's slug: lowercase, drop anything that is not a letter, digit, space
-    # or hyphen, then spaces to hyphens. Explicit <a id="..."> anchors count too.
-    slugs="$(grep -E '^#{1,6} ' "${target_file}" | sed -E 's/^#{1,6} //' |
-      tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9 -]//g; s/ /-/g')"
-    slugs+=$'\n'"$(grep -o 'id="[^"]*"' "${target_file}" | sed 's/^id="//; s/"$//')"
-    grep -qx -- "${anchor}" <<<"${slugs}" || doc_link_failures+="${link} (no such anchor) "
-  done < <(grep -oE '\]\([^):]*\)' "${doc}" | sed 's/^](//; s/)$//' | sort -u)
-
-  if ((doc_links_checked == 0)); then
-    fail "${doc} still links to the documents it hands off to" "${empty_note}"
-  elif [[ -z "${doc_link_failures}" ]]; then
-    pass "every relative link and anchor in ${doc} resolves"
-  else
-    fail "every relative link and anchor in ${doc} resolves" "${doc_link_failures}"
-  fi
-}
-
 assert_doc_links_resolve "${INSTALL_DOC}" \
   "no relative links found; the hand-off to vm-workflow.md and first-boot.md is gone"
 
@@ -3293,16 +3418,6 @@ group "Process metrics (docs/metrics.md is a set of runnable gh/jq commands, a h
 
 METRICS_DOC="docs/metrics.md"
 
-# Fenced blocks by info string, matching the extractor used for the runbooks
-# above. Only ```bash blocks are commands. The second argument names another
-# document to read; the dated snapshots under docs/metrics/ use it.
-metrics_fenced() {
-  local want="$1" doc="${2:-${METRICS_DOC}}"
-  awk -v want="${want}" '
-    /^```/ { if (in_block) { in_block = 0 } else { in_block = (substr($0, 4) == want) } ; next }
-    in_block' "${doc}"
-}
-
 # Headings with fenced blocks excluded: `# Review comments per merged PR` is a
 # shell comment inside a ```bash block, not a Markdown heading.
 metrics_headings="$(awk '/^```/ { in_block = !in_block; next } !in_block && /^#{1,6} /' "${METRICS_DOC}")"
@@ -3340,76 +3455,8 @@ assert_doc_links_resolve "${METRICS_DOC}" \
 
 # -- The commands -----------------------------------------------------------
 #
-# Every gh invocation in the document, as a (requested fields, jq program)
-# pair. Continuation lines are joined first; the jq programs themselves span
-# several physical lines inside their quotes, so the whole block set is read as
-# one string rather than line by line. A new invocation starts at each `gh`
-# token, which is what separates the `gh api` inside the review-friction loop
-# from the `gh pr list` that feeds it.
-metrics_jq_records() {
-  metrics_fenced bash "${1:-${METRICS_DOC}}" | awk -v RS=$'\a' '
-    {
-      text = $0
-      sep = sprintf("%c", 2)
-      fieldsep = sprintf("%c", 3)
-      recsep = sprintf("%c", 4)
-      quote = sprintf("%c", 39)
-      gsub(/\\\n[ \t]*/, " ", text)
-      gsub(/(^|[ \t(\n])gh /, sep "&", text)
-      n = split(text, segment, sep)
-      for (i = 1; i <= n; i++) {
-        seg = segment[i]
-        jqre = "--jq " quote
-        if (!match(seg, jqre)) continue
-        rest = substr(seg, RSTART + RLENGTH)
-        end = index(rest, quote)
-        if (end == 0) continue
-        program = substr(rest, 1, end - 1)
-        fields = ""
-        if (match(seg, /--json [A-Za-z0-9,]+/))
-          fields = substr(seg, RSTART + 7, RLENGTH - 7)
-        printf "%s%s%s%s", fields, fieldsep, program, recsep
-      }
-    }
-  '
-}
-
-# Every gh invocation in a document, whole: continuation lines joined, split at
-# each `gh` token the same way as above, one record per invocation.
-metrics_gh_commands() {
-  metrics_fenced bash "$1" | awk -v RS=$'\a' '
-    {
-      text = $0
-      sep = sprintf("%c", 2)
-      recsep = sprintf("%c", 4)
-      gsub(/\\\n[ \t]*/, " ", text)
-      gsub(/(^|[ \t(\n])gh /, sep "&", text)
-      n = split(text, segment, sep)
-      for (i = 2; i <= n; i++) {
-        seg = segment[i]
-        sub(/^[ \t(\n]/, "", seg)
-        printf "%s%s", seg, recsep
-      }
-    }
-  '
-}
-
-# Field names a jq program reads. Only the head of a dotted chain counts:
-# `.author.login` reads the `author` object gh was asked for, and `login` is a
-# key inside it rather than a second thing to request.
-metrics_program_fields() {
-  awk -v RS=$'\a' '
-    {
-      text = $0
-      while (match(text, /\.[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*/)) {
-        chain = substr(text, RSTART + 1, RLENGTH - 1)
-        split(chain, part, ".")
-        print part[1]
-        text = substr(text, RSTART + RLENGTH)
-      }
-    }
-  ' | sort -u
-}
+# Read with metrics_jq_records and metrics_program_fields, defined at the top
+# of this file.
 
 # A fixture shaped exactly like what `gh ... --json <fields>` returns: three
 # records, with the values varied so group_by, select and sort all have
@@ -4348,9 +4395,9 @@ group "Agent task ledger (docs/agent-tasks/ is a README of traceability marks an
 # It reads text only. The git commands in the ledger are not run here: CI checks
 # out one commit, so the history they read is not there.
 #
-# The extractors are the metrics group's own (metrics_fenced, metrics_jq_records,
-# metrics_gh_commands, metrics_program_fields), so a command is parsed the same
-# way in both places.
+# The extractors are the ones the metrics group uses (metrics_fenced,
+# metrics_jq_records, metrics_gh_commands, metrics_program_fields, defined at
+# the top of this file), so a command is parsed the same way in both places.
 
 TASKS_DIR="docs/agent-tasks"
 TASKS_README="${TASKS_DIR}/README.md"
@@ -5038,20 +5085,6 @@ group "First-boot runbook (docs/first-boot.md is a hand copy of the root-login c
 # plasmalogin and lightdm units, and there is nothing in this tree to read.
 
 FIRSTBOOT_DOC="docs/first-boot.md"
-
-# Spelled-out counts, for the sentences that say how many files something covers.
-# The document counts in words and the tree counts in lines, which is exactly the
-# pair that drifts silently: adding a manifest entry is a one-line diff and
-# rewording a paragraph around it is not.
-NUMBER_WORDS=(zero one two three four five six seven eight nine ten eleven
-  twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty)
-
-number_word() {
-  local n="$1"
-  if ((n >= 0 && n < ${#NUMBER_WORDS[@]})); then
-    printf '%s' "${NUMBER_WORDS[n]}"
-  fi
-}
 
 if [[ ! -f "${FIRSTBOOT_DOC}" ]]; then
   fail "the first-boot runbook exists" \
@@ -8459,24 +8492,6 @@ group "CI/CD reference (docs/ci-cd.md: what each workflow runs, on what runner, 
 #     had moved to `ubuntu-26.04` (CI now traces with bash 5.3.9).
 CICD_DOC="docs/ci-cd.md"
 NIGHTLY_WORKFLOW=".github/workflows/nightly-compliance.yml"
-
-# One job's block out of a workflow: from `  <job>:` to the next two-space key.
-cicd_job() {
-  awk -v job="$2" '
-    $0 == "  " job ":" { in_job = 1; next }
-    in_job && /^  [A-Za-z0-9_-]+:/ { exit }
-    in_job { print }
-  ' "$1"
-}
-
-# The keys directly under a workflow's top-level `on:`.
-cicd_triggers() {
-  awk '
-    /^on:/ { in_on = 1; next }
-    in_on && /^[^[:space:]#]/ { exit }
-    in_on && /^  [A-Za-z_]+:/ { sub(/^  /, ""); sub(/:.*/, ""); print }
-  ' "$1" | sort | tr '\n' ' ' | sed 's/ $//'
-}
 
 # The `paths:` list under one trigger, one path per line, quotes removed.
 cicd_trigger_paths() {
