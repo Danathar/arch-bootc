@@ -217,6 +217,16 @@ means a case stopped running rather than that the host is modest. Leave it unset
 locally, where a container without a block device node in `/dev` is a normal
 place to work.
 
+A missing helper is easier still to miss. The test files run without `set -e`
+and count their own failures, so a call to an assert that does not exist — a
+typo, or a helper deleted along with the case that defined it — returns 127
+without being counted, and the file still exits 0. `tests/run-tests.sh` exports
+a `command_not_found_handle` that records any such call made from a file under
+`tests/`, and fails the test file that made it, naming the command and line.
+Calls from the scripts under test are not recorded: several suites run them on
+purpose with a `PATH` that lacks programs. `tests/check-invariants.sh` does the
+same for itself, in its last check.
+
 The group's positive control, `test_fixed_internal_esp_is_genuine`, is not
 optional. Every other case in it ends in the same refusal, and a fixture the
 script could never accept for some unrelated reason would produce those
