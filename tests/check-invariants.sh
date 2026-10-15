@@ -7271,10 +7271,12 @@ else
     "the largest stated gap has been closed and the document still calls it open: ${quality_boot_hits}"
 fi
 
-# "PR builds additionally skip the rechunk, push, and sign steps, so a green PR
-# check exercises less than a push to `main` does" -- and the signature row of
-# the dashboard says the same thing about signing ("Pushes to `main` only").
-for quality_gated_step in "Rechunk image with chunkah" "Push To GHCR" "Sign container image"; do
+# "PR builds additionally skip the rechunk, push, sign, signature-verify and
+# move-`latest` steps, so a green PR check exercises less than a push to `main`
+# does" -- and the signature row of the dashboard says the same thing about
+# signing ("Pushes to `main` only").
+for quality_gated_step in "Rechunk image with chunkah" "Push To GHCR" "Sign container image" \
+  "Verify the signature as hosts read it" "Move latest to the signed image"; do
   quality_step_if="$(awk -v want="${quality_gated_step}" '
     /^      - name: / { step = substr($0, 15); next }
     step == want && /^        if: / { print substr($0, 13); exit }
@@ -8783,7 +8785,10 @@ else
 fi
 # The page's reproduce-it-locally command for one flavor names an image the
 # build publishes: arch-bootc-<flavor> for a flavor in the matrix.
-cicd_local_flavor="$(grep -oE 'cosign verify --key cosign\.pub ghcr\.io/danathar/arch-bootc-[a-z]+:latest' <<<"${cicd_flat}" | sed -E 's/.*arch-bootc-([a-z]+):latest/\1/')"
+# It carries --new-bundle-format=false, as the job does: without it cosign v3
+# also accepts a bundle hosts cannot read, so a reader reproducing a red night
+# by hand could see it pass.
+cicd_local_flavor="$(grep -oE 'cosign verify --key cosign\.pub --new-bundle-format=false ghcr\.io/danathar/arch-bootc-[a-z]+:latest' <<<"${cicd_flat}" | sed -E 's/.*arch-bootc-([a-z]+):latest/\1/')"
 if [[ -n "${cicd_local_flavor}" && " ${cicd_sig_flavors} " == *" ${cicd_local_flavor} "* ]]; then
   pass "the page's local cosign verify names a published flavor (${cicd_local_flavor})"
 else
@@ -10862,7 +10867,8 @@ group "Per-package rechunking (docs/ci-cd.md: build.yml's CHUNK_TAG build-arg, t
 # misses the local layer cache, and pushes a cache the next run cannot use.
 # That is the failure PACMAN_CACHE_BUST's "both buildah steps" check exists for.
 CHUNK_DOC="docs/ci-cd.md"
-CHUNK_GATED_STEPS=("Rechunk image with chunkah" "Push To GHCR" "Sign container image")
+CHUNK_GATED_STEPS=("Rechunk image with chunkah" "Push To GHCR" "Sign container image"
+  "Verify the signature as hosts read it" "Move latest to the signed image")
 
 # One CHUNK_TAG line per buildah step, reported as "<step><TAB><line or none>".
 # Not `|`: the expression itself contains `||`.

@@ -492,12 +492,25 @@ jobs:
             return 1
           }
 
+          # `latest` is not pushed here: hosts follow it, so it moves only after
+          # the digest is signed and verified ("Move latest to the signed image").
           # Unquoted on purpose, as in the rechunk step above.
           for tag in ${METADATA_TAGS}; do
+            if [[ "${tag}" == "${DEFAULT_TAG}" ]]; then
+              continue
+            fi
             echo "::group::Pushing ${IMAGE_FULL}:${tag}"
             push_with_backoff "${tag}"
             echo "::endgroup::"
           done
+
+          # With `latest` skipped, a tag list holding nothing else pushes
+          # nothing. Fail here rather than report an empty digest that the sign
+          # step would then be handed.
+          if [[ ! -s "${RUNNER_TEMP}/push-digest" ]]; then
+            echo "error: no tag other than ${DEFAULT_TAG} was pushed, so there is no digest to sign" >&2
+            exit 1
+          fi
 
           echo "digest=$(cat "${RUNNER_TEMP}/push-digest")" >> "${GITHUB_OUTPUT}"
 
@@ -528,6 +541,44 @@ jobs:
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
           PUSH_DIGEST: ${{ steps.push.outputs.digest }}
+
+      # Checks the signature the way a host reads it, before `latest` moves.
+      # --new-bundle-format=false reads only the legacy `.sig` tag, the one a
+      # host's containers/image policy reads. Without it cosign v3 also accepts
+      # a new-format bundle stored as an OCI referrer, which hosts cannot see,
+      # so a signing regression would pass here and every host would still
+      # refuse the update.
+      - name: Verify the signature as hosts read it
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          PUSH_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign verify --key cosign.pub --new-bundle-format=false \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}@${PUSH_DIGEST}" > /dev/null
+          echo "Signature verifies against cosign.pub"
+
+      # Copied server-side from the signed digest; --preserve-digests makes
+      # skopeo fail rather than rewrite the manifest, so `latest` is the
+      # signed image byte for byte. If anything above failed, this step does
+      # not run and `latest` stays on the last image that verified.
+      - name: Move latest to the signed image
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          PUSH_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          IMAGE_FULL="${IMAGE_REGISTRY}/${IMAGE_NAME}"
+          AUTH_FILE="${HOME}/.docker/config.json"
+          skopeo copy --retry-times 3 --preserve-digests --authfile "${AUTH_FILE}" \
+            "docker://${IMAGE_FULL}@${PUSH_DIGEST}" \
+            "docker://${IMAGE_FULL}:${DEFAULT_TAG}"
+          actual="$(skopeo inspect --authfile "${AUTH_FILE}" --format '{{.Digest}}' "docker://${IMAGE_FULL}:${DEFAULT_TAG}")"
+          if [[ "${actual}" != "${PUSH_DIGEST}" ]]; then
+            echo "error: ${DEFAULT_TAG} resolves to ${actual}, not the signed ${PUSH_DIGEST}" >&2
+            exit 1
+          fi
+          echo "${DEFAULT_TAG} now points at the signed ${PUSH_DIGEST}"
 
   cleanup_packages:
     name: Clean up old package versions
