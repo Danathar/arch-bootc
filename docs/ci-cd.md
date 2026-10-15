@@ -611,16 +611,22 @@ tag, either missing `ARG`, and the exact pair of refs sent to upstream are
 covered alongside it. The stub makes this test deterministic and network-free;
 the scheduled job remains the check against the live upstream repository.
 
-**`signatures`.** Runs `cosign verify --key cosign.pub` against the published
-`latest` of each flavor, deliberately **without registry credentials**. A pass
+**`signatures`.** Runs `cosign verify --key cosign.pub --new-bundle-format=false`
+against the published `latest` of each flavor, deliberately **without registry
+credentials**. A pass
 therefore means the signature verifies for anyone pulling the published image,
 which is the property the in-image policy depends on — not merely that CI can
 verify its own artifact with its own token. Because `cosign.pub` comes from the
 checkout, it also catches the key in the repository drifting away from the key
-the pipeline signs with. Reproduce it locally with no setup:
+the pipeline signs with. The flag restricts the check to the legacy `.sig` tag,
+which is the format a host's `containers/image` policy reads; without it cosign
+v3 also accepts a new-format bundle stored as an OCI referrer, which hosts never
+see, so an image every host refuses would still pass. `build.yml` runs the same
+check on each new digest right after signing it, and moves `latest` onto the
+digest only once it passes. Reproduce it locally with no setup:
 
 ```bash
-cosign verify --key cosign.pub ghcr.io/danathar/arch-bootc-base:latest
+cosign verify --key cosign.pub --new-bundle-format=false ghcr.io/danathar/arch-bootc-base:latest
 ```
 
 The `cosign-release` version is written as a literal rather than through an env

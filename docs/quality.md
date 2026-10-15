@@ -139,8 +139,8 @@ therefore carries real signal beyond "the syntax parsed."
 It proves the image **builds**. It does not prove it boots, that first boot
 succeeds, that logins behave, or that `bootc upgrade` works from a previously
 deployed version. No CI job boots the image. PR builds additionally skip the
-rechunk, push, and sign steps, so a green PR check exercises less than a push to
-`main` does.
+rechunk, push, sign, signature-verify and move-`latest` steps, so a green PR
+check exercises less than a push to `main` does.
 
 Booting is covered by the manual VM procedure in [CLAUDE.md](../CLAUDE.md),
 which is the only routine way these paths get exercised.
@@ -242,12 +242,15 @@ same question on its own schedule and names it: a git tag is mutable, `bootc`
 runs as root on every machine booting this image, and a re-pointed tag is a
 supply-chain event.
 
-**The nightly signature verification.** Runs `cosign verify --key cosign.pub`
-against the published `latest` of each flavor, **with no registry credentials**.
-That is the point: a pass means the signature verifies for anyone pulling the
-published image, not merely that CI can verify its own artifact with its own
-token. It also catches `cosign.pub` in the repository drifting away from the key
-the pipeline actually signs with.
+**The nightly signature verification.** Runs `cosign verify --key cosign.pub
+--new-bundle-format=false` against the published `latest` of each flavor,
+**with no registry credentials**. That is the point: a pass means the signature
+verifies for anyone pulling the published image, not merely that CI can verify
+its own artifact with its own token. It also catches `cosign.pub` in the
+repository drifting away from the key the pipeline actually signs with. The flag
+restricts it to the legacy `.sig` tag, the format a host's `containers/image`
+policy reads; without it cosign v3 also accepts a new-format bundle hosts cannot
+see, and an image every host refuses would pass.
 
 **zizmor.** Static analysis of the workflow files themselves — credential
 persistence, template injection, and similar. Two findings it already fixed here
@@ -415,10 +418,11 @@ Stated plainly so nobody mistakes silence for coverage:
   the image reference and the cache package cannot drift apart between jobs;
   `tests/test-nightly-compliance.sh` runs
   `bootc-pin`'s tag peel, the `signatures` job's
-  `Verify the published image against cosign.pub`, and the four `build_push`
+  `Verify the published image against cosign.pub`, and the six `build_push`
   steps a published signature is split across —
   `Log in to GHCR for the build cache and image signing`,
-  `Rechunk image with chunkah`, `Push To GHCR` and `Sign container image`;
+  `Rechunk image with chunkah`, `Push To GHCR`, `Sign container image`,
+  `Verify the signature as hosts read it` and `Move latest to the signed image`;
   `tests/test-pr-review-state.sh` runs `ai-fix.yml`'s
   `Build and post the work order`, which is that script's only caller in CI,
   and `labeler.yml`'s `Ensure every configured label exists` catalog drift

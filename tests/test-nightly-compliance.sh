@@ -13,10 +13,11 @@ set -uo pipefail
 # directory, so these cases neither inspect the live bootc tag nor modify the
 # repository's real pin.
 #
-# The file also covers the `signatures` job, and then the two steps of
-# build.yml that produce what `signatures` verifies -- `Push To GHCR` and
-# `Sign container image`. Those two live here rather than in a file of their
-# own because a signature is one property split across two workflows: the pins
+# The file also covers the `signatures` job, and then the steps of build.yml
+# that produce what `signatures` verifies -- `Push To GHCR`, `Sign container
+# image`, `Verify the signature as hosts read it` and `Move latest to the
+# signed image`. Those live here rather than in a file of their own because a
+# signature is one property split across two workflows: the pins
 # and formats the sign step chooses are only correct relative to what this
 # job's verify step can still read, and the assertions tying the two together
 # were already here before either body was executed.
@@ -441,8 +442,14 @@ LOWER_IMAGE="ghcr.io/danathar/arch-bootc-base:latest"
 output="$(run_signatures "${MIXED_IMAGE}" 0 2>&1)"
 status=$?
 assert_status "a verifying signature exits 0" 0 "${status}"
-printf -v expected_cosign_args '%s\n' "verify" "--key" "cosign.pub" "${LOWER_IMAGE}"
-assert_equal "cosign is asked to verify the lowercased reference against the checked-out key" \
+# --new-bundle-format=false is part of the whole argv on purpose. cosign v3
+# without it also accepts a new-format bundle stored as an OCI referrer, which a
+# host's containers/image policy never reads, so an image every host refuses
+# would still pass here. That is how aurora-zfs-simple's nightly stayed green
+# through its #393.
+printf -v expected_cosign_args '%s\n' "verify" "--key" "cosign.pub" \
+  "--new-bundle-format=false" "${LOWER_IMAGE}"
+assert_equal "cosign is asked to verify the lowercased reference against the checked-out key, in the format hosts read" \
   "${expected_cosign_args%$'\n'}" "$(cat "${COSIGN_ARGS}")"
 assert_contains "the step names the reference it verified" "${output}" \
   "verifying ${LOWER_IMAGE}"
@@ -1251,6 +1258,11 @@ printf '%s\n' "${1:-}" >>"${SLEEP_LOG}"
 STUB
 chmod +x "${PUSH_STUBS}/sleep"
 
+# The workflow-level env value, read rather than restated: it is the tag the
+# push step skips and the one `Move latest to the signed image` moves.
+PUSH_DEFAULT_TAG="$(sed -n 's/^  DEFAULT_TAG: "\(.*\)"$/\1/p' "${BUILD_WORKFLOW}")"
+assert_equal "build.yml's DEFAULT_TAG is the tag hosts follow" "latest" "${PUSH_DEFAULT_TAG}"
+
 run_push() {
   local tags="$1" fail_first="${2:-0}"
   : >"${SKOPEO_CALL_LOG}"
@@ -1271,6 +1283,7 @@ run_push() {
       RUNNER_TEMP="${PUSH_RUNNER_TEMP}" \
       GITHUB_OUTPUT="${PUSH_OUTPUT}" \
       HOME="${PUSH_HOME}" \
+      DEFAULT_TAG="${PUSH_DEFAULT_TAG}" \
       METADATA_TAGS="${tags}" \
       "${BASH}" --noprofile --norc -c "${push_run}"
   )
@@ -1280,14 +1293,25 @@ run_push() {
 # and the body expands it unquoted on purpose. Two tags therefore have to
 # become two pushes: a quoted expansion would ask the registry for a single tag
 # with a space in it, which GHCR rejects only at the end of a 40-minute build.
-output="$(run_push "latest 20260910" 2>&1)"
+#
+# The list is the one a publish really carries: `latest`, `latest.YYYYMMDD`
+# and `YYYYMMDD`. `latest` is the one tag that must not be pushed here. Hosts
+# follow it, so it moves only once the digest is signed and verified, in
+# `Move latest to the signed image`; pushed here, a failed signature would
+# leave it naming an image every host refuses.
+output="$(run_push "latest latest.20260910 20260910" 2>&1)"
 status=$?
-assert_status "a clean push of two tags exits 0" 0 "${status}"
+assert_status "a clean push of the publish tags exits 0" 0 "${status}"
 printf -v expected_push_calls '%s\n' \
-  "copy --retry-times 3 --dest-authfile ${PUSH_AUTH_FILE} --digestfile ${PUSH_RUNNER_TEMP}/push-digest oci:${PUSH_OCI_DIR}:${PUSH_IMAGE_NAME}:chunked docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:latest" \
+  "copy --retry-times 3 --dest-authfile ${PUSH_AUTH_FILE} --digestfile ${PUSH_RUNNER_TEMP}/push-digest oci:${PUSH_OCI_DIR}:${PUSH_IMAGE_NAME}:chunked docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:latest.20260910" \
   "copy --retry-times 3 --dest-authfile ${PUSH_AUTH_FILE} --digestfile ${PUSH_RUNNER_TEMP}/push-digest oci:${PUSH_OCI_DIR}:${PUSH_IMAGE_NAME}:chunked docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:20260910"
-assert_equal "every metadata tag is pushed from the rechunked OCI layout" \
+assert_equal "every metadata tag but latest is pushed from the rechunked OCI layout" \
   "${expected_push_calls%$'\n'}" "$(cat "${SKOPEO_CALL_LOG}")"
+if grep -qE ":latest$" "${SKOPEO_CALL_LOG}"; then
+  check "latest is never pushed before the digest is signed" 1 "$(grep -E ':latest$' "${SKOPEO_CALL_LOG}")"
+else
+  check "latest is never pushed before the digest is signed" 0
+fi
 assert_equal "a clean push never sleeps" "" "$(cat "${SLEEP_LOG}")"
 
 # The whole-argv assertion above already pins the flag, but it would still pass
@@ -1344,7 +1368,8 @@ output="$(
     RUNNER_TEMP="${PUSH_RUNNER_TEMP}" \
     GITHUB_OUTPUT="${PUSH_OUTPUT}" \
     HOME="${missing_home}" \
-    METADATA_TAGS="latest" \
+    DEFAULT_TAG="${PUSH_DEFAULT_TAG}" \
+    METADATA_TAGS="20260910" \
     "${BASH}" --noprofile --norc -c "${push_run}" 2>&1
 )"
 status=$?
@@ -1357,7 +1382,7 @@ assert_equal "no anonymous push is attempted without the auth file" "" \
 # GHCR's secondary rate limit is the reason the loop exists. The delays must be
 # taken in ascending order: an index off by one would sleep 240 seconds first,
 # or skip the short first wait that recovers most of these failures.
-output="$(run_push "latest" 2 2>&1)"
+output="$(run_push "20260910" 2 2>&1)"
 status=$?
 assert_status "a push that succeeds on the third attempt exits 0" 0 "${status}"
 assert_equal "a retried push is attempted until it succeeds" "3" \
@@ -1372,7 +1397,7 @@ assert_equal "a push that eventually succeeded still reports its digest" \
 # reporting a digest for an image that was never published would hand the sign
 # step below a reference to nothing, and the failure would first be visible to
 # whoever pulled the image.
-output="$(run_push "latest" 99 2>&1)"
+output="$(run_push "20260910" 99 2>&1)"
 status=$?
 assert_status "a push that never succeeds fails the step" 1 "${status}"
 assert_equal "the push is attempted exactly four times" "4" \
@@ -1383,6 +1408,19 @@ assert_equal "every configured delay is used before giving up" \
 assert_absent "a failed push reports no digest" "$(cat "${PUSH_OUTPUT}")" "digest="
 assert_absent "the registry password is never printed on failure" \
   "${output}" "${PUSH_SECRET}"
+
+# Skipping `latest` makes a tag list holding nothing else push nothing at all.
+# That has to fail here: reporting `digest=` with no value would hand the sign
+# step an image reference with nothing after its `@`.
+output="$(run_push "latest" 2>&1)"
+status=$?
+assert_status "a tag list holding only latest fails the step" 1 "${status}"
+assert_equal "a tag list holding only latest pushes nothing" "" \
+  "$(cat "${SKOPEO_CALL_LOG}")"
+assert_absent "a tag list holding only latest reports no digest" \
+  "$(cat "${PUSH_OUTPUT}")" "digest="
+assert_contains "a tag list holding only latest says why it failed" "${output}" \
+  "no tag other than latest was pushed"
 
 SIGN_DIR="${WORK_DIR}/sign"
 SIGN_STUBS="${SIGN_DIR}/bin"
@@ -1485,6 +1523,199 @@ assert_absent "an unset digest never reaches cosign" "${output}" "invalid refere
 output="$(run_sign "${PUSHED_DIGEST}" 1 2>&1)"
 status=$?
 assert_status "a cosign failure fails the step" 1 "${status}"
+
+# --- after signing: verify as hosts read it, then move latest ---------------
+#
+# The sign step above proves cosign exited 0. It does not prove a host can see
+# what cosign wrote: cosign v3 can store a signature as an OCI referrer that a
+# host's containers/image policy never reads, and that image is refused by
+# every machine following `latest`. So the build checks the signature itself,
+# in the format hosts read, and only then moves `latest` onto the digest.
+# Either step failing leaves `latest` on the last image that verified.
+#
+# Both read the digest the push reported, through the same output seam as the
+# sign step, and both have to run on exactly the runs that sign: a verify that
+# ran without the sign checks nothing, and a move that ran without the verify
+# is the order this section exists to prevent.
+
+VERIFY_STEP="Verify the signature as hosts read it"
+MOVE_STEP="Move latest to the signed image"
+
+verify_run="$(workflow_step_run "${BUILD_WORKFLOW}" build_push "${VERIFY_STEP}")"
+assert_extracted "the verify step's body is still where this test expects it" \
+  "${verify_run}"
+# shellcheck disable=SC2016
+assert_absent "the verify step's body is plain shell" "${verify_run}" '${{'
+
+move_run="$(workflow_step_run "${BUILD_WORKFLOW}" build_push "${MOVE_STEP}")"
+assert_extracted "the move step's body is still where this test expects it" \
+  "${move_run}"
+# shellcheck disable=SC2016
+assert_absent "the move step's body is plain shell" "${move_run}" '${{'
+
+for after_sign_step in "${VERIFY_STEP}" "${MOVE_STEP}"; do
+  # shellcheck disable=SC2016
+  assert_equal "${after_sign_step} is handed the digest the push step reported" \
+    '${{ steps.push.outputs.digest }}' \
+    "$(workflow_step_env "${BUILD_WORKFLOW}" build_push "${after_sign_step}" PUSH_DIGEST)"
+  assert_equal "${after_sign_step} is handed the digest and nothing else" "PUSH_DIGEST" \
+    "$(workflow_step_env_keys "${BUILD_WORKFLOW}" build_push "${after_sign_step}")"
+  assert_equal "${after_sign_step} runs on exactly the runs that push and sign" \
+    "$(workflow_step_field "${BUILD_WORKFLOW}" build_push "${PUSH_STEP}" if)" \
+    "$(workflow_step_field "${BUILD_WORKFLOW}" build_push "${after_sign_step}" if)"
+done
+assert_equal "the sign step runs on exactly the runs that push" \
+  "$(workflow_step_field "${BUILD_WORKFLOW}" build_push "${PUSH_STEP}" if)" \
+  "$(workflow_step_field "${BUILD_WORKFLOW}" build_push "${SIGN_STEP}" if)"
+
+assert_before "the digest is pushed before it is signed" "${PUSH_STEP}" "${SIGN_STEP}"
+assert_before "the digest is signed before its signature is verified" \
+  "${SIGN_STEP}" "${VERIFY_STEP}"
+assert_before "the signature is verified before latest moves" \
+  "${VERIFY_STEP}" "${MOVE_STEP}"
+assert_before "the credential is written before latest is moved with it" \
+  "${LOGIN_STEP}" "${MOVE_STEP}"
+
+# The verify body, run against the same recording cosign stub the `signatures`
+# cases use. It runs from the checkout root, so the relative `cosign.pub` has to
+# resolve there, and the stub refuses a key it cannot read.
+run_verify() {
+  local digest="$1" exit_code="${2:-0}"
+  : >"${COSIGN_ARGS}"
+  : >"${COSIGN_ENV}"
+  (
+    cd -- "${REPO_ROOT}" || exit 99
+    PATH="${STUB_DIR}:${PATH}" \
+      STUB_ARGS_FILE="${COSIGN_ARGS}" \
+      STUB_ENV_FILE="${COSIGN_ENV}" \
+      STUB_EXIT_CODE="${exit_code}" \
+      IMAGE_REGISTRY="${PUSH_REGISTRY}" \
+      IMAGE_NAME="${PUSH_IMAGE_NAME}" \
+      PUSH_DIGEST="${digest}" \
+      "${BASH}" --noprofile --norc -c "${verify_run}"
+  )
+}
+
+# Whole argv, for the same reason as the nightly case: without
+# --new-bundle-format=false this check passes on a signature hosts cannot see.
+# And it is the digest, not a tag: verifying `:latest` here would check the
+# image latest still names from yesterday.
+output="$(run_verify "${PUSHED_DIGEST}" 2>&1)"
+status=$?
+assert_status "a signature that verifies exits 0" 0 "${status}"
+printf -v expected_verify_args '%s\n' "verify" "--key" "cosign.pub" \
+  "--new-bundle-format=false" "${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}@${PUSHED_DIGEST}"
+assert_equal "the signed digest is verified against the checked-out key, in the format hosts read" \
+  "${expected_verify_args%$'\n'}" "$(cat "${COSIGN_ARGS}")"
+assert_contains "a verified signature is reported" "${output}" \
+  "Signature verifies against cosign.pub"
+
+output="$(run_verify "${PUSHED_DIGEST}" 1 2>&1)"
+status=$?
+assert_status "a signature cosign rejects fails the step" 1 "${status}"
+assert_absent "a rejected signature is never reported as verified" "${output}" \
+  "Signature verifies"
+
+output="$(
+  cd -- "${REPO_ROOT}" || exit 99
+  PATH="${STUB_DIR}:${PATH}" \
+    STUB_ARGS_FILE="${COSIGN_ARGS}" \
+    STUB_ENV_FILE="${COSIGN_ENV}" \
+    IMAGE_REGISTRY="${PUSH_REGISTRY}" \
+    IMAGE_NAME="${PUSH_IMAGE_NAME}" \
+    env -u PUSH_DIGEST "${BASH}" --noprofile --norc -c "${verify_run}" 2>&1
+)"
+status=$?
+assert_status "an unset digest fails the verify step" 1 "${status}"
+
+# The move body. skopeo is shadowed again: `copy` records and exits as told,
+# and `inspect` answers with the digest the registry would report for latest
+# afterwards, so the read-back check can be driven both ways.
+MOVE_DIR="${WORK_DIR}/move"
+MOVE_STUBS="${MOVE_DIR}/bin"
+MOVE_CALL_LOG="${MOVE_DIR}/skopeo-calls"
+mkdir -p "${MOVE_STUBS}"
+
+cat >"${MOVE_STUBS}/skopeo" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${MOVE_CALL_LOG}"
+case "${1:-}" in
+  copy) exit "${MOVE_COPY_EXIT:-0}" ;;
+  inspect) printf '%s\n' "${MOVE_INSPECT_DIGEST}" ;;
+  *)
+    printf 'unexpected skopeo subcommand: %s\n' "${1:-}" >&2
+    exit 91
+    ;;
+esac
+STUB
+chmod +x "${MOVE_STUBS}/skopeo"
+
+run_move() {
+  local digest="$1" inspect_digest="$2" copy_exit="${3:-0}"
+  : >"${MOVE_CALL_LOG}"
+  (
+    PATH="${MOVE_STUBS}:${PATH}" \
+      MOVE_CALL_LOG="${MOVE_CALL_LOG}" \
+      MOVE_COPY_EXIT="${copy_exit}" \
+      MOVE_INSPECT_DIGEST="${inspect_digest}" \
+      IMAGE_REGISTRY="${PUSH_REGISTRY}" \
+      IMAGE_NAME="${PUSH_IMAGE_NAME}" \
+      DEFAULT_TAG="${PUSH_DEFAULT_TAG}" \
+      HOME="${PUSH_HOME}" \
+      PUSH_DIGEST="${digest}" \
+      "${BASH}" --noprofile --norc -c "${move_run}"
+  )
+}
+
+# Whole argv. The source is the signed digest, never a tag: copying from
+# `:20260910` would move latest to whatever that tag names by then.
+# --preserve-digests is what makes skopeo fail rather than rewrite the manifest
+# into a digest nobody signed. The credential arrives through the same 0600
+# file the push step reads, not on the command line.
+output="$(run_move "${PUSHED_DIGEST}" "${PUSHED_DIGEST}" 2>&1)"
+status=$?
+assert_status "moving latest onto the signed digest exits 0" 0 "${status}"
+printf -v expected_move_calls '%s\n' \
+  "copy --retry-times 3 --preserve-digests --authfile ${PUSH_AUTH_FILE} docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}@${PUSHED_DIGEST} docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:latest" \
+  "inspect --authfile ${PUSH_AUTH_FILE} --format {{.Digest}} docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:latest"
+assert_equal "latest is copied from the signed digest and then read back" \
+  "${expected_move_calls%$'\n'}" "$(cat "${MOVE_CALL_LOG}")"
+assert_absent "the registry password never reaches the move's command line" \
+  "$(cat "${MOVE_CALL_LOG}")" "${PUSH_SECRET}"
+assert_contains "the moved digest is reported" "${output}" \
+  "latest now points at the signed ${PUSHED_DIGEST}"
+
+# The read-back is the property stated as a check: latest has to name the
+# digest that was verified. A registry that rewrote the manifest, or a copy
+# that raced another run, leaves latest on an image nobody verified.
+OTHER_DIGEST="sha256:2222222222222222222222222222222222222222222222222222222222222222"
+output="$(run_move "${PUSHED_DIGEST}" "${OTHER_DIGEST}" 2>&1)"
+status=$?
+assert_status "latest resolving to another digest fails the step" 1 "${status}"
+assert_contains "the mismatch names both digests" "${output}" \
+  "latest resolves to ${OTHER_DIGEST}, not the signed ${PUSHED_DIGEST}"
+
+output="$(run_move "${PUSHED_DIGEST}" "${PUSHED_DIGEST}" 1 2>&1)"
+status=$?
+assert_status "a failed copy fails the step" 1 "${status}"
+assert_equal "a failed copy is not read back as a success" "1" \
+  "$(wc -l <"${MOVE_CALL_LOG}" | tr -d ' ')"
+
+: >"${MOVE_CALL_LOG}"
+output="$(
+  PATH="${MOVE_STUBS}:${PATH}" \
+    MOVE_CALL_LOG="${MOVE_CALL_LOG}" \
+    MOVE_INSPECT_DIGEST="${PUSHED_DIGEST}" \
+    IMAGE_REGISTRY="${PUSH_REGISTRY}" \
+    IMAGE_NAME="${PUSH_IMAGE_NAME}" \
+    DEFAULT_TAG="${PUSH_DEFAULT_TAG}" \
+    HOME="${PUSH_HOME}" \
+    env -u PUSH_DIGEST "${BASH}" --noprofile --norc -c "${move_run}" 2>&1
+)"
+status=$?
+assert_status "an unset digest fails the move step" 1 "${status}"
+assert_equal "an unset digest never moves latest" "" "$(cat "${MOVE_CALL_LOG}")"
 
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then

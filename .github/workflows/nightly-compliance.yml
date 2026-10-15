@@ -149,4 +149,7 @@ jobs:
           set -euo pipefail
           image="${IMAGE,,}"
           echo "verifying ${image}"
-          cosign verify --key cosign.pub "${image}"
+          # --new-bundle-format=false reads only the legacy `.sig` tag, the one
+          # a host's containers/image policy reads. Without it cosign v3 also
+          # accepts a new-format bundle that hosts cannot see.
+          cosign verify --key cosign.pub --new-bundle-format=false "${image}"
