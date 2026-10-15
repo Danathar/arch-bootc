@@ -91,11 +91,40 @@ if [[ "$(cat "${WORK_DIR}/discovered")" != "$(cat "${WORK_DIR}/listed")" ]]; the
   exit 1
 fi
 
+# Every test file runs without -e and counts its own failures, so a call to a
+# helper that does not exist -- a mistyped `assert_eq`, a helper deleted along
+# with the case that defined it -- returns 127 without passing through that
+# count. The check it was meant to make silently does not happen and the file
+# still exits 0.
+#
+# Bash calls command_not_found_handle instead of printing its usual message.
+# Exported, it is defined in every test file and in everything those files run
+# with bash, so it only records a call made from a file in this directory: the
+# scripts under test are run on purpose with a PATH that lacks programs, and
+# the gate-git-diff tests hand `bash -c` commands that do not exist. Those still
+# get bash's usual message, in bash's usual format. The handler runs in a
+# subshell, which is why it records to a file this loop reads after each test
+# file rather than to a variable.
+UNDEFINED_COMMANDS="${WORK_DIR}/undefined-commands"
+export ARCH_BOOTC_UNDEFINED_COMMANDS="${UNDEFINED_COMMANDS}"
+export ARCH_BOOTC_TESTS_DIR="${SCRIPT_DIR}"
+command_not_found_handle() {
+  local caller="${BASH_SOURCE[1]:-}"
+  if [[ -n "${ARCH_BOOTC_TESTS_DIR:-}" && "${caller}" == "${ARCH_BOOTC_TESTS_DIR}/"* ]]; then
+    printf '%s (%s:%s)\n' "$1" "${caller#"${ARCH_BOOTC_TESTS_DIR}/"}" "${BASH_LINENO[0]}" \
+      >>"${ARCH_BOOTC_UNDEFINED_COMMANDS:-/dev/null}"
+  fi
+  printf '%s: line %s: %s: command not found\n' "$0" "${BASH_LINENO[0]:-?}" "$1" >&2
+  return 127
+}
+export -f command_not_found_handle
+
 failed=()
 skips=()
 for test_file in "${test_files[@]}"; do
   relative_test="${test_file#"${SCRIPT_DIR}/"}"
   echo "==> ${relative_test}"
+  : >"${UNDEFINED_COMMANDS}"
   # "${BASH}" rather than a bare `bash` so the whole suite runs under one
   # interpreter -- see the note in check-coverage.sh about why the reported
   # Bash version has to be the one that actually produced the trace.
@@ -104,9 +133,13 @@ for test_file in "${test_files[@]}"; do
   # by line as the file runs, and the copy on disk is what the skip tally
   # below reads. `set -o pipefail` is in force and `tee` does not fail here,
   # so the pipeline's status is still the test file's own.
-  if "${BASH}" "${test_file}" | tee "${OUTPUT_FILE}"; then
+  if "${BASH}" "${test_file}" | tee "${OUTPUT_FILE}" && [[ ! -s "${UNDEFINED_COMMANDS}" ]]; then
     echo "--> PASS ${relative_test}"
   else
+    if [[ -s "${UNDEFINED_COMMANDS}" ]]; then
+      echo "${relative_test} called commands that do not exist:" >&2
+      LC_ALL=C sort -u "${UNDEFINED_COMMANDS}" | sed 's/^/  /' >&2
+    fi
     echo "--> FAIL ${relative_test}" >&2
     failed+=("${relative_test}")
   fi

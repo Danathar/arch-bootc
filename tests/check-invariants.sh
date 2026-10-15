@@ -55,6 +55,23 @@ fail() {
   return 0
 }
 
+# A call to a function or program that does not exist returns 127 without going
+# through pass or fail, and this script runs without -e, so the check it was
+# meant to make would simply not happen: the run would still end "all N
+# passed", with a smaller N. A mistyped helper name, or a helper that went away
+# with the group that defined it, would go unnoticed.
+#
+# Bash calls this hook instead of printing its usual message. It runs in a
+# subshell, so it cannot add to `failures` itself; it writes the name to a file,
+# and the last check of the run reads that file back.
+UNDEFINED_COMMANDS="$(mktemp)" || exit 1
+trap 'rm -f -- "${UNDEFINED_COMMANDS}"' EXIT
+command_not_found_handle() {
+  printf '%s\n' "$1" >>"${UNDEFINED_COMMANDS}"
+  printf '%s: command not found\n' "$1" >&2
+  return 127
+}
+
 # The invariant holds when PATTERN is present in FILE as an *active* line.
 #
 # Comment lines are stripped first, and that is the whole point rather than a
@@ -138,10 +155,10 @@ assert_equal() {
 #
 # They are defined here, before the first group, rather than in the group that
 # needed them first. A group can then be deleted, moved, or put behind an
-# `if [[ -f <doc> ]]` without taking them away from the groups after it. That
-# matters because a call to a function that no longer exists is not a failure
-# in this script: bash prints "command not found", no check is counted, and
-# the run still passes with fewer checks than before.
+# `if [[ -f <doc> ]]` without taking them away from the groups after it. A
+# call to a function that no longer exists does fail the run (see
+# command_not_found_handle above), but only at the end, after every later group
+# has lost the checks that called it.
 
 # The instructions of one stage, one per line: whole-line comments and blank
 # lines dropped, `\`-continued lines folded into their instruction, runs of
@@ -11460,8 +11477,19 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Every command this script calls exists"
+
+# Plain pass/fail rather than assert_equal, and read again in the exit test
+# below, so a missing helper cannot also take away the check that reports it.
+if [[ -s "${UNDEFINED_COMMANDS}" ]]; then
+  fail "no function or program called above was missing" \
+    "$(LC_ALL=C sort -u "${UNDEFINED_COMMANDS}" | tr '\n' ' ')"
+else
+  pass "no function or program called above was missing"
+fi
+
 printf '\n1..%d\n' "${checks_run}"
-if ((failures > 0)); then
+if ((failures > 0)) || [[ -s "${UNDEFINED_COMMANDS}" ]]; then
   printf 'invariants: %d of %d check(s) failed\n' "${failures}" "${checks_run}" >&2
   exit 1
 fi
