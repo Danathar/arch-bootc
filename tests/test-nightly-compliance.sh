@@ -1576,6 +1576,24 @@ assert_before "the signature is verified before latest moves" \
 assert_before "the credential is written before latest is moved with it" \
   "${LOGIN_STEP}" "${MOVE_STEP}"
 
+# The move step's own comment promises that if anything above it failed, it does
+# not run. That holds only because Actions skips the remaining steps once one
+# has failed, and `continue-on-error: true` opts a step out of exactly that: the
+# failure is recorded as a success, the job carries on, and `latest` moves onto
+# a digest whose push, signature or verification failed. The order and `if:`
+# checks above all stay green through that edit, and so does every body.
+#
+# One step in build_push carries it on purpose: `Populate build cache`, whose
+# comment explains that a failed cache push must not fail a build whose image
+# is already committed. It runs before the image is pushed and decides nothing
+# about which digest is signed, so it is the only entry this list allows.
+build_push_continue_on_error="$(workflow_job_block "${BUILD_WORKFLOW}" build_push | awk '
+  /^      - name: / { step = substr($0, 15); next }
+  /^        continue-on-error:/ { print step "\t" substr($0, 28) }
+')"
+assert_equal "no step that gates latest can fail without stopping the move" \
+  "$(printf 'Populate build cache\ttrue')" "${build_push_continue_on_error}"
+
 # The verify body, run against the same recording cosign stub the `signatures`
 # cases use. It runs from the checkout root, so the relative `cosign.pub` has to
 # resolve there, and the stub refuses a key it cannot read.
