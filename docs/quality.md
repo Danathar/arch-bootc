@@ -138,12 +138,19 @@ therefore carries real signal beyond "the syntax parsed."
 
 It proves the image **builds**. It does not prove it boots, that first boot
 succeeds, that logins behave, or that `bootc upgrade` works from a previously
-deployed version. No CI job boots the image. PR builds additionally skip the
-rechunk, push, sign, signature-verify and move-`latest` steps, so a green PR
-check exercises less than a push to `main` does.
+deployed version. No pull request check boots the image. PR builds additionally
+skip the rechunk, push, sign, signature-verify and move-`latest` steps, so a
+green PR check exercises less than a push to `main` does.
 
-Booting is covered by the manual VM procedure in [CLAUDE.md](../CLAUDE.md),
-which is the only routine way these paths get exercised.
+**The daily boot test.** `.github/workflows/boot-test.yml` boots each flavor's
+published `:latest` in a VM once a day, after it is published, and checks over
+SSH that boot finished, NetworkManager and firewalld are active, the display
+manager is active on kde and xfce, and `bootc` runs
+([ci-cd.md](ci-cd.md#boot-test)). It finds a published image that no longer
+boots within a day; it does not stop one from being published, it boots
+ephemerally rather than from an installed disk, and it does not exercise
+first-boot setup or `bootc upgrade`. Those, and anything before publication,
+are still covered only by the manual VM procedure in [CLAUDE.md](../CLAUDE.md).
 
 **The bare-metal guard tests.** `tests/test-quickstart-baremetal.sh` covers the
 four functions in `scripts/quickstart.sh` whose only job is to refuse an install
@@ -328,9 +335,11 @@ rather than a default worth imposing: `permissions.defaultMode`, and
 
 Stated plainly so nobody mistakes silence for coverage:
 
-- **No boot or upgrade test in CI.** The largest gap. First-boot behavior,
-  service startup, login paths, and `bootc upgrade` from a deployed system are
-  verified only by the manual VM procedure in [CLAUDE.md](../CLAUDE.md).
+- **No boot test before publication, and no upgrade test in CI.** The largest
+  gap. The daily boot test boots what is already at `:latest`, from a
+  read-only root rather than an installed disk. Installed first boot, login
+  paths, and `bootc upgrade` from a deployed system are verified only by the
+  manual VM procedure in [CLAUDE.md](../CLAUDE.md).
 - **Coverage floors are line-based, not branch-based**, and bash-version
   sensitive as described above.
 - **`flow_baremetal`'s orchestration is exercised in dry-run only.** The four
@@ -441,7 +450,11 @@ Stated plainly so nobody mistakes silence for coverage:
   the review-state section appears for a pull request and not for an issue.
   No test lifts these bodies at all: `ShellCheck`, `Free runner disk space`,
   `Prune buildah build cache`, `Assert repository invariants` (in both the
-  build and the nightly workflow) and `Run zizmor`.
+  build and the nightly workflow), `Run zizmor`, and the boot test's host
+  setup: `Prepare the host the way bcvk's CI does`, `Give the runner user KVM`,
+  `Install the VM stack`, `Put container storage on the larger disk` and
+  `Boot the image and check it`, which only calls the boot test script that
+  has its own test file.
   One more, `Run shell tests and enforce coverage floors`, is read for its
   `env:` block but never executed — it is the step that runs the suite, so
   running it here would run the suite inside itself.

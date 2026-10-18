@@ -700,16 +700,87 @@ the step every listed path plus a set of look-alikes. The stub makes the test
 deterministic and network-free; the first scheduled run is the check against
 the live API.
 
+## Boot test
+
+`.github/workflows/boot-test.yml` boots each flavor's published `:latest` in a
+VM once a day and checks it over SSH. Every other check here reads the image as
+files: the build proves each flavor builds and passes `bootc container lint`,
+and [Nightly compliance](#nightly-compliance) proves `:latest` is signed.
+Neither starts it, so a flavor that no longer boots would stay at `:latest`
+until a machine tracking it rebooted into it.
+
+It runs at 12:07 UTC, after the daily build has published, and on
+`workflow_dispatch` with a `flavor` input (`all`, `base`, `kde` or `xfce`). It
+runs on a clock rather than with `workflow_run` after `build.yml`, because
+`workflow_run` is a privileged trigger that the
+[workflow hygiene](quality.md) checks in `tests/check-invariants.sh` refuse. So
+a push to `main` is booted the next day, with that day's build. It reports and
+gates nothing: by the time it runs, `latest` has already moved.
+
+One job, `boot`, runs once per flavor on `ubuntu-26.04` with a `fail-fast:
+false` matrix. It prepares the host the way bcvk's own CI does, gives the
+runner user `/dev/kvm`, installs QEMU, virtiofsd and bcvk v0.21.0 (checked by
+sha256), moves container storage to the larger disk, and runs
+`scripts/boot-test.sh`. The script:
+
+1. Resolves `:latest` to a digest and reads its
+   `org.opencontainers.image.revision` label, so the summary names the exact
+   artifact and commit that booted.
+2. Pulls the digest and boots it with `bcvk ephemeral run-ssh`: the image's own
+   kernel and initramfs in QEMU, with the image as a read-only virtiofs root.
+   Nothing is installed to a disk and nothing is upgraded.
+3. Logs in as root with a key bcvk provisions, and runs the checks below.
+
+| Check | Passes when |
+| --- | --- |
+| `boot:finished` | `systemctl is-system-running --wait` reports `running` or `degraded` within five minutes |
+| `unit:NetworkManager` | `NetworkManager.service` is active |
+| `unit:firewalld` | `firewalld.service` is active |
+| `unit:display-manager` | `display-manager.service` is active (kde and xfce only) |
+| `bootc:version` | `bootc --version` runs |
+
+The login is itself a check: the script does not start sshd, so reaching the
+checks means the image enabled it. Failed units are listed in the summary and
+not judged. A boot is retried once, only when the guest reported nothing at
+all; once any check has reported, that boot is the answer.
+
+Two units are injected into the boot, never into the image. One creates
+`/var/roothome` before tmpfiles writes root's key under `/root`. The other
+clears root's password expiry in that boot's `/etc`. The image expires root's
+password on purpose (see the root login model in [AGENTS.md](../AGENTS.md)),
+and an expired password closes even a key login for the password change, so
+bcvk's non-interactive session never runs a command without it. Neither unit
+changes the sshd or PAM settings that model rests on.
+
+The job's token is `contents: read`, declared on the job and written down in
+`.github/policies/workflow-permissions.json`. It reads no secret and writes
+nothing but its own artifact: `result.json`, each boot's `bcvk.log`, the
+guest's journal and console, and the check script it ran. A red scheduled run
+opens an issue through [Auto issues](#auto-issues-for-failed-scheduled-runs).
+[ai-ops-runbook.md](ai-ops-runbook.md#githubworkflowsboot-testyml) says how to
+tell an image failure from a runner failure.
+
+`tests/test-boot-test.sh` runs the script against stubbed `skopeo`, `podman`
+and `bcvk`. The `bcvk` stub runs the generated check script itself against
+stub `systemctl` and `bootc`, so the script the real guest runs is executed.
+It covers a passing boot per flavor, each check failing, a check missing from
+the output, a failed check cut off before the end (not retried), a boot that
+reported nothing (retried once), and an image that does not resolve or pull.
+
+This does not close the README's first criterion. That one asks for a boot on
+every pull request, and pull request builds still publish nothing a VM could
+boot.
+
 ## Auto issues for failed scheduled runs
 
 `.github/workflows/auto-issues.yml` turns a red scheduled run into an issue.
 Without it, a daily build that fails with no commit behind it shows up only as
 a red row in the Actions tab and an email to whoever is subscribed, and the
-images quietly stop being refreshed. It runs daily at 13:17 UTC, after both
+images quietly stop being refreshed. It runs daily at 13:17 UTC, after the
 daily workflows have finished, and on `workflow_dispatch`.
 
 It reads every scheduled workflow except itself, each on its own: `build.yml`,
-`nightly-compliance.yml` and `agent-audit.yml`. The audit is included because
+`nightly-compliance.yml`, `agent-audit.yml` and `boot-test.yml`. The audit is included because
 its findings fail its run on purpose ([Agent audit trail](#agent-audit-trail)),
 and a failed monthly run nobody opens is a finding nobody reads.
 `tests/test-auto-issues.sh` fails when a scheduled workflow is added and not
@@ -747,8 +818,8 @@ disables every scheduled workflow at once, this one included.
 and `startup_failure`, a comment on the open issue, a person's look-alike
 issue, a run already reported, a close on success, a cancelled run, a stale
 schedule on either side of 48 hours, a failed agent audit and an audit
-schedule on either side of 33 days, no runs at all, and a failed API read,
-which must fail the step rather than open a duplicate.
+schedule on either side of 33 days, a failed boot test, no runs at all, and a
+failed API read, which must fail the step rather than open a duplicate.
 
 ## Pruning old package versions
 

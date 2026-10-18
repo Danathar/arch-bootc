@@ -81,7 +81,7 @@ This is where reviews most often need to push back.
 - [ ] The PR states the exact commands run and what they printed.
 - [ ] Static checks, builds, and VM boots are distinguished from each other. A
       green PR check proves the image **builds** — PR builds skip rechunk, push,
-      and sign, and nothing in CI boots the image.
+      and sign, and no pull request check boots the image.
 - [ ] Skipped and inconclusive checks are listed. A stated gap is fine; an
       implied pass is not.
 - [ ] Claims about a VM test name the artifact tested and confirm its revision
