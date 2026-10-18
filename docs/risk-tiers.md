@@ -96,7 +96,9 @@ expectations that come with the real tier still apply.
 `renovate.json`, `risk-config.json` (this page's tiers as data; the "Risk tiers
 config" group in tests/check-invariants.sh fails when the two disagree),
 `scripts/pr-review-state.sh` (read-only; `ai-fix.yml` pastes
-its report of unresolved threads and failing checks into the work order).
+its report of unresolved threads and failing checks into the work order),
+`scripts/boot-test.sh` (the daily boot test's driver; it boots a published
+image in a throwaway VM on a runner and changes nothing).
 
 Plus `.github/ISSUE_TEMPLATE/`, per the note above.
 
