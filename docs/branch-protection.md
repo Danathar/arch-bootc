@@ -62,6 +62,9 @@ It is in GitHub's import format, so it applies as-is. What each rule does:
   globs as `build.yml`'s `paths-ignore`. The job has no `if:`, no `needs:` and
   no matrix, so it cannot be skipped or renamed on the way. `integration_id`
   15368 is GitHub Actions, so a status posted by anything else does not count.
+  The check is also strict (`strict_required_status_checks_policy`): a pull
+  request behind `main` is updated before it merges, so the check runs on the
+  result rather than on an older base.
   `tests/check-invariants.sh` fails if the two copies of the job differ, if
   either gains a condition, or if the two filters stop being each other's
   complement.
