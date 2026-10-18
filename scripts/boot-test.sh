@@ -373,12 +373,12 @@ write_result() {
     --arg flavor "${flavor}" --arg image "${image}" --arg booted "${pinned}" \
     --arg revision "${revision}" --argjson passed "${passed_json}" \
     --arg summary "${summary}" --argjson attempts "${attempts}" \
-    --argjson done "${done_json}" \
+    --argjson report_done "${done_json}" \
     --arg state "${report_state}" --arg kernel "${report_kernel}" \
     --argjson checks "${checks_json}" --argjson failed_units "${units_json}" '
       {flavor: $flavor, image: $image, booted: $booted, revision: $revision,
        passed: $passed, summary: $summary, attempts: $attempts,
-       report: {done: $done, state: $state, kernel: $kernel,
+       report: {done: $report_done, state: $state, kernel: $kernel,
                 checks: $checks, failed_units: $failed_units}}' >"${file}"
 }
 
