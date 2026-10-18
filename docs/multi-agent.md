@@ -125,22 +125,24 @@ and history is never rewritten without approval.
 
 **Do not assume two green pull requests are green together.** The ruleset
 requires one check, `Shell tests and coverage`. It sets
-`strict_required_status_checks_policy` to `false` in
+`strict_required_status_checks_policy` to `true` in
 [`.github/rulesets/main.json`](../.github/rulesets/main.json). A pull request
-therefore does not have to be tested against the latest `main` before it
-merges. The reason is Renovate: it rebases a branch only when it conflicts, to
-keep rebuild churn low ([Renovate, Gotchas](renovate.md#gotchas)). The cost
-falls on agents. When
-two open pull requests touch the same document and the test that reads it,
-update the second one from `main` before it merges, so the check runs on the
-pair. To read the live setting:
+that is behind `main` therefore has to be updated from `main` before it can
+merge, and the check runs again on the updated branch, so two green pull
+requests are tested together rather than assumed to be. The cost is an extra
+three-flavor build for each update. Renovate pull requests pay it too, although
+it rebases a branch only when it conflicts, to keep rebuild churn low
+([Renovate, Gotchas](renovate.md#gotchas)): GitHub, not Renovate, decides when
+a branch behind `main` may merge. When two open pull requests touch
+the same document and the test that reads it, expect the second one to need an
+update from `main` once the first merges. To read the live setting:
 
 ```bash
 gh api repos/Danathar/arch-bootc/rules/branches/main \
   --jq '.[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy'
 ```
 
-It prints `false`.
+It prints `true`.
 
 ## Who merges
 

@@ -242,7 +242,9 @@ remember to go and check.
 
 One limit on that. This repo sets `rebaseWhen: "conflicted"`, so Renovate refreshes the branch
 when the *dependency* gains a new version, but does **not** rebase it onto a moved `main` unless
-the branch actually conflicts. So the self-clearing path covers an upstream fix, not a fix made
+the branch actually conflicts. (The `main` ruleset requires an up-to-date branch, so a Renovate
+branch that is behind `main` gets updated before GitHub lets it merge. `rebaseWhen` controls when
+Renovate itself rebases, not when GitHub allows the merge.) So the self-clearing path covers an upstream fix, not a fix made
 here: if the blocker is resolved on our side instead — say by building the missing library in
 the image — the open PR may still be testing the old base and need a manual rebase before it
 goes green.
@@ -409,7 +411,10 @@ this fork's.
 
 **`rebaseWhen` must not be `"never"`.** It is set to `"conflicted"`, which rebases a PR only
 when it actually conflicts — keeping rebuild churn low, since each rebase costs a ~20 minute
-three-flavor build.
+three-flavor build. The `main` ruleset also requires an up-to-date branch
+(`strict_required_status_checks_policy`), so a Renovate branch that is behind `main` gets updated
+before it merges; `rebaseWhen` stays `"conflicted"` because it controls when Renovate itself
+rebases, not when GitHub allows the merge.
 
 Do not change it back to `"never"`. That value makes Renovate's branch worker return early
 with `result: "no-work"` for *any* branch that already exists, before it reaches the automerge

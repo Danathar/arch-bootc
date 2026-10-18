@@ -8911,10 +8911,12 @@ else
   # single-maintainer repository one approval would stop everything merging.
   assert_equal "a pull request needs no approval a sole maintainer cannot give" \
     "$(bp_rs '.rules[] | select(.type == "pull_request") | .parameters.required_approving_review_count')" "0"
-  # Renovate rebases a branch only when it conflicts (rebaseWhen), so a strict
-  # policy would hold every Renovate pull request behind a moved `main`.
-  assert_equal "the required check does not also demand an up-to-date branch" \
-    "$(bp_rs '.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy')" "false"
+  # A strict policy makes GitHub refuse a merge until the branch is up to date
+  # with `main`, so two green pull requests are tested together. The cost is a
+  # rebuild per update, Renovate's included (rebaseWhen only decides when
+  # Renovate itself rebases, not when GitHub allows the merge).
+  assert_equal "the required check also demands an up-to-date branch" \
+    "$(bp_rs '.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy')" "true"
 
   bp_contexts="$(bp_rs '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context' | LC_ALL=C sort)"
   if [[ -n "${bp_contexts}" ]]; then
@@ -9472,9 +9474,9 @@ else
   # --- The ruleset --------------------------------------------------------------
 
   ma_strict="$(ma_rs '.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy')"
-  # The page says a pull request need not be tested against the latest `main`.
+  # The page says a pull request behind `main` is updated before it merges.
   # That sentence is false the day this flips, so it is asserted, not echoed.
-  assert_equal "the page's claim that the required check is not strict holds" "${ma_strict}" "false"
+  assert_equal "the page's claim that the required check is strict holds" "${ma_strict}" "true"
   ma_says "the page quotes the strict setting the ruleset has" \
     "\`strict_required_status_checks_policy\` to \`${ma_strict}\`"
   ma_contexts="$(ma_rs '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context')"
