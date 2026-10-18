@@ -29,6 +29,12 @@
         "file-issues": {"actions": "read", "issues": "write"}
       }
     },
+    "boot-test.yml": {
+      "workflow": null,
+      "jobs": {
+        "boot": {"contents": "read"}
+      }
+    },
     "build.yml": {
       "workflow": null,
       "jobs": {

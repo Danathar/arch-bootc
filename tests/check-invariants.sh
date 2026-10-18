@@ -7256,19 +7256,38 @@ fi
 # next, and the half that goes stale silently: closing a gap does not fail
 # anything, so the sentence describing it survives the work that ended it.
 
-# "No CI job boots the image." Every other claim in this document is about
-# something that exists; this one is about something that must not.
+# "No pull request check boots the image." Every other claim in this document
+# is about something that exists; this one is about something that must not.
+# The daily boot test boots the published image on a schedule, so the claim is
+# scoped to the workflows a pull request runs, and the document must still make
+# it in those words.
 quality_boot_hits=""
+quality_install_hits=""
 for quality_workflow in "${quality_workflows[@]+"${quality_workflows[@]}"}"; do
+  if grep -qE '^  pull_request:' "${quality_workflow}"; then
+    while IFS= read -r quality_hit; do
+      quality_boot_hits+="${quality_workflow}:${quality_hit} "
+    done < <(grep -nE 'virt-install|qemu-system|bcvk|bootc install' "${quality_workflow}" | grep -v '^[0-9]*:[[:space:]]*#')
+  fi
+  # "from a read-only root rather than an installed disk": no workflow installs
+  # the image anywhere, on any trigger.
   while IFS= read -r quality_hit; do
-    quality_boot_hits+="${quality_workflow}:${quality_hit} "
-  done < <(grep -nE 'virt-install|qemu-system|bootc install' "${quality_workflow}" | grep -v '^[0-9]*:[[:space:]]*#')
+    quality_install_hits+="${quality_workflow}:${quality_hit} "
+  done < <(grep -nE 'virt-install|bootc install' "${quality_workflow}" | grep -v '^[0-9]*:[[:space:]]*#')
 done
+assert_present "the document says no pull request check boots the image" \
+  "${QUALITY_DOC}" 'No pull request check boots the image\.'
 if [[ -z "${quality_boot_hits}" ]]; then
-  pass "no CI job boots or installs the image, as the gaps section says"
+  pass "no pull request check boots or installs the image, as the document says"
 else
-  fail "no CI job boots or installs the image, as the gaps section says" \
+  fail "no pull request check boots or installs the image, as the document says" \
     "the largest stated gap has been closed and the document still calls it open: ${quality_boot_hits}"
+fi
+if [[ -z "${quality_install_hits}" ]]; then
+  pass "no CI job installs the image to a disk, as the gaps section says"
+else
+  fail "no CI job installs the image to a disk, as the gaps section says" \
+    "a workflow now installs the image, and the gaps section still says nothing does: ${quality_install_hits}"
 fi
 
 # "PR builds additionally skip the rechunk, push, sign, signature-verify and
@@ -9861,10 +9880,12 @@ RUNBOOK_QUOTES
     ".github/workflows/agent-audit.yml" 'cron: "23 5 1 \* \*"'
   assert_present "auto-issues.yml still runs daily at 13:17 UTC, as the runbook says" \
     ".github/workflows/auto-issues.yml" 'cron: "17 13 \* \* \*"'
+  assert_present "boot-test.yml still runs daily at 12:07 UTC, as the runbook says" \
+    ".github/workflows/boot-test.yml" 'cron: "7 12 \* \* \*"'
   runbook_scheduled="$(grep -lE '^  schedule:' .github/workflows/*.y*ml | LC_ALL=C sort | tr '\n' ' ')"
-  assert_equal "agent-audit.yml, auto-issues.yml, build.yml and nightly-compliance.yml are the only scheduled workflows, as the runbook says" \
+  assert_equal "agent-audit.yml, auto-issues.yml, boot-test.yml, build.yml and nightly-compliance.yml are the only scheduled workflows, as the runbook says" \
     "${runbook_scheduled}" \
-    ".github/workflows/agent-audit.yml .github/workflows/auto-issues.yml .github/workflows/build.yml .github/workflows/nightly-compliance.yml "
+    ".github/workflows/agent-audit.yml .github/workflows/auto-issues.yml .github/workflows/boot-test.yml .github/workflows/build.yml .github/workflows/nightly-compliance.yml "
   # The "scheduled run is missing" section queries each scheduled workflow on
   # its own, by file, so one running cannot hide the other's absence. Derive
   # the expected pair from the tree rather than restating it.
@@ -10059,7 +10080,7 @@ labeled|labelled"
     assert_equal "the jobs the runbook marks \`main\` only in ${runbook_wf} are the ones whose if: refuses pull requests and other branches" \
       "${runbook_main_only_bad}" ""
   done <<<"${runbook_tree_workflows}"
-  assert_equal "six workflow sections still say how many jobs they have" "${runbook_counted}" "6"
+  assert_equal "seven workflow sections still say how many jobs they have" "${runbook_counted}" "7"
 
   # "Three jobs, one checking step each": each nightly job has exactly one.
   # shellcheck disable=SC2016 # the backticks are the page's own markup
@@ -11035,10 +11056,13 @@ group "README project status (the beta section's claims about CI are joined to t
 # telling users that it does not exist -- and the box still unticked.
 #
 # The tree side is computed, not assumed: every active (non-comment) line in
-# .github/workflows/ that runs a VM or moves a deployment. While there are none,
-# the prose must say so and both boxes must be open. When there is one, the
-# check fails and says which line, so whoever lands it updates the README in
-# the same change. docs/quality.md's "Where the gaps are" list carries the same
+# .github/workflows/ that runs a VM or moves a deployment. The boot box asks
+# for a boot on every pull request, so only a boot in a workflow that runs on
+# `pull_request` can tick it; a boot of the published image on a schedule
+# (boot-test.yml) cannot, and while it exists the README must name it rather
+# than say nothing in CI boots the image. When a hit appears, the check fails
+# and says which line, so whoever lands it updates the README in the same
+# change. docs/quality.md's "Where the gaps are" list carries the same
 # statement and is joined the same way.
 
 STATUS_DOC="README.md"
@@ -11054,13 +11078,21 @@ else
   # Active workflow lines that boot an image or upgrade a deployment. Comments
   # are dropped first: a rationale comment naming virt-install is not a job.
   status_boot_hits=""
+  status_pr_boot_hits=""
+  status_boot_workflows=""
   status_upgrade_hits=""
   for status_wf in .github/workflows/*.yml .github/workflows/*.yaml; do
     [[ -f "${status_wf}" ]] || continue
+    status_wf_boots=""
     while IFS= read -r status_hit; do
       status_boot_hits+="${status_wf}:${status_hit} "
+      status_wf_boots=1
+      if grep -qE '^  pull_request:' "${status_wf}"; then
+        status_pr_boot_hits+="${status_wf}:${status_hit} "
+      fi
     done < <(grep -nE -- 'qemu-system|virt-install|virsh[[:space:]]|systemd-vmspawn|bcvk' "${status_wf}" |
       grep -v '^[0-9]*:[[:space:]]*#')
+    [[ -z "${status_wf_boots}" ]] || status_boot_workflows+="${status_wf##*/} "
     while IFS= read -r status_hit; do
       status_upgrade_hits+="${status_wf}:${status_hit} "
     done < <(grep -nE -- 'bootc[[:space:]]+(upgrade|switch)' "${status_wf}" |
@@ -11086,13 +11118,23 @@ else
   status_boot_box="$(status_box_state 'CI boots the built image')"
   status_upgrade_box="$(status_box_state 'CI upgrades a system deployed from the previous')"
 
-  if [[ -z "${status_boot_hits}" ]]; then
-    assert_equal "${STATUS_DOC}'s 'CI boots the built image' criterion is open while no workflow boots a VM" \
+  if [[ -z "${status_pr_boot_hits}" ]]; then
+    assert_equal "${STATUS_DOC}'s 'CI boots the built image' criterion is open while no pull request workflow boots a VM" \
       "${status_boot_box}" "open"
   else
-    fail "${STATUS_DOC}'s 'CI boots the built image' criterion is open while no workflow boots a VM" \
-      "a workflow now boots a VM (${status_boot_hits}); update the Project status section and tick the box"
+    fail "${STATUS_DOC}'s 'CI boots the built image' criterion is open while no pull request workflow boots a VM" \
+      "a workflow that runs on pull requests now boots a VM (${status_pr_boot_hits}); update the Project status section and tick the box"
   fi
+  # A workflow that boots the image on any trigger is named in the section, so
+  # the prose cannot go on implying that nothing in CI boots it.
+  for status_boot_wf in ${status_boot_workflows}; do
+    if [[ "${status_section}" == *"${status_boot_wf}"* ]]; then
+      pass "${STATUS_DOC}'s Project status section names ${status_boot_wf}, which boots the image"
+    else
+      fail "${STATUS_DOC}'s Project status section names ${status_boot_wf}, which boots the image" \
+        "the section does not mention it, so a reader is not told CI boots the image"
+    fi
+  done
   if [[ -z "${status_upgrade_hits}" ]]; then
     assert_equal "${STATUS_DOC}'s upgrade criterion is open while no workflow runs bootc upgrade or switch" \
       "${status_upgrade_box}" "open"

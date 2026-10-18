@@ -144,9 +144,9 @@ What reviewers look for is written down in
 PR is usually faster than finding out in review.
 
 A green PR check proves the image **builds**. PR builds deliberately skip the
-rechunk, push, and sign steps, and no CI job boots the image, so a green check
-is not evidence that it boots or upgrades cleanly. Say which of those you
-actually verified.
+rechunk, push, and sign steps, and no pull request check boots the image, so a
+green check is not evidence that it boots or upgrades cleanly. Say which of
+those you actually verified.
 
 ## If you are an AI agent working in this repository
 

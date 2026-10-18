@@ -31,6 +31,7 @@ skips forks by default; without that line nothing would run at all.
 | `sigstore/cosign-installer` | commit SHA | `build.yml` | `github-actions` manager |
 | `actions/labeler` | commit SHA | `labeler.yml` | `github-actions` manager |
 | `astral-sh/setup-uv` | commit SHA | `zizmor.yaml` | `github-actions` manager |
+| `actions/upload-artifact` | commit SHA | `boot-test.yml` | `github-actions` manager |
 | cosign CLI | `cosign-release: vX.Y.Z` | `build.yml` | custom regex manager |
 | chunkah image | `quay.io/coreos/chunkah:v…@sha256:…` | `build.yml` env | custom regex manager (with digest) |
 | shellcheck image | `docker.io/koalaman/shellcheck:vX.Y.Z` | `build.yml` `SHELLCHECK_IMAGE` env | custom regex manager |

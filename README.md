@@ -92,9 +92,12 @@ What beta means here:
 
 - **CI proves the image builds, not that it boots.** Every pull request that
   changes more than documentation builds the image, and every pull request runs
-  the shell suite and a quickstart dry run. Nothing in CI
-  boots the result, runs first boot, or upgrades a deployed system to the new
-  image. Those are checked by hand. [Quality signals](docs/quality.md#where-the-gaps-are)
+  the shell suite and a quickstart dry run. No pull request check boots the
+  result. Once a day, after publishing, the boot test (`boot-test.yml`) boots
+  each flavor's `:latest` in a VM and checks it over SSH, so a published image
+  that no longer boots is found within a day, not stopped. Nothing in CI runs
+  installed first boot or upgrades a deployed system to the new image; those
+  are checked by hand. [Quality signals](docs/quality.md#where-the-gaps-are)
   lists every gap.
 - **No release tag is kept for good.** Installs follow `:latest`, so every
   merge to `main` reaches every system on its next upgrade. Each publish also

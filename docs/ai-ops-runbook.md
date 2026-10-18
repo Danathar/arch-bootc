@@ -49,6 +49,7 @@ the daily scheduled build and a manual dispatch also build, publish and sign
 | `.github/workflows/ai-fix.yml` | `AI fix work order` | An issue or PR labelled, manual | [Work order](#githubworkflowsai-fixyml) |
 | `.github/workflows/agent-audit.yml` | `Agent audit trail` | Monthly on the 1st, 05:23 UTC, manual | [Agent audit](#githubworkflowsagent-audityml) |
 | `.github/workflows/auto-issues.yml` | `File issues for failed scheduled runs` | Daily 13:17 UTC, manual | [Auto issues](#githubworkflowsauto-issuesyml) |
+| `.github/workflows/boot-test.yml` | `Boot test` | Daily 12:07 UTC, manual | [Boot test](#githubworkflowsboot-testyml) |
 
 What each signal proves, and what it cannot see, is in
 [quality.md](quality.md#the-dashboard). Read that before deciding a green check
@@ -185,7 +186,7 @@ place to look first, not a failure. Detail:
 
 `File issues for failed scheduled runs`, one job (`file-issues`), one step
 (`File or close issues for scheduled runs`). It reads the newest completed
-scheduled run of `build.yml`, `nightly-compliance.yml` and `agent-audit.yml` on
+scheduled run of `build.yml`, `nightly-compliance.yml`, `agent-audit.yml` and `boot-test.yml` on
 `main`. A failed, timed-out or never-started run, or one older than 48 hours
 (33 days for the monthly audit), opens an issue titled `Scheduled run of ... failed on main` or
 `... has stopped running on main`, or comments on the one already open. A
@@ -195,11 +196,34 @@ issues only, and only ones it opened itself. If it is red, the step's log names
 the API call that failed; that is a token or permission error, not a finding.
 Detail: [ci-cd.md](ci-cd.md#auto-issues-for-failed-scheduled-runs).
 
+## `.github/workflows/boot-test.yml`
+
+`Boot test`, one job (`boot`), run once per flavor. It boots each flavor's
+published `:latest` in a VM with `bcvk` on the runner and checks it over SSH;
+it gates nothing and changes nothing. The checking step is
+`Boot the image and check it`, which runs `scripts/boot-test.sh`. The job
+summary and the `boot-test-<flavor>-<run id>` artifact (`result.json`,
+`bcvk.log`, the guest's journal and console) tell the cases apart:
+
+- `Booted and logged in, but failed checks: ...` names a check that ran in the
+  guest and failed. That is the image: a unit that no longer starts, or a
+  `bootc` that no longer runs. Read the check's detail and the journal.
+- `The VM never reached the point where the checks finish`, after two boots,
+  can be the image (it does not boot, or sshd is not enabled) or the runner
+  (nested KVM too slow for bcvk's SSH deadline). Read the console log and the
+  journal first: a kernel panic or an emergency shell there is the image.
+- A failure in an earlier step (host setup, `Install the VM stack`, the pull)
+  is the runner or the network, not the image.
+
+Failed units are listed and not judged. Re-running or dispatching it is an
+Actions write: ask the maintainer. Detail: [ci-cd.md](ci-cd.md#boot-test).
+
 ## A scheduled run is missing
 
 `build.yml` (daily 10:05 UTC), `nightly-compliance.yml` (daily 05:40 UTC),
-`auto-issues.yml` (daily 13:17 UTC) and `agent-audit.yml` (monthly on the 1st,
-05:23 UTC) are the only scheduled workflows. GitHub disables scheduled workflows in a public
+`boot-test.yml` (daily 12:07 UTC), `auto-issues.yml` (daily 13:17 UTC) and
+`agent-audit.yml` (monthly on the 1st, 05:23 UTC) are the only scheduled
+workflows. GitHub disables scheduled workflows in a public
 repository after 60 days with no repository activity, and a forked repository
 starts with them disabled
 ([GitHub's page](https://docs.github.com/en/actions/managing-workflow-runs/disabling-and-enabling-a-workflow)).
@@ -213,6 +237,7 @@ gh workflow list -R Danathar/arch-bootc --all
 gh run list -R Danathar/arch-bootc --workflow build.yml --event schedule --limit 3
 gh run list -R Danathar/arch-bootc --workflow nightly-compliance.yml --event schedule --limit 3
 gh run list -R Danathar/arch-bootc --workflow agent-audit.yml --event schedule --limit 3
+gh run list -R Danathar/arch-bootc --workflow boot-test.yml --event schedule --limit 3
 gh run list -R Danathar/arch-bootc --workflow auto-issues.yml --event schedule --limit 3
 ```
 
@@ -224,6 +249,7 @@ maintainer. While `build.yml` has no scheduled run, no daily rebuild pulls fresh
 Arch packages. While `nightly-compliance.yml` has none, nothing re-checks the
 bootc pin or the published signatures. While `agent-audit.yml` has none, nothing
 reads back the agent pull requests' signature lines and sign-offs. While
+`boot-test.yml` has none, nothing boots the published images. While
 `auto-issues.yml` has none, a red scheduled run files no issue. Any of these
 gaps is a blind spot, not a pass.
 

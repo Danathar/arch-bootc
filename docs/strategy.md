@@ -32,11 +32,13 @@ pull request or issue edited afterwards can still change state. A range with
 `<end>` of today or later keeps growing. The `git grep` commands read the
 checked-out tree, so run them in a clone at the commit you mean to measure.
 
-**CI boots the built** image in a VM: an active workflow line that starts one.
-No output means no workflow boots anything. The pattern is the one
-`tests/check-invariants.sh` uses to keep the README's first box open while this
-is true; that script's own match also skips commented lines, so a hit here that
-is only a comment is not a job.
+**CI boots the built** image in a VM on every pull request: an active workflow
+line that starts one. No output means no workflow boots anything. A hit has to
+be read: the box needs it in a workflow that runs on `pull_request`, and
+`boot-test.yml` is not one. It boots the published `:latest` once a day. The
+pattern is the one `tests/check-invariants.sh` uses to keep the README's first
+box open while no pull request workflow boots a VM; that script's own match
+also skips commented lines, so a hit here that is only a comment is not a job.
 
 ```bash
 git grep -nE 'qemu-system|virt-install|virsh[[:space:]]|systemd-vmspawn|bcvk' -- .github/workflows

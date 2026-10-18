@@ -58,6 +58,7 @@ jobs:
             /mnt/scripts/quickstart.sh \
             /mnt/scripts/pr-review-state.sh \
             /mnt/scripts/prune-package-versions.sh \
+            /mnt/scripts/boot-test.sh \
             /mnt/tests/run-tests.sh \
             /mnt/tests/check-coverage.sh \
             /mnt/tests/check-invariants.sh \
@@ -68,6 +69,7 @@ jobs:
             /mnt/tests/test-homebrew-profile.sh \
             /mnt/tests/test-agent-audit.sh \
             /mnt/tests/test-auto-issues.sh \
+            /mnt/tests/test-boot-test.sh \
             /mnt/tests/test-homebrew-shell-integration.sh \
             /mnt/tests/test-nightly-compliance.sh \
             /mnt/tests/test-ostree-pkg-diff.sh \

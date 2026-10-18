@@ -434,8 +434,10 @@ A person who was not in your head will read what you write. Write for them.
 - Passing checks mean only that the observed checks passed at the observed SHA.
   Recheck the head SHA and current state before reporting readiness.
 - Pull request builds deliberately skip the rechunk, push, and sign steps, and
-  no CI job boot-tests the image. A green PR check therefore proves the image
-  builds, not that it boots or upgrades. Say so rather than implying coverage.
+  no pull request check boot-tests the image. A green PR check therefore proves
+  the image builds, not that it boots or upgrades. Say so rather than implying
+  coverage. The daily boot test (`.github/workflows/boot-test.yml`) boots only
+  what is already published, so it is not evidence for a pull request either.
 - Renovate is configured to automerge most updates once the PR build is green.
   Do not broaden that automerge scope, and do not disable the carve-outs, without
   the user deciding to accept the additional risk.
