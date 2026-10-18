@@ -8917,6 +8917,18 @@ else
   # Renovate itself rebases, not when GitHub allows the merge).
   assert_equal "the required check also demands an up-to-date branch" \
     "$(bp_rs '.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy')" "true"
+  # The live ruleset has this on (#557). The file is what the documented PUT
+  # applies, so a file that drops the key or sets it false turns it off on
+  # GitHub, and every check that reads only the file stays green.
+  assert_equal "an unattributed change still needs extra approval, as the live ruleset has it" \
+    "$(bp_rs '.rules[] | select(.type == "pull_request") | .parameters.require_extra_approval_for_unattributed_changes')" "true"
+  # docs/renovate.md says twice that this setting, not Renovate's rebaseWhen,
+  # decides when a branch behind `main` may merge. Both sentences are false the
+  # day strict flips.
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  assert_equal "renovate.md says the main ruleset requires an up-to-date branch exactly when it does, in both places" \
+    "$(tr '\n' ' ' <"${RENOVATE_DOC}" | tr -s ' ' | grep -oE 'The `main` ruleset (also )?requires an up-to-date branch' | grep -c .)" \
+    "$([[ "$(bp_rs '.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy')" == true ]] && echo 2 || echo 0)"
 
   bp_contexts="$(bp_rs '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context' | LC_ALL=C sort)"
   if [[ -n "${bp_contexts}" ]]; then
@@ -9147,6 +9159,10 @@ else
     assert_equal "the workflows the page says run the required check are the ones that do" \
       "$(grep -oE '`[A-Za-z0-9_-]+\.ya?ml`' <<<"${bp_check_bullet}" | tr -d '`' | LC_ALL=C sort -u | tr '\n' ' ')" \
       "$(tr '\n' ' ' <<<"${bp_context_workflows}")"
+    # shellcheck disable=SC2016 # the backticks are the page's own markup
+    assert_equal "the required-check bullet calls the check strict exactly when the ruleset makes it so" \
+      "$(grep -qF 'The check is also strict (`strict_required_status_checks_policy`)' <<<"${bp_check_bullet}" && echo true || echo false)" \
+      "$(bp_rs '.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy')"
   fi
 
   # Every job a pull request can start is required or named as not required,
@@ -9479,6 +9495,10 @@ else
   assert_equal "the page's claim that the required check is strict holds" "${ma_strict}" "true"
   ma_says "the page quotes the strict setting the ruleset has" \
     "\`strict_required_status_checks_policy\` to \`${ma_strict}\`"
+  ma_says "the page says a pull request behind main is updated before it merges" \
+    "that is behind \`main\` therefore has to be updated from \`main\` before it can merge"
+  ma_says "the page's live-setting command prints the strict setting the ruleset has" \
+    "It prints \`${ma_strict}\`."
   ma_contexts="$(ma_rs '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context')"
   assert_equal "the ruleset requires the one check the page says" "$(grep -c . <<<"${ma_contexts}")" "1"
   while IFS= read -r ma_context; do
