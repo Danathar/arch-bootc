@@ -1,9 +1,9 @@
 ---
 name: Boot test
 
-# Boots each published flavor in a VM after every build.yml run on main and
-# checks, over SSH, that it finished booting with its network, firewall, login
-# screen and bootc working.
+# Boots each published flavor in a VM once a day, after build.yml's daily run,
+# and checks, over SSH, that it finished booting with its network, firewall,
+# login screen and bootc working.
 #
 # Every other check here reads the image as files. build.yml proves each flavor
 # builds and passes `bootc container lint`, and nightly-compliance.yml that
@@ -13,18 +13,21 @@ name: Boot test
 # It reports; it gates nothing. It runs after build.yml has already moved
 # `:latest`, so a red run here means the boot test failed against the image a
 # user would pull right now: the image, or the runner that could not boot it
-# (docs/ai-ops-runbook.md says how to tell). auto-issues.yml turns a red run
-# into an issue.
+# (docs/ai-ops-runbook.md says how to tell). auto-issues.yml turns a red
+# scheduled run into an issue.
 
 on:
-  # After build.yml finishes, not at a fixed time: a clock cannot know when a
-  # slow build has pushed, and an image pushed after the clock fired would go
-  # unbooted until the next day. build.yml runs on its own daily schedule, so
-  # this runs at least once a day.
-  workflow_run:
-    workflows: ["Build container image"]
-    types:
-      - completed
+  # On a clock, not on `workflow_run` after build.yml. A `workflow_run` start
+  # would boot every publish, pushes to main included, but it is a privileged
+  # trigger, and tests/check-invariants.sh refuses one in any workflow here
+  # (docs/quality.md, "Workflow hygiene"). The cost is that a push to main is
+  # booted the next day, with that day's build.
+  #
+  # 12:07 UTC: build.yml starts at 10:05 and its scheduled runs have finished
+  # by about 11:50 (build_push alone may take 90 minutes). This run takes at
+  # most an hour, so auto-issues.yml at 13:17 reads it after it is done.
+  schedule:
+    - cron: "7 12 * * *"
   workflow_dispatch:
     inputs:
       flavor:
@@ -45,17 +48,8 @@ concurrency:
 jobs:
   boot:
     name: Boot ${{ matrix.flavor }}
-    # Only build.yml runs that publish: pushes, schedules and dispatches on
-    # main. Its pull request runs build without pushing, so `:latest` did not
-    # move. A cancelled build was replaced by a newer one, which starts its own
-    # boot when it finishes. A failed build still boots: a flavor that failed
-    # left the previous `:latest` in place, and that is what users pull.
-    if: >-
-      github.event_name == 'workflow_dispatch'
-      || (github.event.workflow_run.head_branch == github.event.repository.default_branch
-      && github.event.workflow_run.head_repository.full_name == github.repository
-      && github.event.workflow_run.event != 'pull_request'
-      && github.event.workflow_run.conclusion != 'cancelled')
+    # Schedules run on the default branch only, so `:latest` is the image
+    # build.yml publishes from main.
     # 26.04 ships podman 5 and a QEMU and virtiofsd new enough for bcvk.
     runs-on: ubuntu-26.04
     # Each of the at most two boots is bounded at fifteen minutes by
@@ -102,6 +96,10 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
+      # bcvk v0.21.0, not the v0.19.0 the other boot tests pin: v0.19.0 needs
+      # bwrap inside the image it boots, and base has none ("bwrap (bubblewrap)
+      # is currently required in the target container image", hosted run
+      # 39136185733). v0.21.0 dropped that requirement (bootc-dev/bcvk#395).
       - name: Install the VM stack
         run: |
           set -euo pipefail
@@ -109,8 +107,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils virtiofsd skopeo
           mkdir -p "${RUNNER_TEMP}/bin"
           curl -fsSL --retry 3 -o "${RUNNER_TEMP}/bcvk.tar.gz" \
-            https://github.com/bootc-dev/bcvk/releases/download/v0.19.0/bcvk-x86_64-unknown-linux-gnu.tar.gz
-          echo "e6e3e2e8c13546d30481b035217442de78f2efe3e5a3bd3dbfb58d38345b4b98  ${RUNNER_TEMP}/bcvk.tar.gz" | sha256sum -c -
+            https://github.com/bootc-dev/bcvk/releases/download/v0.21.0/bcvk-x86_64-unknown-linux-gnu.tar.gz
+          echo "3135cc59b8971193b49be6cbaee12b789391ac6e6ab5ed3edf17082b03f144dd  ${RUNNER_TEMP}/bcvk.tar.gz" | sha256sum -c -
           tar -xzf "${RUNNER_TEMP}/bcvk.tar.gz" -C "${RUNNER_TEMP}/bin" bcvk-x86_64-unknown-linux-gnu
           mv "${RUNNER_TEMP}/bin/bcvk-x86_64-unknown-linux-gnu" "${RUNNER_TEMP}/bin/bcvk"
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"

@@ -191,16 +191,25 @@ echo "${MARKER}DONE"
 EOF
 }
 
-# One unit bcvk needs from the guest that an installed system has and an
-# ephemeral boot does not. It goes into the boot only; the image is unchanged.
+# Two units injected into the boot so bcvk can log in. They go into this boot
+# only: the image is unchanged, and nothing here reaches an installed system.
 #
-# bcvk provisions root's SSH key through a systemd credential that tmpfiles
-# writes to /root/.ssh. /root is a symlink to /var/roothome here (the
-# Containerfile's directory restructuring step), and tmpfiles reaches /root
-# before the `d /var/roothome` line that creates its target, so on a fresh /var
-# the key is never written. The unit creates the directory before tmpfiles
-# runs. atomic-image-builder, zfs-kinoite-complex and zfs-aurora-complex inject
-# the same unit for the same reason.
+# - arch-bootc-roothome.service. bcvk provisions root's SSH key through a
+#   systemd credential that tmpfiles writes to /root/.ssh. /root is a symlink to
+#   /var/roothome here (the Containerfile's directory restructuring step), and
+#   an ephemeral /var starts empty. The unit creates the directory before
+#   tmpfiles runs, so the key does not depend on the order tmpfiles applies its
+#   own `d /var/roothome` line. atomic-image-builder, zfs-kinoite-complex and
+#   zfs-aurora-complex inject the same unit.
+# - arch-bootc-root-unexpire.service. The Containerfile expires root's
+#   password on purpose (`passwd --expire root`, part of the security model in
+#   AGENTS.md), so pam_unix answers every root login, a key login included,
+#   with "expired password for user root (root enforced)" and sshd closes the
+#   session for the password change. bcvk's session is not interactive, so
+#   without this unit it never runs a command: hosted run 39136185733 booted
+#   kde and xfce to that point and timed out. The unit clears the expiry in this
+#   boot's /etc before sshd starts. It does not set or reveal a password, and
+#   does not touch the sshd and PAM settings the security model rests on.
 ROOTHOME_UNIT='[Unit]
 Description=Create /var/roothome so systemd credentials can provision /root/.ssh
 DefaultDependencies=no
@@ -215,11 +224,26 @@ ExecStart=/usr/bin/mkdir -p -m 0700 /var/roothome
 [Install]
 WantedBy=default.target'
 
+UNEXPIRE_UNIT='[Unit]
+Description=Clear root password expiry for the boot test login (this boot only)
+After=local-fs.target
+Before=sshd.service systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/chage --lastday -1 root
+
+[Install]
+WantedBy=default.target'
+
 write_units() {
-  local dir="$1"
+  local dir="$1" unit
   mkdir -p "${dir}/system/default.target.wants"
   printf '%s\n' "${ROOTHOME_UNIT}" >"${dir}/system/arch-bootc-roothome.service"
-  ln -sfn ../arch-bootc-roothome.service "${dir}/system/default.target.wants/arch-bootc-roothome.service"
+  printf '%s\n' "${UNEXPIRE_UNIT}" >"${dir}/system/arch-bootc-root-unexpire.service"
+  for unit in arch-bootc-roothome.service arch-bootc-root-unexpire.service; do
+    ln -sfn "../${unit}" "${dir}/system/default.target.wants/${unit}"
+  done
 }
 
 # The marked lines of one boot's output, with whatever preceded the marker on
