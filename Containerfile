@@ -4,7 +4,7 @@
 # copying 154MB into the image a second time to do it. Renovate tracks a `FROM`
 # with its `dockerfile` manager exactly as it tracked the `COPY --from=`
 # (docs/renovate.md, "What is tracked").
-FROM ghcr.io/ublue-os/brew:latest@sha256:5bdf54dc7c21c22db29df6550e3711788719c5123549ea6dc5645d5af47795e3 AS brew
+FROM ghcr.io/ublue-os/brew:latest@sha256:393b567da078f0f0638450c388e229011dae06f94a90017cb7525b57d9faa46e AS brew
 
 FROM docker.io/archlinux/archlinux:latest@sha256:830140f42fa7fe08b953c2bca212b68b80f64d9a97d7a52bcd0caa37735c01fa AS base-core
 
