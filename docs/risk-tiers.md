@@ -157,7 +157,7 @@ Evidence:
   relaxed.
 
 A green build proves the image **builds**. Pull request builds skip the rechunk,
-push, and sign steps, and nothing in CI boots the image.
+push, and sign steps, and nothing in CI boots a pull request's image.
 
 ## T3 — Boot, security model, provenance, or published artifacts
 
@@ -270,7 +270,8 @@ cleanup is a review failure even if the code is correct.
   the false-positive `su` result recorded in [CLAUDE.md](../CLAUDE.md) before
   trusting any in-guest security result.
 
-**T3 never merges on a green check alone.** No CI job boots the image, and the
+**T3 never merges on a green check alone.** No CI job boots a pull request's
+image (the boot test runs only after a build of `main` has published), and the
 publish, sign, and retention steps do not run on a pull request at all — so for
 both halves of T3, the signal that would catch a regression does not exist in CI
 by construction.

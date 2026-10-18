@@ -3,7 +3,8 @@ set -uo pipefail
 
 # Execute auto-issues.yml's "File or close issues for scheduled runs" step
 # against a `gh` stub that serves staged JSON, with the real jq. The step
-# decides, per watched scheduled workflow, whether to open an issue, comment on
+# decides, per watched workflow (every scheduled one, and the boot test, which
+# a build starts rather than a clock), whether to open an issue, comment on
 # the open one, close it, or do nothing; every one of those is a GitHub write,
 # and a wrong decision is either a silent red run or a flood of duplicate
 # issues. Running the body Actions executes keeps the test attached to that
@@ -166,6 +167,7 @@ chmod +x "${STUB_DIR}/gh"
 BOT="app/github-actions"
 BUILD_MARKER="<!-- auto-issues:build.yml -->"
 NIGHTLY_MARKER="<!-- auto-issues:nightly-compliance.yml -->"
+BOOT_MARKER="<!-- auto-issues:boot-test.yml -->"
 
 # An ISO 8601 UTC timestamp the given number of hours before now, the shape
 # the Actions API gives createdAt.
@@ -180,6 +182,19 @@ stage_run() {
       url: "https://example.test/actions/runs/\($id)",
       headSha: "0123456789abcdef0123456789abcdef01234567"}]' \
     >"${FIXTURES}/runs-${workflow}.json"
+}
+# Stage several completed runs of one workflow, newest first, each given as
+# id:conclusion:hours-ago -- the order `gh run list` returns them in.
+stage_runs() {
+  local workflow="$1" entry id conclusion age
+  shift
+  for entry in "$@"; do
+    IFS=: read -r id conclusion age <<<"${entry}"
+    jq -n --argjson id "${id}" --arg c "${conclusion}" --arg at "$(hours_ago "${age}")" '
+      {databaseId: $id, conclusion: $c, createdAt: $at,
+       url: "https://example.test/actions/runs/\($id)",
+       headSha: "0123456789abcdef0123456789abcdef01234567"}'
+  done | jq -s '.' >"${FIXTURES}/runs-${workflow}.json"
 }
 # One open issue of the `issue list` reply.
 issue_entry() {
@@ -225,25 +240,34 @@ stage_issues </dev/null
 run_step >/dev/null 2>&1
 assert_status "two green scheduled runs exit 0" 0 "$?"
 assert_equal "two green scheduled runs write nothing" "" "$(writes)"
-assert_equal "each workflow's newest completed scheduled run on main is what is read" \
+assert_equal "each workflow's newest completed unattended run on main is what is read" \
   "run list --repo Danathar/arch-bootc --workflow build.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha
 run list --repo Danathar/arch-bootc --workflow nightly-compliance.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha
-run list --repo Danathar/arch-bootc --workflow agent-audit.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha" \
+run list --repo Danathar/arch-bootc --workflow agent-audit.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha
+run list --repo Danathar/arch-bootc --workflow boot-test.yml --all --branch main --event workflow_run --status completed --limit 20 --json databaseId,conclusion,url,createdAt,headSha" \
   "$(grep '^run list' "${GH_LOG}")"
 
-# Every scheduled workflow but this one is read. A new scheduled workflow, or
-# one dropped from the loop, fails here instead of going red unseen.
+# Every scheduled workflow but this one is read, and the boot test, whose
+# unattended runs a build starts rather than a clock. A new scheduled workflow,
+# or one dropped from the loop, fails here instead of going red unseen.
 watched="$(sed -nE 's/^for workflow in (.*); do$/\1/p' <<<"${step_run}" | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ')"
-scheduled="$(cd -- "${REPO_ROOT}/.github/workflows" && grep -lE '^  schedule:' -- *.y*ml | grep -vx 'auto-issues.yml' | LC_ALL=C sort | tr '\n' ' ')"
-assert_equal "the step reads every scheduled workflow except auto-issues.yml" \
+scheduled="$(cd -- "${REPO_ROOT}/.github/workflows" && { grep -lE '^  schedule:' -- *.y*ml; echo boot-test.yml; } |
+  grep -vx 'auto-issues.yml' | LC_ALL=C sort -u | tr '\n' ' ')"
+assert_equal "the step reads every scheduled workflow except auto-issues.yml, and boot-test.yml" \
   "${scheduled}" "${watched}"
+# The boot test is read by its workflow_run runs because that is how it starts.
+# Given a schedule of its own, or a different trigger, the event the step asks
+# for would name runs that do not exist and nothing would ever be filed.
+check "boot-test.yml starts on workflow_run and has no schedule of its own" \
+  "$(grep -qE '^  workflow_run:' "${REPO_ROOT}/.github/workflows/boot-test.yml" &&
+    ! grep -qE '^  schedule:' "${REPO_ROOT}/.github/workflows/boot-test.yml" && echo 0 || echo 1)"
 
 # An issue tells the reader where to look: `See docs/ci-cd.md, section "X"`.
 # Each X must still be a heading there, or the pointer leads nowhere.
 pointers="$(grep -oE 'See docs/ci-cd\.md, section \\"[^\\]+\\"' <<<"${step_run}" |
   sed -E 's/.*section \\"(.*)\\"$/\1/')"
-assert_equal "the step points at a docs/ci-cd.md section for nightly-compliance.yml and agent-audit.yml" \
-  "2" "$(grep -c . <<<"${pointers}")"
+assert_equal "the step points at a docs/ci-cd.md section for nightly-compliance.yml, agent-audit.yml and boot-test.yml" \
+  "3" "$(grep -c . <<<"${pointers}")"
 while IFS= read -r section; do
   [[ -n "${section}" ]] || continue
   check "docs/ci-cd.md has the section \"${section}\" an issue points at" \
@@ -411,6 +435,57 @@ run_step >/dev/null 2>&1
 assert_equal "a newest agent audit exactly 33 days old opens a 'stopped running' issue" \
   "issue create --repo Danathar/arch-bootc --title Scheduled run of the monthly agent audit has stopped running on main --body-file" \
   "$(writes | sed -E 's/ [^ ]+$//')"
+
+# --- The boot test ------------------------------------------------------------
+#
+# Read by its workflow_run runs, newest first, passing over the runs a pull
+# request's build started: their job is skipped and they check nothing.
+reset_fixtures
+stage_runs boot-test.yml 403:skipped:1 402:skipped:2 401:failure:3 400:success:20
+stage_issues </dev/null
+output="$(run_step 2>&1)"
+assert_status "a failed boot test is reported, and the step still exits 0" 0 "$?"
+assert_equal "a failed boot test behind skipped runs opens exactly one issue, named for the boot test" \
+  "issue create --repo Danathar/arch-bootc --title Run of the boot test failed on main --body-file" \
+  "$(writes | sed -E 's/ [^ ]+$//')"
+body="$(body_of create)"
+assert_contains "the boot test issue links the failed run, not a skipped one" "${body}" \
+  "- Run: https://example.test/actions/runs/401"
+assert_contains "the boot test issue says how the run ended" "${body}" \
+  "The newest run of the boot test on \`main\` ended with \`failure\`."
+assert_contains "the boot test issue says what a red boot means, and where to read about it" "${body}" \
+  "did not boot in a VM, or booted and failed a check"
+assert_contains "the boot test issue points at its docs/ci-cd.md section" "${body}" \
+  "See docs/ci-cd.md, section \"Boot test\"."
+assert_contains "the boot test issue is closed by a later run, not a scheduled one" "${body}" \
+  "This issue is closed automatically when a later run succeeds."
+assert_contains "the boot test issue carries its own marker" "${body}" "${BOOT_MARKER}"
+assert_contains "the log names the boot test decision" "${output}" \
+  "boot-test.yml: newest completed run 401 (failure) -> failed; open issue: none"
+
+reset_fixtures
+stage_runs boot-test.yml 405:skipped:1 404:success:2
+stage_issues < <(issue_entry 46 "${BOT}" "${BOOT_MARKER}")
+run_step >/dev/null 2>&1
+assert_equal "a green boot test behind a skipped run closes its open issue" \
+  "issue close 46 --repo Danathar/arch-bootc --reason completed --comment The run of the boot test on \`main\` succeeded again: https://example.test/actions/runs/404 (started $(jq -r '.[1].createdAt' "${FIXTURES}/runs-boot-test.yml.json"), commit 0123456789abcdef0123456789abcdef01234567). Closing; a new issue is opened if it fails again." \
+  "$(writes)"
+
+reset_fixtures
+stage_runs boot-test.yml 406:skipped:1 407:skipped:2
+stage_issues < <(issue_entry 47 "${BOT}" "${BOOT_MARKER}")
+run_step >/dev/null 2>&1
+assert_equal "only skipped boot test runs neither comment nor close" "" "$(writes)"
+
+reset_fixtures
+stage_runs boot-test.yml 408:success:49
+stage_issues </dev/null
+run_step >/dev/null 2>&1
+assert_equal "a newest boot test older than 48 hours opens a 'stopped running' issue" \
+  "issue create --repo Danathar/arch-bootc --title Run of the boot test has stopped running on main --body-file" \
+  "$(writes | sed -E 's/ [^ ]+$//')"
+assert_contains "the stopped boot test issue says what starts it" "$(body_of create)" \
+  "more than 48 hours ago. It runs after every daily build, so the schedule has stopped"
 
 # --- No scheduled run at all, and an API failure ------------------------------
 reset_fixtures

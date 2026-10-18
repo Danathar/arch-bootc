@@ -383,6 +383,12 @@ to reintroduce:
 The job runs with `GH_TOKEN` set so zizmor's online audits are active; without it zizmor
 silently drops to offline mode and checks less than it looks like it does.
 
+One finding is suppressed, in place and with its reason: `dangerous-triggers` on
+`boot-test.yml`'s `on:` line. That workflow has to start on `workflow_run`, after a build has
+published; the file explains why the trigger is safe there, and `tests/check-invariants.sh`
+holds the conditions that make it so ([Boot test](#boot-test)). Any other finding is fixed in
+the workflow, not suppressed.
+
 To reproduce locally before pushing:
 
 ```bash
@@ -700,6 +706,80 @@ the step every listed path plus a set of look-alikes. The stub makes the test
 deterministic and network-free; the first scheduled run is the check against
 the live API.
 
+## Boot test
+
+`.github/workflows/boot-test.yml` boots each published flavor in a VM and
+checks that it came up. Every other check here reads the image as files: the
+build proves each flavor builds and passes `bootc container lint`, and the
+nightly `signatures` job proves `:latest` is signed. Neither starts the image,
+so before this a flavor that no longer booted, or booted without networking or
+a login screen, stayed at `:latest` until a machine running it rebooted into it.
+
+It runs after each run of `Build container image` on `main` that was not
+cancelled (`workflow_run`), including the daily scheduled build, and on
+`workflow_dispatch` for one flavor. Builds of pull request branches start it
+too, and its job's `if:` skips them. One job per flavor (`base`, `kde`,
+`xfce`), with `fail-fast: false`, each on `ubuntu-26.04`:
+
+1. **Host setup.** bcvk's own CI host setup from `bootc-dev/actions`, cloned at
+   a pinned commit (without it virtiofsd exits before any VM starts on this
+   runner image), then KVM for the runner user, then QEMU, virtiofsd and
+   skopeo from the Ubuntu archive and the bcvk v0.19.0 release binary, checked
+   against a sha256 written in the workflow. Container storage moves to `/mnt`
+   when that is the larger disk.
+2. **Boot.** `scripts/boot-test.sh` resolves the flavor's `:latest` to a digest
+   once, pulls that digest, and boots it with `bcvk ephemeral run-ssh`: the
+   image becomes the VM's root, with no disk of its own, and bcvk logs in as
+   root with a key it provisions for that boot. The script hands the guest a
+   check script on a read-only mount, and the guest prints one marked line per
+   result.
+3. **Checks.** Boot finished (`systemctl is-system-running` is `running` or
+   `degraded`); `NetworkManager` and `firewalld` are active;
+   `display-manager.service` is active on `kde` and `xfce` (plasmalogin and
+   lightdm, each aliased to it; `base` has none); `bootc --version` runs.
+4. **Summary.** The run summary names the image, the digest it booted and that
+   image's `org.opencontainers.image.revision`, so a reader can check it is the
+   commit they expect, then one row per check. The logs (`result.json`, the
+   check script, bcvk's output, the guest's journal and console) are uploaded
+   as an artifact for 30 days.
+
+Two rules keep a red run meaning something about the image. A boot is retried
+once, and only when the guest reported no check at all: that absorbs a nested
+VM missing bcvk's SSH deadline on a slow runner. Once any check has reported,
+the VM booted and logged in, and that boot is the answer. Units that failed in
+the guest are listed, not judged: several fail on every ephemeral boot for
+reasons that are the VM's (no ESP, no disk for bootupd), and the checks already
+name the services that matter.
+
+It reports; it gates nothing. It runs after `build.yml` has already moved
+`:latest`, so a red run means the image a user would pull right now failed a
+check, or the runner could not boot it. The VM has no disk, so nothing is
+installed, and nothing is upgraded. The job's token is `contents: read`,
+written down in `.github/policies/workflow-permissions.json`; it reads no
+secret. `workflow_run` is a trigger `tests/check-invariants.sh` otherwise
+refuses, and the exception for this file holds only while the checkout names
+no `ref:`, nothing reads the triggering run's head or artifacts, and no step
+writes `GITHUB_ENV` or `GITHUB_PATH`. [Auto issues](#auto-issues-for-failed-scheduled-runs)
+turns a red run into an issue.
+
+Boot one flavor by hand from the Actions tab, or run the script on a machine
+with KVM, podman and bcvk:
+
+```bash
+./scripts/boot-test.sh --flavor kde --image ghcr.io/danathar/arch-bootc-kde:latest
+```
+
+The bcvk version and its sha256, and the `bootc-dev/actions` commit, are edited
+by hand; Renovate does not track them.
+
+`tests/test-boot-test.sh` runs the script against stubbed `skopeo`, `podman` and
+`bcvk`. The `bcvk` stub runs the check script the guest would get, on the host,
+with `systemctl` and `bootc` stubbed and the carriage returns a terminal adds.
+It covers a passing boot per flavor, a degraded boot with failed units, each
+failed service, an unsettled boot, a check that never reported, the retry
+rule both ways, a timeout, a registry port, the setup errors, and the
+workflow's flavor list against `build.yml`'s.
+
 ## Auto issues for failed scheduled runs
 
 `.github/workflows/auto-issues.yml` turns a red scheduled run into an issue.
@@ -711,10 +791,14 @@ daily workflows have finished, and on `workflow_dispatch`.
 It reads every scheduled workflow except itself, each on its own: `build.yml`,
 `nightly-compliance.yml` and `agent-audit.yml`. The audit is included because
 its findings fail its run on purpose ([Agent audit trail](#agent-audit-trail)),
-and a failed monthly run nobody opens is a finding nobody reads.
+and a failed monthly run nobody opens is a finding nobody reads. It also reads
+`boot-test.yml` ([Boot test](#boot-test)), which has no schedule: a build of
+`main` starts it, so its `workflow_run` runs are its unattended ones, and the
+skipped runs a pull request's build starts are passed over.
 `tests/test-auto-issues.sh` fails when a scheduled workflow is added and not
 read here. For each, it takes the newest **completed** **scheduled** run on
-`main` and decides:
+`main` (for the boot test, the newest completed `workflow_run` run that was not
+skipped) and decides:
 
 | Newest run | What the job does |
 | --- | --- |

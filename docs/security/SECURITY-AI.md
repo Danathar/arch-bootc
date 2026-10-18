@@ -667,11 +667,22 @@ by reviewed pull request rather than silently:
 | chunkah container | Version tag **and** digest | Renovate custom manager |
 | ShellCheck container | Version tag | Renovate custom manager |
 | cosign CLI, zizmor | Version string | Renovate custom managers |
+| Boot test tools: `bcvk` release binary, `bootc-dev/actions` host setup | sha256 of the release tarball; commit SHA | By hand (see below) |
 
 Adding a new dependency of any kind — an action, a container image, a package
 source, a tool invoked in CI — means pinning it the same way and adding Renovate
 tracking in the same change. An unpinned or untracked dependency of one of those
 kinds is a change to the trust model, not a convenience.
+
+**The boot test's tools are pinned but not tracked, on purpose.**
+`.github/workflows/boot-test.yml` downloads bcvk v0.19.0 and checks it against a
+sha256 written in the workflow, and clones `bootc-dev/actions` at a fixed commit
+for bcvk's host setup. Renovate could move the version, but not the sha256 that
+has to move with it, and the boot test does not run on a pull request, so a
+bump that merged green would first fail after merge. Both are edited by hand,
+version and checksum together. QEMU, virtiofsd and skopeo come from the
+runner's Ubuntu archive, unpinned, like the runner image itself. None of these
+reaches the published image: the boot test only reads it.
 
 **Arch packages are the deliberate exception, and it is a large one.**
 `packages-base.txt`, `packages-kde.txt`, and `packages-xfce.txt` carry no

@@ -1531,10 +1531,35 @@ persist_false="$(grep -c 'persist-credentials: false' "${workflows[@]}" 2>/dev/n
 assert_equal "every actions/checkout sets persist-credentials: false" \
   "${persist_false}" "${checkout_steps}"
 
+# One exception, by name: boot-test.yml starts on `workflow_run` because it has
+# to run after a build has published, whenever that is. What makes the trigger
+# privileged is a token with write scopes running code or text a pull request
+# chose. So the exception holds only while none of that is there: the token is
+# read-only (the permissions group below holds it to the policy), the checkout
+# names no `ref:`, so it is the default branch, nothing reads the triggering
+# run's head or artifacts, no secret is read, and no step writes GITHUB_ENV or
+# GITHUB_PATH, which would carry text into every later step.
+BOOT_TEST_WORKFLOW=".github/workflows/boot-test.yml"
 for workflow in "${workflows[@]}"; do
+  if [[ "${workflow}" == "${BOOT_TEST_WORKFLOW}" ]]; then
+    assert_absent "${workflow} does not use pull_request_target" \
+      "${workflow}" '^[[:space:]]*pull_request_target:'
+    continue
+  fi
   assert_absent "${workflow} does not use a privileged trigger" \
     "${workflow}" '^[[:space:]]*(pull_request_target|workflow_run):'
 done
+if [[ -f "${BOOT_TEST_WORKFLOW}" ]]; then
+  assert_absent "${BOOT_TEST_WORKFLOW} checks out the default branch, not a ref it was handed" \
+    "${BOOT_TEST_WORKFLOW}" '^[[:space:]]+ref:'
+  assert_absent "${BOOT_TEST_WORKFLOW} reads nothing a pull request chose from the run that started it" \
+    "${BOOT_TEST_WORKFLOW}" 'workflow_run\.(head_sha|head_commit|display_title|pull_requests|artifacts_url)|download-artifact'
+  assert_absent "${BOOT_TEST_WORKFLOW} reads no secret" "${BOOT_TEST_WORKFLOW}" 'secrets\.'
+  assert_absent "${BOOT_TEST_WORKFLOW} writes neither GITHUB_ENV nor GITHUB_PATH" \
+    "${BOOT_TEST_WORKFLOW}" 'GITHUB_(ENV|PATH)'
+  assert_equal "${BOOT_TEST_WORKFLOW}'s token can only read" \
+    "$(jq -c '.workflows["boot-test.yml"].jobs | [.[] | to_entries[] | select(.value != "read")] | length' "${WORKFLOW_POLICY:-.github/policies/workflow-permissions.json}" 2>/dev/null)" "0"
+fi
 
 # Without an explicit cap a hung job runs until GitHub's 360-minute default
 # kills it, holding the workflow's concurrency group for most of a day.
@@ -7256,20 +7281,41 @@ fi
 # next, and the half that goes stale silently: closing a gap does not fail
 # anything, so the sentence describing it survives the work that ended it.
 
-# "No CI job boots the image." Every other claim in this document is about
-# something that exists; this one is about something that must not.
-quality_boot_hits=""
+# "No CI job boots a pull request's image", and none installs one. Every other
+# claim in this document is about something that exists; these are about
+# something that must not. boot-test.yml boots the published images after a
+# build of main, so a VM in a workflow no pull request starts is allowed, and
+# the document has to stop saying no CI job boots the image at all.
+quality_install_hits=""
+quality_pr_boot_hits=""
+quality_any_boot=0
 for quality_workflow in "${quality_workflows[@]+"${quality_workflows[@]}"}"; do
+  quality_on_pr=0
+  grep -qxF 'pull_request' <<<"$(cicd_triggers "${quality_workflow}" | tr ' ' '\n')" && quality_on_pr=1
   while IFS= read -r quality_hit; do
-    quality_boot_hits+="${quality_workflow}:${quality_hit} "
-  done < <(grep -nE 'virt-install|qemu-system|bootc install' "${quality_workflow}" | grep -v '^[0-9]*:[[:space:]]*#')
+    quality_install_hits+="${quality_workflow}:${quality_hit} "
+  done < <(grep -nE 'virt-install|bootc install' "${quality_workflow}" | grep -v '^[0-9]*:[[:space:]]*#')
+  while IFS= read -r quality_hit; do
+    quality_any_boot=1
+    ((quality_on_pr)) && quality_pr_boot_hits+="${quality_workflow}:${quality_hit} "
+  done < <(grep -nE 'qemu-system|bcvk' "${quality_workflow}" | grep -v '^[0-9]*:[[:space:]]*#')
 done
-if [[ -z "${quality_boot_hits}" ]]; then
-  pass "no CI job boots or installs the image, as the gaps section says"
+if [[ -z "${quality_install_hits}" ]]; then
+  pass "no CI job installs the image, as the gaps section says"
 else
-  fail "no CI job boots or installs the image, as the gaps section says" \
-    "the largest stated gap has been closed and the document still calls it open: ${quality_boot_hits}"
+  fail "no CI job installs the image, as the gaps section says" \
+    "a stated gap has been closed and the document still calls it open: ${quality_install_hits}"
 fi
+if [[ -z "${quality_pr_boot_hits}" ]]; then
+  pass "no CI job boots a pull request's image, as the gaps section says"
+else
+  fail "no CI job boots a pull request's image, as the gaps section says" \
+    "the largest stated gap has been closed and the document still calls it open: ${quality_pr_boot_hits}"
+fi
+quality_doc_says_none=0
+grep -qF 'No CI job boots the image.' "${QUALITY_DOC}" && quality_doc_says_none=1
+assert_equal "the document says no CI job boots the image exactly when none does" \
+  "${quality_doc_says_none}" "$((1 - quality_any_boot))"
 
 # "PR builds additionally skip the rechunk, push, sign, signature-verify and
 # move-`latest` steps, so a green PR check exercises less than a push to `main`
@@ -11053,12 +11099,20 @@ else
 
   # Active workflow lines that boot an image or upgrade a deployment. Comments
   # are dropped first: a rationale comment naming virt-install is not a job.
+  # The first box asks for a boot on every pull request, so the hits that can
+  # tick it are the ones in a workflow a pull request starts. boot-test.yml
+  # boots after a build of main has published, which is a boot in CI (the
+  # prose below has to say so) but not that box.
   status_boot_hits=""
+  status_pr_boot_hits=""
   status_upgrade_hits=""
   for status_wf in .github/workflows/*.yml .github/workflows/*.yaml; do
     [[ -f "${status_wf}" ]] || continue
+    status_wf_on_pr=0
+    grep -qxF 'pull_request' <<<"$(cicd_triggers "${status_wf}" | tr ' ' '\n')" && status_wf_on_pr=1
     while IFS= read -r status_hit; do
       status_boot_hits+="${status_wf}:${status_hit} "
+      ((status_wf_on_pr)) && status_pr_boot_hits+="${status_wf}:${status_hit} "
     done < <(grep -nE -- 'qemu-system|virt-install|virsh[[:space:]]|systemd-vmspawn|bcvk' "${status_wf}" |
       grep -v '^[0-9]*:[[:space:]]*#')
     while IFS= read -r status_hit; do
@@ -11086,12 +11140,24 @@ else
   status_boot_box="$(status_box_state 'CI boots the built image')"
   status_upgrade_box="$(status_box_state 'CI upgrades a system deployed from the previous')"
 
-  if [[ -z "${status_boot_hits}" ]]; then
-    assert_equal "${STATUS_DOC}'s 'CI boots the built image' criterion is open while no workflow boots a VM" \
+  if [[ -z "${status_pr_boot_hits}" ]]; then
+    assert_equal "${STATUS_DOC}'s 'CI boots the built image' criterion is open while no pull request workflow boots a VM" \
       "${status_boot_box}" "open"
   else
-    fail "${STATUS_DOC}'s 'CI boots the built image' criterion is open while no workflow boots a VM" \
-      "a workflow now boots a VM (${status_boot_hits}); update the Project status section and tick the box"
+    fail "${STATUS_DOC}'s 'CI boots the built image' criterion is open while no pull request workflow boots a VM" \
+      "a workflow pull requests start now boots a VM (${status_pr_boot_hits}); update the Project status section and tick the box"
+  fi
+  # A boot after the build of main is real and the section has to say so, and
+  # has to say it blocks nothing, or a reader takes it for the first box.
+  status_flat_boot="$(tr '\n' ' ' <<<"${status_section}" | tr -s ' ')"
+  if [[ -n "${status_boot_hits}" ]]; then
+    if [[ "${status_flat_boot}" == *"After each build of \`main\`, CI boots every flavor's new \`:latest\` in a VM"* &&
+      "${status_flat_boot}" == *"blocks nothing"* ]]; then
+      pass "${STATUS_DOC} says CI boots each published image after the build of main, and that it blocks nothing"
+    else
+      fail "${STATUS_DOC} says CI boots each published image after the build of main, and that it blocks nothing" \
+        "a workflow boots a VM (${status_boot_hits}) and the Project status section does not say what it covers"
+    fi
   fi
   if [[ -z "${status_upgrade_hits}" ]]; then
     assert_equal "${STATUS_DOC}'s upgrade criterion is open while no workflow runs bootc upgrade or switch" \

@@ -49,6 +49,7 @@ the daily scheduled build and a manual dispatch also build, publish and sign
 | `.github/workflows/ai-fix.yml` | `AI fix work order` | An issue or PR labelled, manual | [Work order](#githubworkflowsai-fixyml) |
 | `.github/workflows/agent-audit.yml` | `Agent audit trail` | Monthly on the 1st, 05:23 UTC, manual | [Agent audit](#githubworkflowsagent-audityml) |
 | `.github/workflows/auto-issues.yml` | `File issues for failed scheduled runs` | Daily 13:17 UTC, manual | [Auto issues](#githubworkflowsauto-issuesyml) |
+| `.github/workflows/boot-test.yml` | `Boot test` | After each `Build container image` run on `main`, manual | [Boot test](#githubworkflowsboot-testyml) |
 
 What each signal proves, and what it cannot see, is in
 [quality.md](quality.md#the-dashboard). Read that before deciding a green check
@@ -130,7 +131,8 @@ or a push to `main` changes `.github/workflows/**`. zizmor is pinned
 (`ZIZMOR_VERSION`) so a new release cannot turn `main` red by itself; a red run
 is therefore a finding in a workflow change, or a Renovate bump of the pin whose
 own run caught a new audit. Fix the finding in the workflow. Do not add an
-ignore to quiet it, and do not widen `permissions:` to get past it
+ignore to quiet it (the one in `boot-test.yml` is for its trigger, and the file
+says why), and do not widen `permissions:` to get past it
 ([SECURITY-AI.md](security/SECURITY-AI.md#ci-is-an-execution-boundary)). Detail:
 [ci-cd.md](ci-cd.md#workflow-linting-zizmor).
 
@@ -186,7 +188,8 @@ place to look first, not a failure. Detail:
 `File issues for failed scheduled runs`, one job (`file-issues`), one step
 (`File or close issues for scheduled runs`). It reads the newest completed
 scheduled run of `build.yml`, `nightly-compliance.yml` and `agent-audit.yml` on
-`main`. A failed, timed-out or never-started run, or one older than 48 hours
+`main`, and the newest completed run of `boot-test.yml` that a build of `main`
+started and that was not skipped. A failed, timed-out or never-started run, or one older than 48 hours
 (33 days for the monthly audit), opens an issue titled `Scheduled run of ... failed on main` or
 `... has stopped running on main`, or comments on the one already open. A
 later successful run closes it. The issue is a pointer, not a diagnosis: go to
@@ -194,6 +197,28 @@ the section for the workflow it names. A cancelled run is ignored. It writes
 issues only, and only ones it opened itself. If it is red, the step's log names
 the API call that failed; that is a token or permission error, not a finding.
 Detail: [ci-cd.md](ci-cd.md#auto-issues-for-failed-scheduled-runs).
+
+## `.github/workflows/boot-test.yml`
+
+`Boot test`, a `boot` job per flavor with `fail-fast: false`. It starts after
+each `Build container image` run on `main` that was not cancelled, and boots
+that flavor's `:latest` by digest in a VM with `bcvk`
+([ci-cd.md](ci-cd.md#boot-test)). It reports and blocks nothing: by the time it
+runs, `:latest` has already moved, so red means the image users pull right now
+failed, or the runner could not boot it. Read the run summary first. It names
+the digest booted and its revision, and has a row per check.
+
+| Red in | Means | First thing to do |
+| --- | --- | --- |
+| A host setup step, before `Boot the image and run the checks` | The runner, not the image: the pinned `bootc-dev/actions` setup, KVM, the Ubuntu packages, or the bcvk download or its sha256 | Read the step's log. A changed runner image or a moved download is the usual cause. Do not drop the sha256 check to get past it |
+| `Boot the image and run the checks`, summary says the VM never reached the end of the checks | No SSH after two boots, or the checks hung | Read `bcvk.log` and the console log in the run's artifact. A boot that never started its kernel is the runner; one that panicked or stopped in the journal is the image |
+| `Boot the image and run the checks`, a check row says `fail` | The image booted and logged in, and that check failed | The row's detail is the guest's own answer. Check the revision is the commit you expect, then suspect the last change to that service or to the `Containerfile`'s enablement links. Failed units are listed, not judged |
+| `Boot the image and run the checks`, exit 2 | `scripts/boot-test.sh` could not resolve or pull the image | Check the build that started it published `:latest` for that flavor |
+
+Do not re-run it to get a green: a re-run boots the same digest and is an
+Actions write. A boot that reported a check is never retried, on purpose, so a
+red that a second boot would have turned green is still a real red. The tests
+for the script are `tests/test-boot-test.sh`.
 
 ## A scheduled run is missing
 

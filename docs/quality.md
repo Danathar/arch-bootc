@@ -20,6 +20,7 @@ produced:
 | Repository invariants | `Assert repository invariants` step, build workflow; `invariants` job, nightly workflow | Same as the tests, plus nightly |
 | bootc tag still resolves to its pinned commit | `bootc-pin` job, nightly workflow | Nightly |
 | Published image signature verifies against `cosign.pub` | `signatures` job, nightly workflow | Nightly, per flavor |
+| Published `:latest` boots in a VM: boot finishes, NetworkManager and firewalld run, the display manager runs (desktops), `bootc` runs | `Boot test` workflow | After each build of `main`, per flavor; on demand |
 | Dependency freshness | Renovate PRs | Continuously |
 | Thread-aware review state | `./scripts/pr-review-state.sh` | On demand; embedded in the `ai-fix-requested` work order |
 | Agent pull requests leave their record (signature line, sign-off) | `Audit merged agent pull requests` step, `Agent audit trail` workflow | Monthly; on demand |
@@ -138,12 +139,28 @@ therefore carries real signal beyond "the syntax parsed."
 
 It proves the image **builds**. It does not prove it boots, that first boot
 succeeds, that logins behave, or that `bootc upgrade` works from a previously
-deployed version. No CI job boots the image. PR builds additionally skip the
+deployed version. No CI job boots a pull request's image. PR builds additionally skip the
 rechunk, push, sign, signature-verify and move-`latest` steps, so a green PR
 check exercises less than a push to `main` does.
 
-Booting is covered by the manual VM procedure in [CLAUDE.md](../CLAUDE.md),
-which is the only routine way these paths get exercised.
+**The boot test.** After each build of `main`, `.github/workflows/boot-test.yml`
+boots every flavor's `:latest` in a VM with `bcvk` and checks, over SSH, that
+boot finished (`running` or `degraded`), that NetworkManager and firewalld are
+active, that the display manager is active on `kde` and `xfce`, and that
+`bootc --version` runs. Its summary names the digest it booted and that
+image's `org.opencontainers.image.revision`. It proves the image a user would
+pull right now boots with a network, a firewall and a login screen. It does not
+prove a pull request's image boots: it runs after `:latest` has moved and
+blocks nothing. It does not prove an install to disk works, since the VM's root
+is the image itself, and it does not log in at the login screen or upgrade
+anything. `tests/test-boot-test.sh` runs `scripts/boot-test.sh` against a
+stubbed `bcvk` that executes the guest's check script on the host, so the
+reading of results, the retry rule and the summary are tested without a VM.
+Details: [ci-cd.md](ci-cd.md#boot-test).
+
+Booting an installed disk, logging in and upgrading are covered by the manual
+VM procedure in [CLAUDE.md](../CLAUDE.md), which is the only routine way those
+paths get exercised.
 
 **The bare-metal guard tests.** `tests/test-quickstart-baremetal.sh` covers the
 four functions in `scripts/quickstart.sh` whose only job is to refuse an install
@@ -328,9 +345,12 @@ rather than a default worth imposing: `permissions.defaultMode`, and
 
 Stated plainly so nobody mistakes silence for coverage:
 
-- **No boot or upgrade test in CI.** The largest gap. First-boot behavior,
-  service startup, login paths, and `bootc upgrade` from a deployed system are
-  verified only by the manual VM procedure in [CLAUDE.md](../CLAUDE.md).
+- **No pre-merge boot test, and no upgrade test, in CI.** The largest gap.
+  The boot test runs only after a build of `main` has already moved `:latest`,
+  and blocks nothing, so a change that stops the image booting merges green and
+  reaches `:latest` before anything notices. Booting from an installed disk,
+  login paths, and `bootc upgrade` from a deployed system are verified only by
+  the manual VM procedure in [CLAUDE.md](../CLAUDE.md).
 - **Coverage floors are line-based, not branch-based**, and bash-version
   sensitive as described above.
 - **`flow_baremetal`'s orchestration is exercised in dry-run only.** The four
@@ -400,7 +420,7 @@ Stated plainly so nobody mistakes silence for coverage:
   that with the variable set and with `--owner` given alongside it, so the guard
   cannot be satisfied by a script that stopped reading the environment and the
   flag's precedence over it stays pinned.
-- **Most workflow `run:` bodies are executed by tests; six are not.**
+- **Most workflow `run:` bodies are executed by tests; ten are not.**
   Shell inside a workflow is shipped code that nothing else executes: the shell
   suite runs scripts, and CI runs the workflow only against real
   infrastructure, where a wrong argument shows up as a job that failed for a
@@ -441,7 +461,10 @@ Stated plainly so nobody mistakes silence for coverage:
   the review-state section appears for a pull request and not for an issue.
   No test lifts these bodies at all: `ShellCheck`, `Free runner disk space`,
   `Prune buildah build cache`, `Assert repository invariants` (in both the
-  build and the nightly workflow) and `Run zizmor`.
+  build and the nightly workflow), `Run zizmor`, and the boot test's four host
+  setup steps, `Prepare the host the way bcvk's CI does`,
+  `Give the runner user KVM`, `Install the VM stack` and
+  `Put container storage on the larger disk`, which need the runner itself.
   One more, `Run shell tests and enforce coverage floors`, is read for its
   `env:` block but never executed — it is the step that runs the suite, so
   running it here would run the suite inside itself.

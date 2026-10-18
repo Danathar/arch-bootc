@@ -90,12 +90,16 @@ and leave to update unattended. Try it in a VM or on hardware you can wipe.
 
 What beta means here:
 
-- **CI proves the image builds, not that it boots.** Every pull request that
-  changes more than documentation builds the image, and every pull request runs
-  the shell suite and a quickstart dry run. Nothing in CI
-  boots the result, runs first boot, or upgrades a deployed system to the new
-  image. Those are checked by hand. [Quality signals](docs/quality.md#where-the-gaps-are)
-  lists every gap.
+- **CI proves a pull request's image builds, not that it boots.** Every pull
+  request that changes more than documentation builds the image, and every pull
+  request runs the shell suite and a quickstart dry run. After each build of
+  `main`, CI boots every flavor's new `:latest` in a VM and checks that it
+  comes up with networking, a firewall and, on the desktops, a login screen
+  ([Boot test](docs/ci-cd.md#boot-test)). That runs after the image is
+  published and blocks nothing, so a change that stops the image booting is
+  caught after it merges, not before. Nothing in CI installs the image to a
+  disk or upgrades a deployed system to it. Those are checked by hand.
+  [Quality signals](docs/quality.md#where-the-gaps-are) lists every gap.
 - **No release tag is kept for good.** Installs follow `:latest`, so every
   merge to `main` reaches every system on its next upgrade. Each publish also
   pushes a dated tag, `YYYYMMDD`, but old images are pruned, so a date stays
