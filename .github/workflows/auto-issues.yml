@@ -3,8 +3,9 @@ name: File issues for failed scheduled runs
 on:
   schedule:
     # build.yml starts at 10:05 UTC and its scheduled runs have finished by
-    # about 11:50 (build_push alone may take 90 minutes); nightly-compliance.yml
-    # starts at 05:40 and takes minutes. 13:17 reads both after they are done.
+    # about 11:50 (build_push alone may take 90 minutes); boot-test.yml starts
+    # at 12:07 and takes at most an hour; nightly-compliance.yml starts at 05:40
+    # and takes minutes. 13:17 reads all three after they are done.
     - cron: "17 13 * * *"
   workflow_dispatch:
 
@@ -21,8 +22,9 @@ concurrency:
 # no updates that day; when nightly-compliance.yml fails, one of its checks
 # (repository invariants, the bootc pin, published signatures) stopped
 # holding; when agent-audit.yml's monthly run fails, an agent pull request
-# merged without its signature line or a sign-off. Each can fail with no
-# commit at all, so no pull request is there to catch it.
+# merged without its signature line or a sign-off; when boot-test.yml fails, a
+# published flavor did not boot, or booted with a check failing. Each can fail
+# with no commit at all, so no pull request is there to catch it.
 #
 # Per watched workflow, read the newest *completed* scheduled run on main:
 #
@@ -67,7 +69,7 @@ jobs:
           bot="app/github-actions"
           now="$(date -u +%s)"
 
-          for workflow in build.yml nightly-compliance.yml agent-audit.yml; do
+          for workflow in build.yml nightly-compliance.yml agent-audit.yml boot-test.yml; do
             cadence="daily"
             max_age_hours=48
             max_age_text="48 hours"
@@ -88,6 +90,10 @@ jobs:
                 cadence="monthly"
                 max_age_hours=$((33 * 24))
                 max_age_text="33 days"
+                ;;
+              boot-test.yml)
+                what="the boot test"
+                impact="A published flavor did not boot in a VM, or booted with a check failing; that is the image users pull now. The run summary names the flavor and the check. See docs/ci-cd.md, section \"Boot test\"."
                 ;;
             esac
             marker="<!-- auto-issues:${workflow} -->"

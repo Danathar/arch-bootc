@@ -228,7 +228,8 @@ assert_equal "two green scheduled runs write nothing" "" "$(writes)"
 assert_equal "each workflow's newest completed scheduled run on main is what is read" \
   "run list --repo Danathar/arch-bootc --workflow build.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha
 run list --repo Danathar/arch-bootc --workflow nightly-compliance.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha
-run list --repo Danathar/arch-bootc --workflow agent-audit.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha" \
+run list --repo Danathar/arch-bootc --workflow agent-audit.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha
+run list --repo Danathar/arch-bootc --workflow boot-test.yml --all --branch main --event schedule --status completed --limit 1 --json databaseId,conclusion,url,createdAt,headSha" \
   "$(grep '^run list' "${GH_LOG}")"
 
 # Every scheduled workflow but this one is read. A new scheduled workflow, or
@@ -242,8 +243,8 @@ assert_equal "the step reads every scheduled workflow except auto-issues.yml" \
 # Each X must still be a heading there, or the pointer leads nowhere.
 pointers="$(grep -oE 'See docs/ci-cd\.md, section \\"[^\\]+\\"' <<<"${step_run}" |
   sed -E 's/.*section \\"(.*)\\"$/\1/')"
-assert_equal "the step points at a docs/ci-cd.md section for nightly-compliance.yml and agent-audit.yml" \
-  "2" "$(grep -c . <<<"${pointers}")"
+assert_equal "the step points at a docs/ci-cd.md section for nightly-compliance.yml, agent-audit.yml and boot-test.yml" \
+  "3" "$(grep -c . <<<"${pointers}")"
 while IFS= read -r section; do
   [[ -n "${section}" ]] || continue
   check "docs/ci-cd.md has the section \"${section}\" an issue points at" \
@@ -411,6 +412,17 @@ run_step >/dev/null 2>&1
 assert_equal "a newest agent audit exactly 33 days old opens a 'stopped running' issue" \
   "issue create --repo Danathar/arch-bootc --title Scheduled run of the monthly agent audit has stopped running on main --body-file" \
   "$(writes | sed -E 's/ [^ ]+$//')"
+
+# --- A failed boot test opens one issue that says what failed ----------------
+reset_fixtures
+stage_run boot-test.yml 401 failure 2
+stage_issues </dev/null
+run_step >/dev/null 2>&1
+assert_equal "a failed boot test opens exactly one issue, named for the boot test" \
+  "issue create --repo Danathar/arch-bootc --title Scheduled run of the boot test failed on main --body-file" \
+  "$(writes | sed -E 's/ [^ ]+$//')"
+assert_contains "the issue says what a failed boot test means, and where to read about it" "$(body_of create)" \
+  "A published flavor did not boot in a VM, or booted with a check failing; that is the image users pull now. The run summary names the flavor and the check. See docs/ci-cd.md, section \"Boot test\"."
 
 # --- No scheduled run at all, and an API failure ------------------------------
 reset_fixtures
