@@ -44,7 +44,7 @@ Boot a published arch-bootc image in a throwaway VM with bcvk and check it.
   --work DIR       Where logs, the check script and result.json go.
                    Defaults to ./boot-test.
 
-Needs skopeo, podman, bcvk, jq, timeout, and /dev/kvm.
+Needs skopeo, podman, bcvk, jq, base64, timeout, and /dev/kvm.
 
 Exit status: 0 passed, 1 the boot or a check failed, 2 usage or setup error.
 USAGE
@@ -69,8 +69,6 @@ BOOT_TIMEOUT_SECONDS=$((15 * 60))
 # booted and logged in, and that boot is the answer: a failed check that a
 # later hang cut off before DONE must not be replaced by a second boot.
 BOOT_ATTEMPTS=2
-# bcvk mounts a --ro-bind directory at /run/virtiofs-mnt-<name> in the guest.
-GUEST_SCRIPT_MOUNT="arch-bootc-checks"
 LOG_TAIL_LINES=40
 PULL_RETRIES=3
 
@@ -156,7 +154,7 @@ case "${flavor}" in
 esac
 checks+=("bootc:version|bootc --version")
 
-for tool in skopeo podman bcvk jq timeout; do
+for tool in skopeo podman bcvk jq base64 timeout; do
   if ! command -v "${tool}" >/dev/null 2>&1; then
     printf 'error: %s is required\n' "${tool}" >&2
     exit 2
@@ -343,10 +341,15 @@ if ! podman pull --quiet --retry "${PULL_RETRIES}" "${pinned}"; then
 fi
 
 write_units "${work}/units"
-# The script travels as a file on a read-only virtiofs mount rather than inside
-# the SSH command line, so what the guest ran is in the artifact.
+# The script travels inside the SSH command line, base64-encoded so no shell
+# quoting can change it, not on a --ro-bind virtiofs share: bcvk mounts a share
+# with an SELinux `context=` option, and this image's kernel refuses it
+# ("virtiofs: Unknown parameter 'context'", hosted run 39145575748), so the
+# guest never saw the file. The same script is kept in the work directory, so
+# what the guest ran is in the artifact.
 mkdir -p "${work}/checks"
 guest_script >"${work}/checks/checks.sh"
+guest_command="echo $(base64 -w0 <"${work}/checks/checks.sh") | base64 -d | bash"
 
 report=""
 log=""
@@ -365,13 +368,12 @@ for ((attempt = 1; attempt <= BOOT_ATTEMPTS; attempt++)); do
     --memory "${VM_MEMORY}"
     --vcpus "${VM_VCPUS}"
     --systemd-units "${work}/units"
-    --ro-bind "${work}/checks:${GUEST_SCRIPT_MOUNT}"
     --log-dir "journal,console=${log_dir}/"
     "${pinned}"
     --
-    "bash /run/virtiofs-mnt-${GUEST_SCRIPT_MOUNT}/checks.sh"
+    "${guest_command}"
   )
-  printf '+ %s\n' "${command[*]}"
+  printf '+ %s <checks/checks.sh, base64-encoded>\n' "${command[*]:0:${#command[@]}-1}"
   status=0
   timeout --kill-after=30 "${BOOT_TIMEOUT_SECONDS}" "${command[@]}" >"${log}" 2>&1 </dev/null || status=$?
   if ((status == 124)); then

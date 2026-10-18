@@ -102,8 +102,9 @@ if [[ "$1" == "pull" && -n "${PODMAN_PULL_FAIL:-}" ]]; then
 fi
 STUB
 
-# bcvk: record the call, then either run the guest script the way the guest
-# would (bash on the --ro-bind directory) or print the canned session.
+# bcvk: record the call, then either run the command after `--` the way the
+# guest would, or print the canned session. ssh joins the command's words with
+# spaces and hands the string to the remote shell, so the stub does the same.
 cat >"${STUB_DIR}/bcvk" <<'STUB'
 #!/usr/bin/env bash
 printf 'bcvk %s\n' "$*" >>"${STUB_CALLS}"
@@ -111,16 +112,13 @@ if [[ "${BCVK_MODE}" == "canned" ]]; then
   cat "${BCVK_CANNED}"
   exit "${BCVK_EXIT:-0}"
 fi
-checks_dir=""
-while (($# > 0)); do
-  case "$1" in
-    --ro-bind) checks_dir="${2%%:*}"; shift 2 ;;
-    *) shift ;;
-  esac
+while (($# > 0)) && [[ "$1" != "--" ]]; do
+  shift
 done
+shift
 # A login shell's terminal query ahead of the first marker, on the same line.
 printf '\033[?2004h'
-PATH="${GUEST_PATH}:${PATH}" bash "${checks_dir}/checks.sh"
+PATH="${GUEST_PATH}:${PATH}" bash -c "$*"
 STUB
 
 # The guest's systemctl and bootc. GUEST_INACTIVE names units that are not
