@@ -108,6 +108,10 @@ STUB
 cat >"${STUB_DIR}/bcvk" <<'STUB'
 #!/usr/bin/env bash
 printf 'bcvk %s\n' "$*" >>"${STUB_CALLS}"
+# The script closes bcvk's stdin; an inherited one would reach the guest.
+if read -r -t 1 leaked; then
+  printf 'bcvk read stdin: %s\n' "${leaked}" >>"${STUB_CALLS}"
+fi
 if [[ "${BCVK_MODE}" == "canned" ]]; then
   cat "${BCVK_CANNED}"
   exit "${BCVK_EXIT:-0}"
@@ -116,15 +120,31 @@ while (($# > 0)) && [[ "$1" != "--" ]]; do
   shift
 done
 shift
-# A login shell's terminal query ahead of the first marker, on the same line.
-printf '\033[?2004h'
-PATH="${GUEST_PATH}:${PATH}" bash -c "$*"
+# A login shell's terminal query ahead of the first marker, on the same line,
+# and every line ended with CR LF, as the session's terminal sends it.
+{
+  printf '\033[?2004h'
+  PATH="${GUEST_PATH}:${PATH}" bash -c "$*"
+} | sed 's/$/\r/'
+STUB
+
+# timeout: record how it was called, then either run the command for real or,
+# with TIMEOUT_EXPIRES, run it and answer the way an expired timeout does.
+cat >"${STUB_DIR}/timeout" <<'STUB'
+#!/usr/bin/env bash
+printf 'timeout %s\n' "$*" >>"${STUB_CALLS}"
+if [[ -n "${TIMEOUT_EXPIRES:-}" && " $* " == *" bcvk "* ]]; then
+  "${REAL_TIMEOUT}" "$@"
+  exit 124
+fi
+exec "${REAL_TIMEOUT}" "$@"
 STUB
 
 # The guest's systemctl and bootc. GUEST_INACTIVE names units that are not
 # active; GUEST_STATE is what is-system-running reports.
 cat >"${GUEST_DIR}/systemctl" <<'STUB'
 #!/usr/bin/env bash
+printf 'systemctl %s pager=[%s]\n' "$*" "${SYSTEMD_PAGER-unset}" >>"${STUB_CALLS}"
 case "$1" in
   is-system-running)
     echo "${GUEST_STATE:-running}"
@@ -140,6 +160,8 @@ case "$1" in
     echo active
     ;;
   --failed)
+    # A legend would be read as units, so the script must ask for none.
+    [[ " $* " == *" --no-legend "* ]] || echo "2 loaded units listed."
     for unit in ${GUEST_FAILED_UNITS:-}; do
       printf '%s loaded failed failed Some unit\n' "${unit}"
     done
@@ -155,6 +177,7 @@ fi
 echo "bootc 1.9.0"
 STUB
 chmod +x "${STUB_DIR}"/* "${GUEST_DIR}"/*
+REAL_TIMEOUT="$(command -v timeout)"
 
 # Run the script. Arguments before `--` are extra environment assignments;
 # arguments after it go to the script.
@@ -176,9 +199,16 @@ run_boot() {
     BCVK_MODE=guest \
     BCVK_CANNED="${CANNED}" \
     GUEST_PATH="${GUEST_DIR}" \
+    REAL_TIMEOUT="${REAL_TIMEOUT}" \
     GITHUB_STEP_SUMMARY="${WORK_DIR}/step-summary" \
     "${envs[@]}" \
-    "${BASH}" "${SCRIPT}" --work "${work}" "$@" 2>&1
+    "${BASH}" "${SCRIPT}" --work "${work}" "$@" 2>&1 <<<"input the guest must not see"
+}
+
+# The calls file's lines that start with $1, with this run's process id in the
+# VM name replaced by PID.
+calls_of() {
+  grep "^$1" "${CALLS}" | sed -E 's/arch-bootc-boot-test-[0-9]+-/arch-bootc-boot-test-PID-/'
 }
 
 result() {
@@ -191,6 +221,7 @@ bcvk_calls() {
 
 KDE=(--image ghcr.io/danathar/arch-bootc-kde:latest --flavor kde)
 BASE=(--image ghcr.io/danathar/arch-bootc-base:latest --flavor base)
+XFCE=(--image ghcr.io/danathar/arch-bootc-xfce:latest --flavor xfce)
 
 # --- arguments --------------------------------------------------------------
 
@@ -213,6 +244,21 @@ assert_contains "the unknown flavor is named" "${output}" "got gnome"
 output="$(run_boot -- --bogus)"
 assert_status "an unknown argument is a usage error" 2 "$?"
 
+output="$(run_boot -- --flavor kde --image)"
+assert_status "an option without its value is a usage error" 2 "$?"
+assert_contains "the option missing its value is named" "${output}" "--image needs a value"
+
+# The workflow cannot boot without bcvk, and must say so rather than fail later.
+if command -v bcvk >/dev/null 2>&1; then
+  printf 'skip - bcvk is installed on this host, so hiding the stub proves nothing\n'
+else
+  mv "${STUB_DIR}/bcvk" "${STUB_DIR}/bcvk.hidden"
+  output="$(run_boot -- "${BASE[@]}")"
+  assert_status "a missing bcvk is a setup error" 2 "$?"
+  assert_contains "the missing tool is named" "${output}" "bcvk is required"
+  mv "${STUB_DIR}/bcvk.hidden" "${STUB_DIR}/bcvk"
+fi
+
 # --- resolving and pulling ----------------------------------------------------
 
 output="$(run_boot SKOPEO_FAIL=1 -- "${KDE[@]}")"
@@ -222,6 +268,9 @@ assert_equal "nothing boots when the image does not resolve" "0" "$(bcvk_calls)"
 output="$(run_boot SKOPEO_DIGEST=latest -- "${KDE[@]}")"
 assert_status "an answer that is not a digest is a setup error" 2 "$?"
 assert_contains "the bad answer is named" "${output}" "which is not a digest"
+
+output="$(run_boot SKOPEO_DIGEST="${DIGEST}0" -- "${KDE[@]}")"
+assert_status "a digest with trailing characters is a setup error" 2 "$?"
 
 output="$(run_boot PODMAN_PULL_FAIL=1 -- "${KDE[@]}")"
 assert_status "a failed pull is a setup error" 2 "$?"
@@ -248,6 +297,29 @@ assert_equal "failed units are recorded" "bootloader-update.service" "$(result '
 # shellcheck disable=SC2016 # the backticks are the summary's own markup
 assert_contains "failed units are listed as not judged" "${output}" 'Failed units (not judged): `bootloader-update.service`'
 assert_equal "the kernel is read back from the guest" "$(uname -r)" "$(result .report.kernel)"
+assert_equal "the systemd state is read back from the guest" "degraded" "$(result .report.state)"
+# shellcheck disable=SC2016 # the backticks are the summary's own markup
+assert_contains "the summary shows the systemd state" "${output}" '| systemd state | `degraded` |'
+assert_equal "a CR from the terminal does not reach the detail" "active" \
+  "$(result '.report.checks[] | select(.name == "unit:NetworkManager") | .detail')"
+assert_absent "a passing boot does not dump bcvk's output" "${output}" "bcvk output (tail)"
+assert_contains "the tag is resolved with retries" \
+  "$(calls_of 'skopeo ')" "skopeo inspect --retry-times 3 "
+assert_contains "the digest is pulled with retries" \
+  "$(calls_of 'podman pull')" "podman pull --quiet --retry 3 "
+assert_equal "bcvk is called with the VM size, name, units and log directory" \
+  "bcvk ephemeral run-ssh --name arch-bootc-boot-test-PID-1 --memory 4G --vcpus 2 --systemd-units ${WORK_DIR}/work/units --log-dir journal,console=${WORK_DIR}/work/boot-1/ ghcr.io/danathar/arch-bootc-kde@${DIGEST} --" \
+  "$(calls_of 'bcvk ' | sed 's/ -- .*/ --/')"
+assert_contains "one boot is bounded at fifteen minutes, then killed" \
+  "$(calls_of 'timeout ')" "timeout --kill-after=30 900 bcvk ephemeral run-ssh "
+assert_equal "bcvk gets no stdin from the job" "" "$(calls_of 'bcvk read stdin')"
+# The guest waits for boot to settle, but not forever, and nothing it runs pages.
+assert_contains "the guest waits for boot to settle, at most five minutes" \
+  "$(calls_of 'timeout ')" "timeout 300 systemctl is-system-running --wait"
+assert_contains "failed units are listed without a legend" \
+  "$(calls_of 'systemctl ')" "systemctl --failed --plain --no-legend --full "
+assert_equal "systemctl never pages in the guest" "" \
+  "$(calls_of 'systemctl ' | grep -v ' pager=\[\]$')"
 assert_equal "one boot is enough when it reports" "1" "$(bcvk_calls)"
 assert_contains "the VM container is removed after the boot" \
   "$(grep '^podman rm' "${CALLS}")" "--force --ignore arch-bootc-boot-test-"
@@ -258,8 +330,28 @@ for unit in arch-bootc-roothome.service arch-bootc-root-unexpire.service; do
   check "${unit} is injected and wanted by default.target" \
     "$([[ -f "${WORK_DIR}/work/units/system/default.target.wants/${unit}" ]] && echo 0 || echo 1)"
 done
+# What the injected units do. The unexpire unit runs as root before sshd on an
+# image whose security model expires root's password on purpose, so it must
+# only clear the expiry: never set, clear or reveal a password.
+unit_dir="${WORK_DIR}/work/units/system"
+assert_equal "the unexpire unit only clears the expiry" "ExecStart=/usr/bin/chage --lastday -1 root" \
+  "$(grep '^Exec' "${unit_dir}/arch-bootc-root-unexpire.service")"
+assert_equal "the expiry is cleared before sshd starts" "1" \
+  "$(grep '^Before=' "${unit_dir}/arch-bootc-root-unexpire.service" | tr -s ' =' '\n' | grep -cx sshd.service)"
+assert_equal "the roothome unit only makes root's home, private" "ExecStart=/usr/bin/mkdir -p -m 0700 /var/roothome" \
+  "$(grep '^Exec' "${unit_dir}/arch-bootc-roothome.service")"
+assert_equal "root's home exists before tmpfiles writes the SSH key" "Before=systemd-tmpfiles-setup.service" \
+  "$(grep '^Before=' "${unit_dir}/arch-bootc-roothome.service")"
+assert_equal "an existing root home is left alone" "ConditionPathExists=!/var/roothome" \
+  "$(grep '^Condition' "${unit_dir}/arch-bootc-roothome.service")"
 assert_contains "bcvk is handed the units directory by absolute path" \
   "$(grep '^bcvk ' "${CALLS}")" "--systemd-units ${WORK_DIR}/work/units "
+
+# bcvk ignores a relative units path, so a relative --work must be made
+# absolute. A later --work wins over run_boot's own.
+output="$(cd -- "${WORK_DIR}" && run_boot -- "${BASE[@]}" --work relative-work)"
+assert_contains "a relative --work reaches bcvk as an absolute path" \
+  "$(grep '^bcvk ' "${CALLS}")" "--systemd-units ${WORK_DIR}/relative-work/units "
 
 output="$(run_boot -- "${BASE[@]}")"
 assert_status "base passes without a display manager check" 0 "$?"
@@ -277,8 +369,18 @@ output="$(run_boot -- --image localhost:5000/arch-bootc-base@sha256:0000 --flavo
 assert_equal "an image given by digest boots the digest it resolves to" \
   "localhost:5000/arch-bootc-base@${DIGEST}" "$(result .booted)"
 
+output="$(run_boot -- "${XFCE[@]}")"
+assert_status "xfce passes when every check passes" 0 "$?"
+assert_equal "xfce runs the display manager check" \
+  "boot:finished unit:NetworkManager unit:firewalld unit:display-manager bootc:version" \
+  "$(result '[.report.checks[].name] | join(" ")')"
+
 output="$(run_boot SKOPEO_REVISION= -- "${BASE[@]}")"
 assert_equal "a missing revision label is recorded as unknown" "unknown" "$(result .revision)"
+
+# What skopeo's --format really prints for a label the image does not have.
+output="$(run_boot SKOPEO_REVISION="<no value>" -- "${BASE[@]}")"
+assert_equal "skopeo's <no value> is recorded as unknown" "unknown" "$(result .revision)"
 
 # --- failing checks -----------------------------------------------------------
 
@@ -293,6 +395,10 @@ assert_equal "a boot whose checks ran is not retried" "1" "$(bcvk_calls)"
 output="$(run_boot GUEST_INACTIVE=display-manager.service -- "${KDE[@]}")"
 assert_status "kde without a running display manager fails" 1 "$?"
 assert_contains "the display manager is named" "$(result .summary)" "unit:display-manager"
+
+output="$(run_boot GUEST_INACTIVE=display-manager.service -- "${XFCE[@]}")"
+assert_status "xfce without a running display manager fails" 1 "$?"
+assert_contains "the xfce display manager is named" "$(result .summary)" "failed checks: unit:display-manager"
 
 output="$(run_boot GUEST_STATE=starting -- "${BASE[@]}")"
 assert_status "a boot that never finished starting fails" 1 "$?"
@@ -319,6 +425,22 @@ output="$(run_boot BCVK_MODE=canned -- "${KDE[@]}")"
 assert_status "a missing check fails even when every reported one passed" 1 "$?"
 assert_contains "the missing check is named" "$(result .summary)" "checks with no result: unit:display-manager"
 
+# Missing and failed together: both are named, as two clauses.
+printf '%s\n' \
+  "ARCH-BOOTC-BOOT-STATE running" \
+  "ARCH-BOOTC-BOOT-CHECK boot:finished pass running" \
+  "ARCH-BOOTC-BOOT-CHECK unit:NetworkManager pass active" \
+  "ARCH-BOOTC-BOOT-CHECK unit:firewalld fail inactive" \
+  "ARCH-BOOTC-BOOT-CHECK bootc:version pass bootc 1.9.0" \
+  "ARCH-BOOTC-BOOT-FAILED-UNIT " \
+  "ARCH-BOOTC-BOOT-DONE" >"${CANNED}"
+output="$(run_boot BCVK_MODE=canned -- "${KDE[@]}")"
+assert_status "a missing and a failed check fail the boot test" 1 "$?"
+assert_equal "missing and failed checks are named apart" \
+  "Booted and logged in, but checks with no result: unit:display-manager; failed checks: unit:firewalld." \
+  "$(result .summary)"
+assert_equal "a failed-unit line with no unit records nothing" "0" "$(result '.report.failed_units | length')"
+
 # A failed check, then a hang before DONE. The boot reported, so it is the
 # answer: a second boot could pass and hide the failure.
 printf '%s\n' \
@@ -339,6 +461,13 @@ assert_equal "both boots are counted" "2" "$(result .attempts)"
 assert_equal "every boot's VM container is removed" "2" "$(grep -c '^podman rm' "${CALLS}")"
 assert_contains "the failure shows bcvk's own output" "${output}" "SSH connection timed out"
 assert_contains "the error line names the booted digest" "${output}" "error: boot test failed for ghcr.io/danathar/arch-bootc-base@${DIGEST}"
+assert_equal "the second boot gets its own name and log directory" \
+  "bcvk ephemeral run-ssh --name arch-bootc-boot-test-PID-2 --memory 4G --vcpus 2 --systemd-units ${WORK_DIR}/work/units --log-dir journal,console=${WORK_DIR}/work/boot-2/ ghcr.io/danathar/arch-bootc-base@${DIGEST} --" \
+  "$(calls_of 'bcvk ' | sed 's/ -- .*/ --/' | tail -n 1)"
+
+output="$(run_boot BCVK_MODE=canned TIMEOUT_EXPIRES=1 -- "${BASE[@]}")"
+assert_status "a boot that hit the time limit fails" 1 "$?"
+assert_contains "the time limit is named in bcvk's output" "${output}" "bcvk timed out after 900s"
 
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
