@@ -765,7 +765,11 @@ and `bcvk`. The `bcvk` stub runs the generated check script itself against
 stub `systemctl` and `bootc`, so the script the real guest runs is executed.
 It covers a passing boot per flavor, each check failing, a check missing from
 the output, a failed check cut off before the end (not retried), a boot that
-reported nothing (retried once), and an image that does not resolve or pull.
+reported nothing (retried once), a boot that hit its time limit, and an image
+that does not resolve or pull. It also pins what the real run depends on but a
+stub would not notice: the exact `bcvk` and `timeout` arguments, the CR LF line
+ends of the SSH terminal, skopeo's `<no value>` for a missing label, the guest's
+pager and `--wait` settings, and what the two injected units run.
 
 This does not close the README's first criterion. That one asks for a boot on
 every pull request, and pull request builds still publish nothing a VM could
