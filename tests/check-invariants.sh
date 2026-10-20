@@ -8894,6 +8894,44 @@ assert_equal "the tags the page says every publish pushes are the ones metadata-
   "$(grep -oE 'Every publish pushes `[^`]+`, `[^`]+` and `[^`]+`' <<<"${cicd_flat}" | grep -oE '`[^`]+`' | tr -d '`' | tr '\n' ' ' | sed 's/ $//')" \
   "${cicd_tags}"
 
+# The boot-test.yml lists above name the flavors; the boot job still has to
+# boot them. A scheduled run has no inputs, so inputs.flavor is '' there, and a
+# dispatch may pick `all`: both have to expand to the whole list, and any other
+# pick to that one flavor. Drop either arm and the daily run (or `all`) boots a
+# flavor called "" (or "all"), which scripts/boot-test.sh refuses. The boot
+# step then has to hand the matrix flavor to both the image and --flavor: with
+# either one fixed, every job boots one flavor's image, or runs one flavor's
+# checks against every image, and stays green.
+cicd_boot_job="$(cicd_job "${cicd_boot_workflow}" boot | grep -Ev '^[[:space:]]*#')"
+cicd_boot_matrix="$(sed -n 's/^        flavor: //p' <<<"${cicd_boot_job}")"
+# shellcheck disable=SC2016 # literal GitHub expressions
+assert_equal "boot-test.yml's matrix boots the whole list on a schedule and on 'all', and only the picked flavor otherwise" \
+  "$(sed -E "s/'\\[\"[a-z0-9\",-]*\"\\]'/LIST/" <<<"${cicd_boot_matrix}")" \
+  '${{ fromJSON((inputs.flavor == '"''"' || inputs.flavor == '"'all'"') && LIST || format('"'[\"{0}\"]'"', inputs.flavor)) }}'
+assert_equal "the list boot-test.yml's matrix expands to is every flavor build_push publishes, and no other" \
+  "$(grep -oE "'\[\"[a-z0-9\",-]*\"\]'" <<<"${cicd_boot_matrix}" |
+    tr -d "'[]\"" | tr ',' '\n' | sort | tr '\n' ' ' | sed 's/ $//')" "${cicd_publish_flavors}"
+cicd_boot_step="$(awk '
+    /^      - name: Boot the image and check it$/ { in_step = 1; next }
+    in_step && /^      - / { exit }
+    in_step { print }
+  ' <<<"${cicd_boot_job}")"
+cicd_build_registry="$(sed -n 's/^  IMAGE_REGISTRY: "\(.*\)"$/\1/p' "${BUILD_WORKFLOW}")"
+cicd_build_name="$(sed -n 's/^  IMAGE_NAME: "\(.*\)"$/\1/p' "${BUILD_WORKFLOW}")"
+# shellcheck disable=SC2016 # literal GitHub expressions
+assert_equal "the boot step boots the image build_push publishes for its matrix flavor, at DEFAULT_TAG" \
+  "$(sed -n 's/^          IMAGE: //p' <<<"${cicd_boot_step}")" \
+  "${cicd_build_registry}/${cicd_build_name}-\${{ matrix.flavor }}:${cicd_default_tag}"
+# shellcheck disable=SC2016 # literal GitHub expressions
+assert_equal "the boot step runs the checks for its matrix flavor" \
+  "$(sed -n 's/^          FLAVOR: //p' <<<"${cicd_boot_step}")" '${{ matrix.flavor }}'
+# build_push lowercases the registry and name before it pushes, and the owner
+# here is Danathar, so the reference has to be lowercased the same way to pull.
+# shellcheck disable=SC2016 # literal shell expansions
+assert_equal "the boot step passes the lowercased image and the matrix flavor to scripts/boot-test.sh" \
+  "$(sed -n 's/^        run: //p' <<<"${cicd_boot_step}")" \
+  './scripts/boot-test.sh --image "${IMAGE,,}" --flavor "${FLAVOR}" --work "${WORK}"'
+
 fi
 
 # ---------------------------------------------------------------------------
