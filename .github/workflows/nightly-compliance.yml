@@ -126,7 +126,7 @@ jobs:
           # workflow file. Pinning it here through an expansion would silently
           # drop this file out of that manager's reach, and signing and
           # verification would be free to drift onto different cosign majors.
-          cosign-release: v3.1.3
+          cosign-release: v3.1.4
 
       - name: Verify the published image against cosign.pub
         # docs/quality.md lists this as a gap in as many words: "CI signs;
