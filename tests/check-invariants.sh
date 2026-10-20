@@ -8860,6 +8860,29 @@ assert_equal "cleanup_packages prunes every flavor build_push publishes, and no 
   "$(tr ' ' '\n' <<<"${cicd_prune_flavors}" | sort | tr '\n' ' ' | sed 's/ $//')" "${cicd_publish_flavors}"
 assert_equal "the nightly signatures job verifies every flavor build_push publishes, and no other" \
   "$(tr ' ' '\n' <<<"${cicd_sig_flavors}" | sort | tr '\n' ' ' | sed 's/ $//')" "${cicd_publish_flavors}"
+# boot-test.yml writes the list twice more, as the flavors a dispatch may pick
+# and as the JSON the daily run boots, and scripts/boot-test.sh accepts its own
+# list in a `case`. A flavor published but missing from any of them is never
+# booted, and nothing above would notice.
+cicd_boot_workflow=".github/workflows/boot-test.yml"
+cicd_boot_options="$(awk '
+    /^[[:space:]]*options:$/ { in_options = 1; next }
+    in_options && /^[[:space:]]*- / { sub(/^[[:space:]]*- /, ""); print; next }
+    in_options { exit }
+  ' "${cicd_boot_workflow}" | grep -vx all | sort | tr '\n' ' ' | sed 's/ $//')"
+cicd_boot_daily="$(grep -oE "'\[\"[a-z0-9\",-]*\"\]'" "${cicd_boot_workflow}" |
+  tr -d "'[]\"" | tr ',' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+cicd_boot_script="$(awk '
+    /^case "\$\{flavor\}" in$/ { in_case = 1; next }
+    in_case && /^esac$/ { exit }
+    in_case && /^  [a-z0-9 |-]+\)/ { sub(/\).*/, ""); gsub(/[ |]+/, "\n"); print }
+  ' scripts/boot-test.sh | sed '/^$/d' | sort | tr '\n' ' ' | sed 's/ $//')"
+assert_equal "a boot-test.yml dispatch offers every flavor build_push publishes, and no other" \
+  "${cicd_boot_options}" "${cicd_publish_flavors}"
+assert_equal "the daily boot-test.yml run boots every flavor build_push publishes, and no other" \
+  "${cicd_boot_daily}" "${cicd_publish_flavors}"
+assert_equal "scripts/boot-test.sh accepts every flavor build_push publishes, and no other" \
+  "${cicd_boot_script}" "${cicd_publish_flavors}"
 # "Every publish pushes `latest`, `latest.YYYYMMDD` and `YYYYMMDD`": the raw
 # tags metadata-action generates, with DEFAULT_TAG and the date filled in.
 cicd_default_tag="$(sed -n 's/^  DEFAULT_TAG: "\(.*\)"$/\1/p' "${BUILD_WORKFLOW}")"
