@@ -3408,7 +3408,7 @@ group "The fleet's shared refusal corpus (tests/fixtures/gate-refusal-corpus.jso
 # decision is an allow.
 
 CORPUS="tests/fixtures/gate-refusal-corpus.json"
-CORPUS_SHA256="8a4bf0f7118af630f2549633cb91d33a324312d5750bbc83e0f0a8489700cf71"
+CORPUS_SHA256="de16d01afbf010ddb6d63d55c3a182f457e02b3b04319085f57d8f530b65a44d"
 
 # The command prefix each wildcard Bash(...) allow rule covers, one per line.
 # The fleet spells a prefix rule three ways (`git diff:*`, `git diff *`,
@@ -3451,7 +3451,7 @@ if ((settings_readable)) && [[ -f "${CORPUS}" ]]; then
   shared_bad_rows="$(jq -r '
     .rows[]
     | select(
-        (keys != ["class", "command", "id", "requires", "verdict", "why"])
+        ((keys - ["wraps"]) != ["class", "command", "id", "requires", "verdict", "why"])
         or ((.verdict == "refuse" or .verdict == "allow") | not)
         or ((.requires | length) == 0)
         or any(.requires[]; . != (. | gsub("^\\s+|\\s+$"; "")))
@@ -3461,6 +3461,25 @@ if ((settings_readable)) && [[ -f "${CORPUS}" ]]; then
     | .id
   ' "${CORPUS}")"
   assert_equal "every corpus row has exactly the documented fields" "${shared_bad_rows}" ""
+  # `wraps` (optional) names a wrapper no allow rule covers, such as `flock`
+  # in `flock /tmp/l git diff ...`. It is the command's first word, and never
+  # the first word of a prefix the row requires, or the row would run only
+  # where the wrapper itself is allowed. A row without it is read as before.
+  shared_bad_wraps="$(jq -r '
+    .rows[]
+    | select(has("wraps"))
+    | .wraps as $w
+    | select(
+        ($w | type) != "string"
+        or ($w | test("^\\S+$") | not)
+        or (.command | startswith($w + " ") | not)
+        or any(.requires[]; split(" ")[0] == $w)
+      )
+    | .id
+  ' "${CORPUS}")"
+  assert_equal "every wrapped corpus row starts with the wrapper it names" "${shared_bad_wraps}" ""
+  assert_equal "the corpus has wrapped rows for the check above to read" \
+    "$(jq -r '[.rows[] | select(has("wraps"))] | length > 0' "${CORPUS}")" "true"
   assert_equal "corpus row ids are unique" \
     "$(jq -r '[.rows[].id] | unique | length' "${CORPUS}")" \
     "$(jq -r '.rows | length' "${CORPUS}")"
