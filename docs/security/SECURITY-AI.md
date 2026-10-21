@@ -453,10 +453,11 @@ must be described as such.
   than against a hand-written label; the quoted-operator read of #316, the
   redirection truncation, the substituted operand and the variable-named
   command are each demonstrated the same way before their refusals are
-  asserted. It is still not a sandbox: a command that hides git behind another
-  interpreter (`sh -c`), or that leaves the repository first, is outside what
-  this can see, and nothing bounds what a command reads or writes once it has
-  started.
+  asserted. It is still not a sandbox: a command that hides git where no
+  word of the string spells it (`eval`, a file a program reads its commands
+  from, a name built at runtime behind a program), or that leaves the
+  repository first, is outside what this can see, and nothing bounds what a
+  command reads or writes once it has started.
 - **`git` is not the only allowed command that opens a file it is pointed at.**
   `Bash(shellcheck *)` is allowed with no prompt too, and ShellCheck prints the
   *source line* above every diagnostic it reports — so it prints back whatever
@@ -639,6 +640,22 @@ must be described as such.
   before every allow-listed command, git included. A deny list of variable
   names would be the wrong shape: `GIT_DIR`, `GIT_INDEX_FILE`, `LD_PRELOAD`
   and `PATH` all matter, and the list would have to track git's own.
+- **A gated command behind a program the gate does not step over.** No list
+  of programs that run their arguments is complete, and no allow row covers
+  such a program, so bypass and auto modes run it with no prompt.
+  `script -qc 'git diff /dev/null ./.env' /dev/null` hands its quoted string
+  to a shell and printed `.env`, and `setarch x86_64 bash -n -v .env` ran the
+  linter row's command behind a program no wrapper list names (#580). Behind
+  such a program, each later word where a gated command starts, and each
+  command string a later word carries (`sh -c '...'`, `--command='...'`,
+  `-qc'...'`), is read as a command of its own — the hook runs itself on it,
+  so every rule above applies — and refused when it would be refused alone.
+  A command that passes alone still passes: `setarch x86_64 git diff HEAD`
+  and `sh -c 'git status'` are unaffected. `echo`, `printf`, `grep` and `rg`
+  print or match their arguments and are not read. The hook reads every
+  command under a 10-second budget and refuses one it cannot finish reading
+  in time, failing closed when `timeout` is missing, because Claude Code runs
+  the command when a hook overruns its own timeout.
 
 - Workflow permissions are declared explicitly and minimally per job. A workflow
   that needs `packages: write` says so in that job only; it does not get it at

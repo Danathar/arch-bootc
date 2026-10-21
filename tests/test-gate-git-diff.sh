@@ -2413,6 +2413,54 @@ if ((settings_readable)); then
       "exit ${no_jq_status} with stderr '${no_jq_stderr:-<none>}'; a missing dependency silently disables the gate"
   fi
 
+  # The same for timeout, which bounds how long the hook reads a command. A
+  # PreToolUse hook that overruns Claude Code's hook timeout refuses nothing
+  # -- the command runs -- so a hook that cannot bound its reading refuses
+  # instead (#580).
+  no_timeout_dir="$(mktemp -d)"
+  for no_timeout_tool in bash env git cat jq realpath; do
+    no_timeout_path="$(command -v "${no_timeout_tool}" 2>/dev/null)" || continue
+    ln -sf "${no_timeout_path}" "${no_timeout_dir}/${no_timeout_tool}"
+  done
+  no_timeout_status=0
+  no_timeout_stderr=""
+  for hook_command in "${bash_hooks[@]+"${bash_hooks[@]}"}"; do
+    no_timeout_payload="$(jq -nc '{tool_name: "Bash", tool_input: {command: "git diff HEAD"}}')"
+    no_timeout_err="$(printf '%s' "${no_timeout_payload}" | CLAUDE_PROJECT_DIR="${REPO_ROOT}" PATH="${no_timeout_dir}" bash -c "${hook_command}" 2>&1 >/dev/null)"
+    no_timeout_rc=$?
+    ((no_timeout_rc > no_timeout_status)) && no_timeout_status="${no_timeout_rc}"
+    [[ -n "${no_timeout_err}" ]] && no_timeout_stderr+="${no_timeout_err} "
+  done
+  rm -rf "${no_timeout_dir}"
+  if ((no_timeout_status == 2)) && [[ "${no_timeout_stderr}" == *"needs timeout"* ]]; then
+    pass "the hook refuses rather than reading without a bound when timeout is missing"
+  else
+    fail "the hook refuses rather than reading without a bound when timeout is missing" \
+      "exit ${no_timeout_status} with stderr '${no_timeout_stderr:-<none>}'; an unbounded read can outlast the hook timeout"
+  fi
+
+  # And the bound itself. Reading a command costs more than its length, and a
+  # command behind a program the gate does not step over is read again as a
+  # command of its own, so a long enough string outlasts the 60-second hook
+  # default and runs unchecked. 60 KB of allow-listed words in front of the
+  # plain-file read takes longer than the 10-second budget to read, and is
+  # refused when the budget runs out rather than when Claude Code gives up.
+  budget_command="git status -- $(printf 'a %.0s' {1..30000}); git diff /dev/null ./cosign.key"
+  budget_started=${SECONDS}
+  run_bash_hooks "$(jq -nc --arg c "${budget_command}" '{tool_name: "Bash", tool_input: {command: $c}}')"
+  budget_elapsed=$((SECONDS - budget_started))
+  if ((hook_status == 2)) && [[ "${hook_stderr}" == *"took longer than 10 seconds to check"* ]]; then
+    pass "a command too long to read in the budget is refused, naming the budget"
+  else
+    fail "a command too long to read in the budget is refused, naming the budget" \
+      "exit ${hook_status} with stderr '${hook_stderr:0:200}'"
+  fi
+  if ((budget_elapsed < 30)); then
+    pass "and it is refused inside the hook timeout (${budget_elapsed}s)"
+  else
+    fail "and it is refused inside the hook timeout" "took ${budget_elapsed}s"
+  fi
+
   # A malformed payload is the same case: the hook cannot tell what the call
   # does, so it must not decide that it is safe.
   run_bash_hooks 'not json at all'
@@ -2852,6 +2900,79 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' refused 'xargs adds the words' \
     'GNU findutils and uutils read a bare -e differently, so every later word may be the name' \
     'git ls-files | xargs -e grep -l git'
+  # The witnesses the wrapper mutations use: the redirection stands in front
+  # of the wrapper, where only the wrapper rule ties it to the gated command.
+  corpus_row 'command name' refused 'output redirection' \
+    'noglob is stepped over, so the redirection in front of it is the podman command'"'"'s' \
+    '>out noglob podman ps'
+  corpus_row 'command name' refused 'output redirection' \
+    '/usr/bin/time is stepped over the same way' \
+    '>cosign.pub /usr/bin/time shellcheck tests/run-tests.sh'
+  # A program this gate neither checks nor steps over runs the words after
+  # it, or hands a quoted string to a shell, and no allow row covers it, so
+  # bypass and auto modes run it with no prompt (#580). The command it runs
+  # is read as a command of its own and refused when it would be refused
+  # standing alone; one that passes alone still passes.
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'script -c hands its quoted string to a shell, which runs the plain-file read' \
+    "script -qc 'git diff /dev/null ./.env' /dev/null"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'the same option on its own' \
+    "script -c 'git diff /dev/null ./.env' /dev/null"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    "the string attached to script's short option, read from each tail of the cluster" \
+    "script -qc'git diff /dev/null ./.env' /dev/null"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    "the string after a long option's =" \
+    "script --command='git diff /dev/null ./.env' /dev/null"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'sh -c hands its string to a shell the same way' \
+    "sh -c 'git diff /dev/null ./cosign.key'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'bash -c is read although bash is the first word of a gated row' \
+    "bash -c 'git diff /dev/null ./.env'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a path to bash is read like bash' \
+    "/usr/bin/bash -c 'git diff /dev/null ./.env'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a shell string inside a shell string, read by the hook running itself on each' \
+    "sh -c 'sh -c \"git diff /dev/null ./.env\"'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a shell string is held to every rule, the shellcheck operand test included' \
+    "sh -c 'shellcheck ./.env'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'setarch runs bash -n with the words after it, and -v prints the file bash reads' \
+    'setarch x86_64 bash -n -v .env'
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'the same behind a tracer with an option value before it' \
+    'strace -o /dev/null bash -n -v .env'
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a substitution does not split the command around it' \
+    'setarch x86_64 $(true) bash -n -v .env'
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    "a wrapper's own argument in front of the program: exec -a takes echo for the zeroth argument and runs watch" \
+    "exec -a echo watch -n1 'git diff /dev/null ./.env'"
+  corpus_row 'command name' refused '--no-index mode' \
+    'git behind setarch was already read by the literal git word scan' \
+    'setarch x86_64 git diff --no-index /dev/null .env'
+  corpus_row 'command name' allowed '' \
+    'git behind a program, passing alone' \
+    'setarch x86_64 git diff HEAD'
+  corpus_row 'command name' allowed '' \
+    'a shell string that passes alone' \
+    "sh -c 'git status'"
+  corpus_row 'command name' allowed '' \
+    'a shell string naming no gated command is not read' \
+    "bash -c 'echo hi'"
+  corpus_row 'command name' allowed '' \
+    'a shell string inside a shell string, passing alone' \
+    "sh -c 'sh -c \"git diff HEAD\"'"
+  corpus_row 'command name' allowed '' \
+    'echo prints its argument and runs nothing' \
+    "echo 'git diff /dev/null ./.env'"
+  corpus_row 'command name' allowed '' \
+    'uname runs nothing, and the git command after it passes alone' \
+    'uname git diff HEAD'
 
   # --- 5. an option that loads or writes -----------------------------------
   corpus_row options refused 'git global option' \
@@ -3296,10 +3417,16 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     '((cmd_gated && cmd_findmnt_tab == 1)) && refuse "${FINDMNT_TAB_MSG}"' \
     '((cmd_gated && cmd_findmnt_tab == 1)) && true' \
     'findmnt -F .env'
+  # The two wrapper witnesses below put the redirection in front of the
+  # wrapper. With the wrapper rule disabled, a redirection after the gated
+  # command is still refused by the reading of a command behind a program
+  # this gate does not step over (#580), which carries it along; one in front
+  # is the unlisted program's own, so only the wrapper rule ties it to the
+  # gated command.
   mutation_row 'noglob in the wrapper list' \
     'nohup | noglob | nice' \
     'nohup | nice' \
-    'noglob podman ps >out'
+    '>out noglob podman ps'
   mutation_row 'a literal path to a wrapper read as that wrapper' \
     'is_wrapper "${wrapper_spelling##*[/\\]}" && wrapper_base="${wrapper_spelling##*[/\\]}"' \
     'is_wrapper "${wrapper_spelling}" && wrapper_base="${wrapper_spelling}"' \
@@ -3319,7 +3446,7 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   mutation_row 'time by path read as a wrapper' \
     'stdbuf | sudo | doas | time) return 0 ;;' \
     'stdbuf | sudo | doas) return 0 ;;' \
-    '/usr/bin/time shellcheck tests/run-tests.sh >cosign.pub'
+    '>cosign.pub /usr/bin/time shellcheck tests/run-tests.sh'
   mutation_row 'stepping over a wrapper only as typed, not as bash reads it' \
     '    case "${raw_word}" in' \
     '    case "${word}" in' \
@@ -3352,6 +3479,26 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     '((${argv0_words[idx]:-0})) && ((cmd_gated == 0)) && cmd_argv0=1' \
     ':' \
     'exec -l bash -n tests/run-tests.sh'
+  mutation_row 'reading a gated command behind a program as a command of its own' \
+    'refuse_if_refused_alone "${program}" "${inner% }"' \
+    ':' \
+    'setarch x86_64 bash -n -v .env'
+  mutation_row 'reading a command string a program hands to a shell' \
+    'refuse_if_refused_alone "${program}" "${text}"' \
+    ':' \
+    "script -qc 'git diff /dev/null ./.env' /dev/null"
+  mutation_row 'reading a path to bash as bash, whose -c takes a command string' \
+    '[[ "${program##*/}" == bash ]] ||' \
+    '[[ "${program}" == bash ]] ||' \
+    "/usr/bin/bash -c 'git diff /dev/null ./.env'"
+  mutation_row 'reading a wrapped command whatever its first word is' \
+    'if ((names == 1)); then' \
+    'if true; then' \
+    "exec -a echo watch -n1 'git diff /dev/null ./.env'"
+  mutation_row 'a quote mark as a boundary around a gated name in a string' \
+    '${1//[^A-Za-z0-9_.\/-]/ }' \
+    '${1//[$'"'"'\t\n;&|()`<>'"'"']/ }' \
+    "sh -c 'sh -c \"git diff /dev/null ./.env\"'"
   }
   mutation_table
 

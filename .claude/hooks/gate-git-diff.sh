@@ -237,9 +237,22 @@
 # literal paths. Nothing here is named `~`, and the alternative is a
 # containment test that has to know how each word was quoted.
 #
+# A program this gate neither checks nor steps over can still run a gated
+# command: `script -qc 'git diff /dev/null ./.env' /dev/null` hands its quoted
+# string to a shell and printed `.env`, and `setarch x86_64 bash -n -v .env`
+# ran the linter row's command behind a program no wrapper list names (#580).
+# No allow row covers such a program, so the default mode prompts for it, but
+# bypass and auto modes prompt for nothing. So behind such a program each
+# later word where a gated command starts, and each command string a later
+# word carries, is read as a command of its own and refused when it would be
+# refused standing alone (see `unlisted_program_refusal` at the end of this
+# file). The reading runs under a time budget, and running out of it is a
+# refusal (see `BUDGET_MSG`).
+#
 # What it still cannot see, stated rather than implied: a command that hides a
-# git invocation behind another interpreter (`sh -c ...`, `eval`, and `source`
-# or `.`, which can export anything the file it reads assigns), one that
+# git invocation where no word of this string spells it (`eval`, a name built
+# at runtime behind a program, `setarch x86_64 $G diff ...`, and `source` or
+# `.`, which can export anything the file it reads assigns), one that
 # changes directory out of the repository first, and anything a command reads
 # or writes once it has started. Nor an environment variable set by a string
 # this gate left alone -- an `export` in a command string that runs nothing
@@ -357,6 +370,35 @@ BRACE_MSG='blocked: bash expands braces before git sees the words, and this gate
 # broken by accident.
 command -v jq >/dev/null 2>&1 ||
   refuse 'blocked: this PreToolUse hook needs jq to inspect the command and jq is not on PATH. It gates the pre-approved commands that can read a denied path, so it refuses rather than letting calls through uninspected. Install jq.'
+
+# This file, by a path that still names it after the `cd` below: the budget
+# re-runs it, and so does the reading of a command a program runs behind it
+# (see `unlisted_program_refusal`).
+GATE_SELF="${BASH_SOURCE[0]}"
+[[ "${GATE_SELF}" == /* ]] || GATE_SELF="${PWD}/${GATE_SELF}"
+
+# A PreToolUse hook that runs past its timeout refuses nothing: Claude Code
+# gives up on it and runs the command. The settings entry sets no timeout, so
+# that is the 60-second default. Reading a command here costs more than its
+# length -- every character is taken with `${command_string:i:1}`, the word
+# arrays are walked again by each scan below, and a command behind a program
+# this gate does not step over is read again as a command of its own -- so a
+# long enough string could outlast the default and run unchecked. So the
+# reading runs again under `timeout` with a budget well inside that default,
+# and running out of it is a refusal like the rest. The re-run is marked by
+# an argument rather than the environment, because Claude Code passes the
+# hook no arguments and nothing in a command string can add one; GNU timeout
+# signals its whole process group, so a nested reading is stopped with it.
+# Without `timeout` on PATH the hook refuses, as it does without jq.
+BUDGET_MSG='blocked: this command took longer than 10 seconds to check, so this PreToolUse hook refuses it rather than let Claude Code'"'"'s own hook timeout run it unchecked -- a hook that overruns its timeout refuses nothing. Reading a command here grows faster than the command does. Split the command into shorter ones.'
+if [[ "${1-}" != --within-budget ]]; then
+  command -v timeout >/dev/null 2>&1 ||
+    refuse 'blocked: this PreToolUse hook needs timeout (coreutils) to bound how long it reads a command and timeout is not on PATH. A hook that overruns Claude Code'"'"'s hook timeout lets the command through unchecked, so it refuses rather than read without a bound. Install coreutils.'
+  timeout --kill-after=2 10 "${BASH:-bash}" "${GATE_SELF}" --within-budget
+  status=$?
+  ((status == 124 || status == 137)) && refuse "${BUDGET_MSG}"
+  exit "${status}"
+fi
 
 payload="$(cat)"
 command_string="$(printf '%s' "${payload}" | jq -r '.tool_input.command // empty')" ||
@@ -654,8 +696,10 @@ end_word
 # `env -S 'git diff /dev/null ./cosign.key'` (GNU and uutils
 # `--split-string`) splits its quoted string into a command this scan never
 # sees as words, so any `-S`, clustered (`-iS`) or long, after `env` is
-# refused outright. `sh -c ...` and `eval` remain the interpreters the
-# header says this hook does not see behind.
+# refused outright. `sh -c '...'`, `script -qc '...'` and the like are read
+# at the end of this file, where a string a program hands to a shell is read
+# as a command line of its own (see `unlisted_program_refusal`); `eval`
+# remains an interpreter the header says this hook does not see behind.
 #
 # The wrapper list has to hold every wrapper the permission layer steps over
 # before it matches an allow row, and Claude Code 2.1.267 strips `time`,
@@ -2215,5 +2259,219 @@ done
 # SHELLCHECK_EXPAND_MSG names that operand. Both strings are refused either
 # way; only which explanation the reader gets depends on the order.
 ((saw_gated && saw_export)) && refuse "${GATED_EXPORT_MSG}"
+
+# A gated command behind a program this gate neither checks nor steps over
+# (#580). Every scan above reads a gated command where it stands as a name:
+# first in its command, or behind a wrapper the name scan steps over, or by
+# the latches that look for a literal `git` or `shellcheck` word anywhere. No
+# list of programs that run their arguments is complete, though, and a word
+# that carries a whole command line is none of those. `script -qc 'git diff
+# /dev/null ./.env' /dev/null` hands the quoted string to a shell and printed
+# `.env`, and `setarch x86_64 bash -n -v .env` runs the linter row's command
+# behind a program no wrapper list names -- `strace`, `prlimit`, `setpriv`,
+# `nsenter` and `sh -c '...'` are the same shape. No allow row covers such a
+# program, so Claude Code prompts for it in the default mode, but bypass and
+# auto modes prompt for nothing, and this gate is then the only thing in the
+# way.
+#
+# So behind such a program each later word where a gated command starts is
+# read as a command of its own, from there to the end of the command, and so
+# is each command string a later word carries: the word itself when it holds
+# more than one word of its own (`sh -c '...'`), the value after a long
+# option's `=` (`--command='...'`), and every tail of a short-option cluster
+# (`script -qc'...'`). Each is read by running this hook on it, so it is held
+# to every rule above, and the program is refused when that command would be
+# refused standing alone. A command that passes alone still passes
+# (`setarch x86_64 git diff HEAD`, `bash -c 'echo hi'`).
+#
+# A command whose name is git or another gated command (bash aside, whose
+# `-c` takes a command string) is read by the scans above and not here. A
+# program that prints or matches its arguments and never runs them is not
+# read at all -- echo, printf, grep and rg, typed as the bare name or under
+# /usr/bin or /bin -- so `echo 'git diff /dev/null ./.env'` is left alone;
+# rg's `--pre` runs a program on each file it searches, never a command line.
+# Both skips hold only when no wrapper stands in front: behind one, every
+# word is a possible name and the first of them may be the wrapper's own
+# argument (`exec -a echo watch -n1 '...'` takes `echo` for the zeroth
+# argument and runs watch, which hands the string to a shell), so a wrapped
+# command is read whatever its first word is.
+# Reading again is bounded by the budget at the top of this file.
+# shellcheck disable=SC2016 # the backticks quote command spellings for the reader
+UNLISTED_PROGRAM_MSG='blocked: a program this gate neither checks nor steps over runs a command that is refused when it stands alone. `script -qc '"'"'git diff /dev/null ./.env'"'"' /dev/null` hands the quoted string to a shell and printed .env, and `setarch x86_64 bash -n -v .env` runs bash -n with the words after it; strace, prlimit, setpriv and sh -c are the same shape. No allow rule covers such a program, so Claude Code prompts for it in the default mode, but bypass and auto modes prompt for nothing, so the command it runs is read here as though it stood alone. Run that command on its own instead.'
+
+ARGUMENT_ONLY_PROGRAMS=(echo printf grep egrep fgrep rg)
+
+# The first word of every gated command: git, and the first word of each
+# GATED_PREFIXES row.
+GATED_FIRST_WORDS=(git)
+for prefix in "${GATED_PREFIXES[@]}"; do
+  GATED_FIRST_WORDS+=("${prefix%% *}")
+done
+
+# Whether a word names one of them, as itself or as a path whose last
+# component is one (`/usr/bin/shellcheck`).
+names_gated_command() {
+  local first
+  for first in "${GATED_FIRST_WORDS[@]}"; do
+    [[ "$1" == "${first}" || "$1" == */"${first##*/}" ]] && return 0
+  done
+  return 1
+}
+
+# Whether a command string names one of them, so that reading it could
+# refuse anything: a string that names none is not read. Every character that
+# cannot be part of a name counts as a boundary, a quote mark included, so
+# `sh -c "git diff ..."` inside another string is still found.
+mentions_gated_command() {
+  local text=" ${1//[^A-Za-z0-9_.\/-]/ } " first
+  for first in "${GATED_FIRST_WORDS[@]}"; do
+    [[ "${text}" == *[' /']"${first##*/}"' '* ]] && return 0
+  done
+  return 1
+}
+
+# The word as bash hands it to the program, into `unquoted`: quotes removed,
+# and a backslash dropped where it escapes the next character -- anywhere
+# outside quotes, and inside double quotes only before $, a backtick, " or \
+# -- but kept where it is literal, as it is inside single quotes. `words`
+# drops every quote mark and backslash, which flattens the quoting of a
+# string inside the string: `'sh -c "git diff a b"'` is `sh -c "git diff a
+# b"` to the program and `sh -c git diff a b` in `words`.
+unquote_word() {
+  local raw="$1" quote='' escaped=0 i ch
+  unquoted=''
+  for ((i = 0; i < ${#raw}; i++)); do
+    ch="${raw:i:1}"
+    if ((escaped)); then
+      escaped=0
+      if [[ "${quote}" == '"' ]]; then
+        case "${ch}" in
+        '$' | '`' | '"' | $'\\') ;;
+        *) unquoted+=$'\\' ;;
+        esac
+      fi
+      unquoted+="${ch}"
+    elif [[ "${quote}" == "'" ]]; then
+      if [[ "${ch}" == "'" ]]; then quote=''; else unquoted+="${ch}"; fi
+    elif [[ "${ch}" == $'\\' ]]; then
+      escaped=1
+    elif [[ "${ch}" == '"' ]]; then
+      if [[ "${quote}" == '"' ]]; then quote=''; else quote='"'; fi
+    elif [[ "${ch}" == "'" && -z "${quote}" ]]; then
+      quote="'"
+    else
+      unquoted+="${ch}"
+    fi
+  done
+}
+
+# Runs this hook on `$2` as a command of its own, and refuses with its reason
+# when it refuses; any exit but 0 is a refusal, so a reading that fails
+# refuses too.
+refuse_if_refused_alone() {
+  local program="$1" inner="$2" reason status
+  reason="$(jq -nc --arg c "${inner}" '{tool_name: "Bash", tool_input: {command: $c}}' |
+    CLAUDE_PROJECT_DIR="${PWD}" "${BASH:-bash}" "${GATE_SELF}" --within-budget 2>&1 >/dev/null)"
+  status=$?
+  ((status == 0)) && return 0
+  refuse "${UNLISTED_PROGRAM_MSG} Here ${program} runs \`${inner}\`, and on its own that command is refused: ${reason:-the reading exited ${status}}"
+}
+
+# One command, given as the indices of its words in order: its program is
+# the first word that names a command, and every later word is read as above.
+unlisted_program_refusal() {
+  local indices=("$@") pos idx first=-1 names=0 program inner cut cluster text only
+  local -a texts
+  for idx in "${indices[@]}"; do
+    ((${command_names[idx]:-0})) || continue
+    ((first < 0)) && first=${idx}
+    names=$((names + 1))
+  done
+  ((first >= 0)) || return 0
+  program="${words[first]}"
+  if ((names == 1)); then
+    [[ "${program##*/}" == bash ]] || ! names_gated_command "${program}" || return 0
+    for only in "${ARGUMENT_ONLY_PROGRAMS[@]}"; do
+      case "${raw_words[first]}" in
+      "${only}" | /usr/bin/"${only}" | /bin/"${only}") return 0 ;;
+      *) ;;
+      esac
+    done
+  fi
+  for ((pos = 0; pos < ${#indices[@]}; pos++)); do
+    idx=${indices[pos]}
+    if ((idx <= first)) || [[ "${kinds[idx]}" != word ]]; then
+      continue
+    fi
+    if names_gated_command "${words[idx]}"; then
+      inner=''
+      for cut in "${indices[@]:pos}"; do
+        inner+="${redirects[cut]}${raw_words[cut]} "
+      done
+      refuse_if_refused_alone "${program}" "${inner% }"
+    fi
+    unquote_word "${raw_words[idx]}"
+    texts=()
+    [[ "${unquoted}" == *[$' \t\n;&|<>()`']* ]] && texts+=("${unquoted}")
+    if [[ "${unquoted}" == --*=* ]]; then
+      texts+=("${unquoted#*=}")
+    elif [[ "${unquoted}" =~ ^-[A-Za-z0-9]+ ]]; then
+      cluster=${#BASH_REMATCH[0]}
+      for ((cut = 2; cut <= cluster; cut++)); do
+        texts+=("${unquoted:cut}")
+      done
+    fi
+    for text in "${texts[@]}"; do
+      if [[ -n "${text}" ]] && mentions_gated_command "${text}"; then
+        refuse_if_refused_alone "${program}" "${text}"
+      fi
+    done
+  done
+}
+
+# The commands of the string, each as its word indices. A `$(...)` or a
+# backtick substitution is a command of its own, and the command around it
+# goes on after it, the way the name scan reads it: in `setarch x86_64
+# $(true) bash -n -v .env` bash is still setarch's word.
+current=()
+outer_commands=()
+in_backtick=0
+for ((idx = 0; idx < ${#words[@]}; idx++)); do
+  if [[ "${kinds[idx]}" != sep ]]; then
+    current+=("${idx}")
+    continue
+  fi
+  # shellcheck disable=SC2016 # the literal `$(` and `$)` are separator names
+  case "${words[idx]}" in
+  '$(')
+    outer_commands+=("${current[*]-}")
+    current=()
+    ;;
+  '$)' | '`')
+    if [[ "${words[idx]}" == '`' ]] && ((!in_backtick)); then
+      in_backtick=1
+      outer_commands+=("${current[*]-}")
+      current=()
+      continue
+    fi
+    [[ "${words[idx]}" == '`' ]] && in_backtick=0
+    ((${#current[@]})) && unlisted_program_refusal "${current[@]}"
+    current=()
+    if ((${#outer_commands[@]})); then
+      read -r -a current <<<"${outer_commands[-1]}"
+      unset 'outer_commands[-1]'
+    fi
+    ;;
+  *)
+    ((${#current[@]})) && unlisted_program_refusal "${current[@]}"
+    current=()
+    ;;
+  esac
+done
+((${#current[@]})) && unlisted_program_refusal "${current[@]}"
+for text in "${outer_commands[@]}"; do
+  read -r -a current <<<"${text}"
+  ((${#current[@]})) && unlisted_program_refusal "${current[@]}"
+done
 
 exit 0
