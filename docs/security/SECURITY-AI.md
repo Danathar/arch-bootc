@@ -650,6 +650,11 @@ must be described as such.
   command string a later word carries (`sh -c '...'`, `--command='...'`,
   `-qc'...'`), is read as a command of its own — the hook runs itself on it,
   so every rule above applies — and refused when it would be refused alone.
+  The search for a gated name in such a string looks again with quote marks,
+  backslashes and braces taken out and matches a word holding a glob
+  character as a pattern, since the shell the string is handed to does the
+  same before it looks the name up: `sh -c 'g""it diff /dev/null ./.env'`,
+  `g\it`, `g{,}it` and `/usr/bin/g?t` all run git (#584).
   A command that passes alone still passes: `setarch x86_64 git diff HEAD`
   and `sh -c 'git status'` are unaffected. `echo`, `printf`, `grep` and `rg`
   print or match their arguments and are not read. The hook reads every
