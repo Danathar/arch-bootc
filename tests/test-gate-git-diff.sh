@@ -2940,6 +2940,30 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' refused 'neither checks nor steps over' \
     'a shell string is held to every rule, the shellcheck operand test included' \
     "sh -c 'shellcheck ./.env'"
+  # The shell a string is handed to removes quotes and backslashes and
+  # expands braces and globs before it looks the name up, so a string that
+  # spells git only once those are gone still runs it.
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'an empty quote inside the name: the shell joins g and it into git' \
+    "sh -c 'g\"\"it diff /dev/null ./.env'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a backslash inside the name, behind script' \
+    "script -qc 'g\\it diff /dev/null ./.env' /dev/null"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'an empty ANSI-C or locale string inside the name' \
+    "sh -c 'g\$\"\"it diff /dev/null ./.env'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a brace the shell expands to git git' \
+    "sh -c 'g{,}it diff /dev/null ./.env'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a glob the shell matches to /usr/bin/git' \
+    "sh -c '/usr/bin/g?t diff /dev/null ./.env'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a quoted linter name, held to the operand test' \
+    "setarch x86_64 sh -c 'shell\"\"check ./.env'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a short-option cluster with no space before the quote, found with the quote as a boundary' \
+    "sh -c 'sh -c\"git diff /dev/null ./.env\"'"
   corpus_row 'command name' refused 'neither checks nor steps over' \
     'setarch runs bash -n with the words after it, and -v prints the file bash reads' \
     'setarch x86_64 bash -n -v .env'
@@ -2967,6 +2991,12 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' allowed '' \
     'a shell string inside a shell string, passing alone' \
     "sh -c 'sh -c \"git diff HEAD\"'"
+  corpus_row 'command name' allowed '' \
+    'a quoted name in a string that passes alone' \
+    "sh -c 'g\"\"it status'"
+  corpus_row 'command name' allowed '' \
+    'a program text with quotes, a $ and a glob character that names no gated command' \
+    "awk -F: '\$1 == \"root\" {print \$7}' /etc/passwd"
   corpus_row 'command name' allowed '' \
     'echo prints its argument and runs nothing' \
     "echo 'git diff /dev/null ./.env'"
@@ -3498,7 +3528,15 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   mutation_row 'a quote mark as a boundary around a gated name in a string' \
     '${1//[^A-Za-z0-9_.\/-]/ }' \
     '${1//[$'"'"'\t\n;&|()`<>'"'"']/ }' \
-    "sh -c 'sh -c \"git diff /dev/null ./.env\"'"
+    "sh -c 'sh -c\"git diff /dev/null ./.env\"'"
+  mutation_row 'reading a string again with its quotes, backslashes and braces taken out' \
+    '${spelled//[^A-Za-z0-9_.\/-]/ }' \
+    '' \
+    "sh -c 'g\"\"it diff /dev/null ./.env'"
+  mutation_row 'matching a word with a glob character as a pattern' \
+    '&& "${first##*/}" == ${word##*/} ]] && return 0' \
+    '&& "${first##*/}" == "${word##*/}" ]] && return 0' \
+    "sh -c '/usr/bin/g?t diff /dev/null ./.env'"
   }
   mutation_table
 
