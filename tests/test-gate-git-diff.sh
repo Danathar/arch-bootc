@@ -2461,6 +2461,34 @@ if ((settings_readable)); then
     fail "and it is refused inside the hook timeout" "took ${budget_elapsed}s"
   fi
 
+  # GNU timeout exits 137 rather than 124 when the command ignores the TERM
+  # and --kill-after has to KILL it. That is the same overrun, so it is the
+  # same refusal: a stand-in timeout that reports 137 must not be read as the
+  # hook's own exit status.
+  killed_dir="$(mktemp -d)"
+  for killed_tool in bash env git cat jq realpath; do
+    killed_path="$(command -v "${killed_tool}" 2>/dev/null)" || continue
+    ln -sf "${killed_path}" "${killed_dir}/${killed_tool}"
+  done
+  printf '#!/bin/sh\nexit 137\n' >"${killed_dir}/timeout"
+  chmod +x "${killed_dir}/timeout"
+  killed_status=0
+  killed_stderr=""
+  for hook_command in "${bash_hooks[@]+"${bash_hooks[@]}"}"; do
+    killed_payload="$(jq -nc '{tool_name: "Bash", tool_input: {command: "git status"}}')"
+    killed_err="$(printf '%s' "${killed_payload}" | CLAUDE_PROJECT_DIR="${REPO_ROOT}" PATH="${killed_dir}" bash -c "${hook_command}" 2>&1 >/dev/null)"
+    killed_rc=$?
+    ((killed_rc > killed_status)) && killed_status="${killed_rc}"
+    [[ -n "${killed_err}" ]] && killed_stderr+="${killed_err} "
+  done
+  rm -rf "${killed_dir}"
+  if ((killed_status == 2)) && [[ "${killed_stderr}" == *"took longer than 10 seconds to check"* ]]; then
+    pass "a reading timeout had to kill is refused, naming the budget"
+  else
+    fail "a reading timeout had to kill is refused, naming the budget" \
+      "exit ${killed_status} with stderr '${killed_stderr:-<none>}'; status 137 is an overrun, not the hook's answer"
+  fi
+
   # A malformed payload is the same case: the hook cannot tell what the call
   # does, so it must not decide that it is safe.
   run_bash_hooks 'not json at all'
@@ -2982,6 +3010,46 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' refused 'an output redirection' \
     'a path to df is held to the redirection rule' \
     '/usr/bin/df -T >cosign.pub'
+  # A literal path behind such a program is the same tool as the bare name.
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a path to git behind a program' \
+    'setarch x86_64 /usr/bin/git diff /dev/null ./.env'
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a path to shellcheck behind a program' \
+    'setarch x86_64 /usr/bin/shellcheck ./.env'
+  # The redirection is part of the command read behind the program.
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'podman behind a program keeps its output redirection' \
+    'setarch x86_64 podman images >cosign.pub'
+  # A brace group that only spells the name once its comma is gone.
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a brace group inside the name, behind a program' \
+    'setarch x86_64 g{i,}t diff /dev/null ./.env'
+  # A backtick substitution is a command of its own, and the command around
+  # it goes on after it, as with $(...).
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a backtick substitution does not end the command around it' \
+    "setarch x86_64 \`true\` echo 'git diff /dev/null ./.env'"
+  # Inside a command string, past its first command: each character the
+  # shell removes before the lookup, and a path or bracket glob to git.
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a name split by single quotes inside a double-quoted string' \
+    "sh -c \"g''it diff /dev/null ./.env\""
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'an empty brace group inside the name, after another command' \
+    "sh -c 'true; g{,}it diff /dev/null ./.env'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a brace group with a comma inside the name, after another command' \
+    "sh -c 'true; g{i,}t diff /dev/null ./.env'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a path to git inside a command string' \
+    "sh -c '/usr/bin/git diff /dev/null ./.env'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a bracket glob to git inside a command string' \
+    "sh -c '/usr/bin/g[i]t diff /dev/null ./.env'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a command string whose words are separated by tabs' \
+    "sh -c 'git"$'\t'"diff"$'\t'"/dev/null"$'\t'"./.env'"
   corpus_row 'command name' refused 'neither checks nor steps over' \
     'a quoted linter name, held to the operand test' \
     "setarch x86_64 sh -c 'shell\"\"check ./.env'"
@@ -3033,6 +3101,34 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' allowed '' \
     'the same path glob in a shell string' \
     "sh -c 'ls /usr/bin/g*'"
+  # Programs that print or match their arguments are not read, by any of
+  # the spellings the skip names.
+  corpus_row 'command name' allowed '' \
+    'printf prints the string and runs nothing' \
+    "printf '%s\n' 'git diff /dev/null ./.env'"
+  corpus_row 'command name' allowed '' \
+    'egrep matches the string and runs nothing' \
+    "egrep -rn 'git diff /dev/null ./.env' docs"
+  corpus_row 'command name' allowed '' \
+    'fgrep matches the string and runs nothing' \
+    "fgrep -rn 'git diff /dev/null ./.env' docs"
+  corpus_row 'command name' allowed '' \
+    'rg matches the string and runs nothing' \
+    "rg -n 'git diff /dev/null ./.env' docs"
+  corpus_row 'command name' allowed '' \
+    'echo under /usr/bin prints the string and runs nothing' \
+    "/usr/bin/echo 'git diff /dev/null ./.env'"
+  corpus_row 'command name' allowed '' \
+    'echo under /bin prints the string and runs nothing' \
+    "/bin/echo 'git diff /dev/null ./.env'"
+  # A glob with no / names files in the working directory, not a program.
+  corpus_row 'command name' allowed '' \
+    'a glob with no / behind a program lists files, it does not run bash' \
+    'setarch x86_64 ls ba?h -n -v .env'
+  # A redirection target is a file name, never a command.
+  corpus_row 'command name' allowed '' \
+    'a redirection target that reads like a command line' \
+    "setarch x86_64 ls >'git diff /dev/null ./.env'"
   corpus_row 'command name' allowed '' \
     'a program text with quotes, a $ and a glob character that names no gated command' \
     "awk -F: '\$1 == \"root\" {print \$7}' /etc/passwd"
