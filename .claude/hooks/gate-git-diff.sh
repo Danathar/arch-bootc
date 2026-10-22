@@ -2379,6 +2379,16 @@ unquote_word() {
   done
 }
 
+# Whether a word, as typed, is one the shell turns into a gated name only by
+# expanding it: a brace group (`{git,diff}` is `git diff`) or a glob that
+# holds a `/` (`/usr/bin/g?t` is `/usr/bin/git`). A glob with no `/` matches
+# files in the working directory, not a program, so `find . -name '*.sh'` is
+# not read as the `*.sh` command.
+expands_to_gated_command() {
+  [[ "$1" == *"{"* || ("$1" == */* && "$1" == *[*?[]*) ]] || return 1
+  mentions_gated_command "$1"
+}
+
 # Runs this hook on `$2` as a command of its own, and refuses with its reason
 # when it refuses; any exit but 0 is a refusal, so a reading that fails
 # refuses too.
@@ -2417,7 +2427,7 @@ unlisted_program_refusal() {
     if ((idx <= first)) || [[ "${kinds[idx]}" != word ]]; then
       continue
     fi
-    if names_gated_command "${words[idx]}"; then
+    if names_gated_command "${words[idx]}" || expands_to_gated_command "${raw_words[idx]}"; then
       inner=''
       for cut in "${indices[@]:pos}"; do
         inner+="${redirects[cut]}${raw_words[cut]} "

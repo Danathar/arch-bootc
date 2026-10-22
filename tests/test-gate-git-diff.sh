@@ -2958,6 +2958,17 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' refused 'neither checks nor steps over' \
     'a glob the shell matches to /usr/bin/git' \
     "sh -c '/usr/bin/g?t diff /dev/null ./.env'"
+  # A word behind such a program is expanded by the shell too, after the
+  # hook has decided: a brace group or a glob with a / can become git.
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a brace group the shell turns into git diff, behind a program' \
+    'setarch x86_64 {git,diff} /dev/null ./.env'
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a glob the shell matches to /usr/bin/git, behind a program' \
+    'setarch x86_64 /usr/bin/g?t diff /dev/null ./.env'
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a bracket glob behind a program' \
+    'setarch x86_64 /usr/bin/g[i]t diff /dev/null ./.env'
   corpus_row 'command name' refused 'neither checks nor steps over' \
     'a quoted linter name, held to the operand test' \
     "setarch x86_64 sh -c 'shell\"\"check ./.env'"
@@ -2994,6 +3005,12 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' allowed '' \
     'a quoted name in a string that passes alone' \
     "sh -c 'g\"\"it status'"
+  corpus_row 'command name' allowed '' \
+    'a brace group behind a program that names no gated command' \
+    'setarch x86_64 cat {a,b}.txt'
+  corpus_row 'command name' allowed '' \
+    'a quoted glob with no / behind a program, which matches files' \
+    "setarch x86_64 find . -name '*.sh'"
   corpus_row 'command name' allowed '' \
     'a program text with quotes, a $ and a glob character that names no gated command' \
     "awk -F: '\$1 == \"root\" {print \$7}' /etc/passwd"
@@ -3537,6 +3554,10 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     '&& "${first##*/}" == ${word##*/} ]] && return 0' \
     '&& "${first##*/}" == "${word##*/}" ]] && return 0' \
     "sh -c '/usr/bin/g?t diff /dev/null ./.env'"
+  mutation_row 'reading a word the shell expands into a gated name behind a program' \
+    '|| expands_to_gated_command "${raw_words[idx]}"; then' \
+    '; then' \
+    'setarch x86_64 {git,diff} /dev/null ./.env'
   }
   mutation_table
 
