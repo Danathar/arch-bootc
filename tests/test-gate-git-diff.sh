@@ -3012,6 +3012,12 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     'a quoted glob with no / behind a program, which matches files' \
     "setarch x86_64 find . -name '*.sh'"
   corpus_row 'command name' allowed '' \
+    'a path glob is read as the name it matches, which passes alone' \
+    'ls /usr/bin/g*'
+  corpus_row 'command name' allowed '' \
+    'the same path glob in a shell string' \
+    "sh -c 'ls /usr/bin/g*'"
+  corpus_row 'command name' allowed '' \
     'a program text with quotes, a $ and a glob character that names no gated command' \
     "awk -F: '\$1 == \"root\" {print \$7}' /etc/passwd"
   corpus_row 'command name' allowed '' \
