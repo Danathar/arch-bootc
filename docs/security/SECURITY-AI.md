@@ -654,7 +654,14 @@ must be described as such.
   backslashes and braces taken out and matches a word holding a glob
   character as a pattern, since the shell the string is handed to does the
   same before it looks the name up: `sh -c 'g""it diff /dev/null ./.env'`,
-  `g\it`, `g{,}it` and `/usr/bin/g?t` all run git (#584).
+  `g\it`, `g{,}it` and `/usr/bin/g?t` all run git (#584). A later word the
+  shell expands into a gated name is read the same way: a brace group or a
+  glob with a `/` (`setarch x86_64 {git,diff} ...`,
+  `setarch x86_64 /usr/bin/g?t diff ...`) is read as git (#586).
+  A literal path to git or to the first word of a gated prefix is read as
+  that command: `/usr/bin/shellcheck ./.env`, `/usr/bin/bash -n -v .env` and
+  `/usr/bin/podman images >cosign.pub` are held to the rules their bare
+  spellings are (#586).
   A command that passes alone still passes: `setarch x86_64 git diff HEAD`
   and `sh -c 'git status'` are unaffected. `echo`, `printf`, `grep` and `rg`
   print or match their arguments and are not read. The hook reads every

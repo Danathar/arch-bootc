@@ -1030,9 +1030,20 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
     fi
     continue
   fi
-  if [[ "${word}" == */git ]]; then
-    words[idx]=git
-    raw_words[idx]=git
+  # A literal path to git, or to the first word of a gated prefix, reaches
+  # the same tool, and is rewritten so every rule the bare name opens applies:
+  # `/usr/bin/shellcheck ./.env` printed the file back, `/usr/bin/bash -n -v
+  # .env` printed it and `/usr/bin/podman images >cosign.pub` truncated the
+  # trust anchor, while each bare spelling was refused (#586). No allow rule
+  # matches the path spelling, but bypass and auto modes prompt for nothing.
+  if [[ "${word}" == */* ]]; then
+    case "${word##*/}" in
+    git | shellcheck | bash | podman | findmnt | df)
+      raw_words[idx]="${word##*/}"
+      words[idx]="${word##*/}"
+      ;;
+    *) ;;
+    esac
   fi
   # A dash-prefixed word after a wrapper is the wrapper's own option, not the
   # name of the command it runs. It is still held to the literal-name test
@@ -2379,6 +2390,36 @@ unquote_word() {
   done
 }
 
+# Whether a word, as typed, is one the shell turns into a gated name only by
+# expanding it: a brace group (`{git,diff}` is `git diff`) or a glob that
+# holds a `/` (`/usr/bin/g?t` is `/usr/bin/git`). Sets `expanded` to the
+# words the shell makes of it, so the command is read from there as the shell
+# will run it: `ls /usr/bin/g*` reads `git` alone, which passes,
+# rather than a glob in command position, which is refused. A glob with no
+# `/` matches files in the working directory, not a program, so
+# `find . -name '*.sh'` is not read as the `*.sh` command.
+expands_to_gated_command() {
+  local spelled="${1//[\"\'\\\$]/}" first text
+  local -a parts
+  expanded=''
+  if [[ "$1" == *"{"* ]]; then
+    for text in "${spelled//[\{\},]/}" "${spelled//[\{\},]/ }"; do
+      read -r -a parts <<<"${text}"
+      expanded="${parts[*]}"
+      ((${#parts[@]})) && names_gated_command "${parts[0]}" && return 0
+    done
+  fi
+  if [[ "$1" == */* && "$1" == *[*?[]* ]]; then
+    for first in "${GATED_FIRST_WORDS[@]}"; do
+      expanded="${first}"
+      # shellcheck disable=SC2053 # the word is matched as a pattern on purpose
+      [[ "${first##*/}" == ${spelled##*/} ]] && return 0
+    done
+  fi
+  expanded=''
+  return 1
+}
+
 # Runs this hook on `$2` as a command of its own, and refuses with its reason
 # when it refuses; any exit but 0 is a refusal, so a reading that fails
 # refuses too.
@@ -2394,7 +2435,7 @@ refuse_if_refused_alone() {
 # One command, given as the indices of its words in order: its program is
 # the first word that names a command, and every later word is read as above.
 unlisted_program_refusal() {
-  local indices=("$@") pos idx first=-1 names=0 program inner cut cluster text only
+  local indices=("$@") pos idx first=-1 names=0 program inner cut cluster text only expanded
   local -a texts
   for idx in "${indices[@]}"; do
     ((${command_names[idx]:-0})) || continue
@@ -2404,7 +2445,7 @@ unlisted_program_refusal() {
   ((first >= 0)) || return 0
   program="${words[first]}"
   if ((names == 1)); then
-    [[ "${program##*/}" == bash ]] || ! names_gated_command "${program}" || return 0
+    [[ "${program}" == bash ]] || ! names_gated_command "${program}" || return 0
     for only in "${ARGUMENT_ONLY_PROGRAMS[@]}"; do
       case "${raw_words[first]}" in
       "${only}" | /usr/bin/"${only}" | /bin/"${only}") return 0 ;;
@@ -2417,10 +2458,15 @@ unlisted_program_refusal() {
     if ((idx <= first)) || [[ "${kinds[idx]}" != word ]]; then
       continue
     fi
-    if names_gated_command "${words[idx]}"; then
+    expanded=''
+    if names_gated_command "${words[idx]}" || expands_to_gated_command "${raw_words[idx]}"; then
       inner=''
       for cut in "${indices[@]:pos}"; do
-        inner+="${redirects[cut]}${raw_words[cut]} "
+        if ((cut == idx)) && [[ -n "${expanded}" ]]; then
+          inner+="${redirects[cut]}${expanded} "
+        else
+          inner+="${redirects[cut]}${raw_words[cut]} "
+        fi
       done
       refuse_if_refused_alone "${program}" "${inner% }"
     fi
