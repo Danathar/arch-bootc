@@ -2969,6 +2969,19 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' refused 'neither checks nor steps over' \
     'a bracket glob behind a program' \
     'setarch x86_64 /usr/bin/g[i]t diff /dev/null ./.env'
+  # A literal path to a gated tool reaches the same tool.
+  corpus_row 'command name' refused 'shellcheck prints the source line' \
+    'a path to shellcheck prints the file back like shellcheck' \
+    '/usr/bin/shellcheck ./.env'
+  corpus_row 'command name' refused 'print or copy what it reads' \
+    'a path to bash is held to the bash -n rule' \
+    '/usr/bin/bash -n -v .env'
+  corpus_row 'command name' refused 'an output redirection' \
+    'a path to podman is held to the redirection rule' \
+    '/usr/bin/podman images >cosign.pub'
+  corpus_row 'command name' refused 'an output redirection' \
+    'a path to df is held to the redirection rule' \
+    '/usr/bin/df -T >cosign.pub'
   corpus_row 'command name' refused 'neither checks nor steps over' \
     'a quoted linter name, held to the operand test' \
     "setarch x86_64 sh -c 'shell\"\"check ./.env'"
@@ -3014,6 +3027,9 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' allowed '' \
     'a path glob is read as the name it matches, which passes alone' \
     'ls /usr/bin/g*'
+  corpus_row 'command name' allowed '' \
+    'a path to podman with nothing that writes' \
+    '/usr/bin/podman images'
   corpus_row 'command name' allowed '' \
     'the same path glob in a shell string' \
     "sh -c 'ls /usr/bin/g*'"
@@ -3540,10 +3556,13 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     'refuse_if_refused_alone "${program}" "${text}"' \
     ':' \
     "script -qc 'git diff /dev/null ./.env' /dev/null"
-  mutation_row 'reading a path to bash as bash, whose -c takes a command string' \
-    '[[ "${program##*/}" == bash ]] ||' \
-    '[[ "${program}" == bash ]] ||' \
-    "/usr/bin/bash -c 'git diff /dev/null ./.env'"
+  # A path to bash is rewritten to bash by the name scan (#586), so the
+  # unlisted-program reading is handed `bash`; the rewrite's mutation below
+  # holds the path rows.
+  mutation_row "reading a path to a gated prefix's first word as that word" \
+    'git | shellcheck | bash | podman | findmnt | df)' \
+    'git | gitx)' \
+    '/usr/bin/shellcheck ./.env'
   mutation_row 'reading a wrapped command whatever its first word is' \
     'if ((names == 1)); then' \
     'if true; then' \

@@ -1030,9 +1030,20 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
     fi
     continue
   fi
-  if [[ "${word}" == */git ]]; then
-    words[idx]=git
-    raw_words[idx]=git
+  # A literal path to git, or to the first word of a gated prefix, reaches
+  # the same tool, and is rewritten so every rule the bare name opens applies:
+  # `/usr/bin/shellcheck ./.env` printed the file back, `/usr/bin/bash -n -v
+  # .env` printed it and `/usr/bin/podman images >cosign.pub` truncated the
+  # trust anchor, while each bare spelling was refused (#586). No allow rule
+  # matches the path spelling, but bypass and auto modes prompt for nothing.
+  if [[ "${word}" == */* ]]; then
+    case "${word##*/}" in
+    git | shellcheck | bash | podman | findmnt | df)
+      raw_words[idx]="${word##*/}"
+      words[idx]="${word##*/}"
+      ;;
+    *) ;;
+    esac
   fi
   # A dash-prefixed word after a wrapper is the wrapper's own option, not the
   # name of the command it runs. It is still held to the literal-name test
@@ -2434,7 +2445,7 @@ unlisted_program_refusal() {
   ((first >= 0)) || return 0
   program="${words[first]}"
   if ((names == 1)); then
-    [[ "${program##*/}" == bash ]] || ! names_gated_command "${program}" || return 0
+    [[ "${program}" == bash ]] || ! names_gated_command "${program}" || return 0
     for only in "${ARGUMENT_ONLY_PROGRAMS[@]}"; do
       case "${raw_words[first]}" in
       "${only}" | /usr/bin/"${only}" | /bin/"${only}") return 0 ;;
