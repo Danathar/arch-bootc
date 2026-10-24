@@ -2997,6 +2997,51 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' refused 'neither checks nor steps over' \
     'a bracket glob behind a program' \
     'setarch x86_64 /usr/bin/g[i]t diff /dev/null ./.env'
+  # A glob with no / matches files in the working directory, and the agent
+  # makes those: after `touch git`, `g?t` is git (#593). It is read as every
+  # gated name it matches, so a glob that only lists files can still be
+  # refused when it also matches one (`ls ba?h -n -v .env` is `bash -n -v`
+  # once a file named bash is there).
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a glob with no / beside a file named git, behind a program' \
+    'touch git; setarch x86_64 g?t diff /dev/null ./.env'
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a glob with no / that matches bash, behind a program' \
+    'setarch x86_64 ls ba?h -n -v .env'
+  # An extglob pattern is one word to bash once a line of the command has
+  # run `shopt -s extglob`, and it matches a name the way `?` does. Split at
+  # its `(`, it was a word ending in `@` and a subshell, and neither was read
+  # as git.
+  corpus_row 'command name' refused 'not spelled literally' \
+    'an extglob pattern the shell matches to /usr/bin/git' \
+    $'shopt -s extglob\n/usr/bin/g@(i)t diff /dev/null ./.env'
+  corpus_row 'command name' refused 'not spelled literally' \
+    'an extglob name with no /, beside a file named git' \
+    $'shopt -s extglob\ntouch git; g@(i)t diff /dev/null ./.env'
+  corpus_row 'command name' refused 'not spelled literally' \
+    '!(...) glued to the name is a glob, not a negated subshell' \
+    $'shopt -s extglob\n!(x) diff /dev/null ./.env'
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'an extglob name behind a program' \
+    'setarch x86_64 /usr/bin/+(g)it diff /dev/null ./.env'
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'an extglob name in a shell string' \
+    "sh -c '/usr/bin/@(gi)t diff /dev/null ./.env'"
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'an extglob name with a space inside it, behind a program' \
+    'setarch x86_64 /usr/bin/@(x |gi)t diff /dev/null ./.env'
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a nested extglob name with a space inside it, in a shell string' \
+    "sh -c '/usr/bin/@(x |g@(i|y z))t diff /dev/null ./.env'"
+  corpus_row 'command name' refused 'inside an extended glob' \
+    'a command substitution inside an extglob pattern' \
+    'echo x@(a|$(cat .env))'
+  corpus_row 'command name' refused 'inside an extended glob' \
+    'a process substitution inside an extglob pattern' \
+    'cat @(a|<(cat .env))'
+  corpus_row 'command name' refused 'expands a glob' \
+    'an extglob operand to git is a glob like any other' \
+    $'shopt -s extglob\ngit diff /dev/null @(.env)'
   # A literal path to a gated tool reaches the same tool.
   corpus_row 'command name' refused 'shellcheck prints the source line' \
     'a path to shellcheck prints the file back like shellcheck' \
@@ -3121,10 +3166,16 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' allowed '' \
     'echo under /bin prints the string and runs nothing' \
     "/bin/echo 'git diff /dev/null ./.env'"
-  # A glob with no / names files in the working directory, not a program.
+  # An extglob pattern that names no gated command lists files.
   corpus_row 'command name' allowed '' \
-    'a glob with no / behind a program lists files, it does not run bash' \
-    'setarch x86_64 ls ba?h -n -v .env'
+    'turning extglob on does not refuse an ordinary diff' \
+    $'shopt -s extglob\ngit diff HEAD'
+  corpus_row 'command name' allowed '' \
+    'an extglob that only lists files, behind a program' \
+    'setarch x86_64 ls !(foo)'
+  corpus_row 'command name' allowed '' \
+    'an extglob of directories that names no gated command' \
+    'setarch x86_64 ls @(docs|tests)'
   # A redirection target is a file name, never a command.
   corpus_row 'command name' allowed '' \
     'a redirection target that reads like a command line' \
@@ -3676,9 +3727,33 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     '&& "${first##*/}" == "${word##*/}" ]] && return 0' \
     "sh -c '/usr/bin/g?t diff /dev/null ./.env'"
   mutation_row 'reading a word the shell expands into a gated name behind a program' \
-    '|| expands_to_gated_command "${raw_words[idx]}"; then' \
-    '; then' \
+    '      expands_to_gated_command "${raw_words[idx]}"' \
+    '      :' \
     'setarch x86_64 {git,diff} /dev/null ./.env'
+  mutation_row 'reading a glob with no / that bash would expand behind a program' \
+    ' || word_bash_would_rewrite "$1"; then' \
+    '; then' \
+    'touch git; setarch x86_64 g?t diff /dev/null ./.env'
+  mutation_row 'refusing an extglob pattern as a command name' \
+    '  word_has_extglob "${raw}" && return 1' \
+    ':' \
+    $'shopt -s extglob\n/usr/bin/g@(i)t diff /dev/null ./.env'
+  mutation_row 'reading an extglob pattern as one word' \
+    'elif [[ "${ch}" == '"'"'('"'"' ]] && word_ends_in_unquoted_extglob_op "${raw_word}"; then' \
+    'elif false; then' \
+    'setarch x86_64 /usr/bin/+(g)it diff /dev/null ./.env'
+  mutation_row 'refusing a substitution inside an extglob pattern' \
+    '      refuse "${EXTGLOB_SUBST_MSG}"' \
+    ':' \
+    'echo x@(a|$(cat .env))'
+  mutation_row 'cutting an extglob word in a string outside its parentheses only' \
+    '        depth=$((depth + 1))' \
+    '        depth=0' \
+    "sh -c '/usr/bin/@(x |g@(i|y z))t diff /dev/null ./.env'"
+  mutation_row 'matching an extglob word in a string as a pattern' \
+    '        [[ "${first##*/}" == ${word##*/} ]] && return 0' \
+    '        [[ "${first##*/}" == "${word##*/}" ]] && return 0' \
+    "sh -c '/usr/bin/@(gi)t diff /dev/null ./.env'"
   }
   mutation_table
 
@@ -3735,7 +3810,7 @@ group "The fleet's shared refusal corpus (tests/fixtures/gate-refusal-corpus.jso
 # decision is an allow.
 
 CORPUS="tests/fixtures/gate-refusal-corpus.json"
-CORPUS_SHA256="cb02115a0258617b3d10d7ed9a568cb97ae29c14743e49a82e390afb21b76bb8"
+CORPUS_SHA256="05e29d13f2f2ca116e0f3137842184bf90a18add6ae48fe4c18b5b5e19ce3fd8"
 
 # The command prefix each wildcard Bash(...) allow rule covers, one per line.
 # The fleet spells a prefix rule three ways (`git diff:*`, `git diff *`,
