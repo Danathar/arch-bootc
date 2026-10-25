@@ -2547,7 +2547,7 @@ refuse_if_refused_alone() {
 # One command, given as the indices of its words in order: its program is
 # the first word that names a command, and every later word is read as above.
 unlisted_program_refusal() {
-  local indices=("$@") pos idx first=-1 names=0 program inner cut cluster text only expanded
+  local indices=("$@") pos idx first=-1 names=0 program inner cut cluster text only expanded count
   local -a texts expansions
   for idx in "${indices[@]}"; do
     ((${command_names[idx]:-0})) || continue
@@ -2598,6 +2598,17 @@ unlisted_program_refusal() {
         texts+=("${unquoted:cut}")
       done
     fi
+    # Each string is read a second time with its backslash-newline pairs
+    # removed, when it has any. The shell the string is handed to drops a
+    # `\<newline>` outside single quotes before it reads a word, so
+    # `bash -c 'gi\<newline>t diff /dev/null ./.env'` runs git while neither
+    # `gi` nor `t` is a gated name; the single quotes around the string kept
+    # the pair from the join this hook makes of the command it was given.
+    # The second reading can only add a refusal.
+    count=${#texts[@]}
+    for ((cut = 0; cut < count; cut++)); do
+      [[ "${texts[cut]}" == *$'\\\n'* ]] && texts+=("${texts[cut]//$'\\\n'/}")
+    done
     for text in "${texts[@]}"; do
       if [[ -n "${text}" ]] && mentions_gated_command "${text}"; then
         refuse_if_refused_alone "${program}" "${text}"

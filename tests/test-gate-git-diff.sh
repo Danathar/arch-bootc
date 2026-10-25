@@ -3042,6 +3042,21 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' refused 'expands a glob' \
     'an extglob operand to git is a glob like any other' \
     $'shopt -s extglob\ngit diff /dev/null @(.env)'
+  # The shell a command string is handed to joins a backslash-newline before
+  # it reads a word. Single quotes keep the pair from the join the hook makes
+  # of the outer command, so neither half of the name was a gated name to it.
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a name split by a backslash-newline in a shell string' \
+    $'bash -c \'gi\\\nt diff /dev/null ./.env\''
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'a name split by a backslash-newline in a script -c string' \
+    $'script -qc \'gi\\\nt diff /dev/null ./.env\' /dev/null'
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'an extglob name split by a backslash-newline in a shell string' \
+    $'bash -O extglob -c \'/usr/bin/g@\\\n(i)t diff /dev/null ./.env\''
+  corpus_row 'command name' refused 'neither checks nor steps over' \
+    'the linter row split by a backslash-newline in a shell string' \
+    $'bash -c \'ba\\\nsh -n -v ./.env\''
   # A literal path to a gated tool reaches the same tool.
   corpus_row 'command name' refused 'shellcheck prints the source line' \
     'a path to shellcheck prints the file back like shellcheck' \
@@ -3176,6 +3191,9 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row 'command name' allowed '' \
     'an extglob of directories that names no gated command' \
     'setarch x86_64 ls @(docs|tests)'
+  corpus_row 'command name' allowed '' \
+    'a joined name in a shell string that passes alone' \
+    $'bash -c \'gi\\\nt status\''
   # A redirection target is a file name, never a command.
   corpus_row 'command name' allowed '' \
     'a redirection target that reads like a command line' \
@@ -3754,6 +3772,10 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     '        [[ "${first##*/}" == ${word##*/} ]] && return 0' \
     '        [[ "${first##*/}" == "${word##*/}" ]] && return 0' \
     "sh -c '/usr/bin/@(gi)t diff /dev/null ./.env'"
+  mutation_row 'reading a shell string again with its backslash-newlines joined' \
+    '      [[ "${texts[cut]}" == *$'"'"'\\\n'"'"'* ]] && texts+=("${texts[cut]//$'"'"'\\\n'"'"'/}")' \
+    '      :' \
+    $'bash -c \'gi\\\nt diff /dev/null ./.env\''
   }
   mutation_table
 
@@ -3810,7 +3832,7 @@ group "The fleet's shared refusal corpus (tests/fixtures/gate-refusal-corpus.jso
 # decision is an allow.
 
 CORPUS="tests/fixtures/gate-refusal-corpus.json"
-CORPUS_SHA256="05e29d13f2f2ca116e0f3137842184bf90a18add6ae48fe4c18b5b5e19ce3fd8"
+CORPUS_SHA256="4de5c91334b06c013d0fa93430610301ea8d6844cb0531622b7a6164978b5fb3"
 
 # The command prefix each wildcard Bash(...) allow rule covers, one per line.
 # The fleet spells a prefix rule three ways (`git diff:*`, `git diff *`,

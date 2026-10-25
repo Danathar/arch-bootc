@@ -669,6 +669,11 @@ must be described as such.
   matches behind a program or in a command string; a `$(...)`, a backtick
   or a process substitution written inside the pattern is refused
   outright, since bash runs it before it matches the pattern.
+  A command string is read a second time with its backslash-newline pairs
+  joined, as the shell it is handed to joins them: the single quotes around
+  `bash -c 'gi\<newline>t diff /dev/null ./.env'` keep the pair from the
+  hook's own join, so neither half was a gated name to the search, and the
+  inner shell then ran git and printed `.env` (#598).
   A literal path to git or to the first word of a gated prefix is read as
   that command: `/usr/bin/shellcheck ./.env`, `/usr/bin/bash -n -v .env` and
   `/usr/bin/podman images >cosign.pub` are held to the rules their bare
