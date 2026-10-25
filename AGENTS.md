@@ -146,6 +146,41 @@ ownership, replacing `.git`, or using a more destructive command.
   with `findmnt -T <dir>` before writing anything sizeable, and use a
   disk-backed path.
 
+## Findings about the Bash guard hook: what is in scope
+
+The gate in `.claude/hooks/gate-git-diff.sh` re-checks the commands
+`.claude/settings.json` allows with no prompt that can reach past its Read deny
+rules. Its header lists what it refuses, among them `git diff`, `git log` and
+`git show` reading a file outside the index or writing one through `--output`
+or a redirection, git global options and environment assignments that run
+another program, and `shellcheck` or `bash -n` pointed at a secret-shaped
+file. It catches **mistakes by an agent that is following these rules**. It is
+not a sandbox against an agent that is trying to get around it. A shell can
+spell a command in endless ways, and a reader in a hook cannot keep up with all
+of them. Do not file, and do not fix unprompted, findings of this kind:
+
+- **Disguised spellings.** A blocked command gets through only when its name
+  or arguments are written in a form nobody types in ordinary work: quote
+  marks inside a word (`g"i"t`), brace, wildcard or extended-glob names
+  (`{git,}`, `g?t`, `g@(i)t`), backslash-newline splits, `$'...'` escapes,
+  variables or command substitution that build the name, or the same tricks
+  inside a command string handed to another shell or wrapper program.
+
+These are still in scope. File them as usual:
+
+- **The hook fails open.** It crashes, times out, or is missing a tool, and
+  the command runs unchecked.
+- **An ordinary spelling gets through.** The command is written the way an
+  agent would type it doing normal work: the plain name, its full path
+  (`/usr/bin/git`), a documented short option or alias (`git -C <dir> diff`),
+  or a common wrapper used for a real reason (`env`, `timeout`, `xargs`).
+- **A regression.** A case the hook's tests already cover stops being
+  refused.
+- **The hook blocks normal work it should allow.**
+
+This is a standing ruling, not a gap to report: an agent that has to disguise
+a command to run it is already breaking the rules in this file.
+
 ## Container, image, and virtual machine safety
 
 Treat every pre-existing Distrobox, Podman or Buildah container, image, volume,
