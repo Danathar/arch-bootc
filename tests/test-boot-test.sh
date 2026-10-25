@@ -303,8 +303,8 @@ assert_contains "the summary shows the systemd state" "${output}" '| systemd sta
 assert_equal "a CR from the terminal does not reach the detail" "active" \
   "$(result '.report.checks[] | select(.name == "unit:NetworkManager") | .detail')"
 assert_absent "a passing boot does not dump bcvk's output" "${output}" "bcvk output (tail)"
-assert_contains "the tag is resolved with retries" \
-  "$(calls_of 'skopeo ')" "skopeo inspect --retry-times 3 "
+assert_contains "the tag is resolved with retries, without fetching the tag list" \
+  "$(calls_of 'skopeo ')" "skopeo inspect --no-tags --retry-times 3 "
 assert_contains "the digest is pulled with retries" \
   "$(calls_of 'podman pull')" "podman pull --quiet --retry 3 "
 assert_equal "bcvk is called with the VM size, name, units and log directory" \
