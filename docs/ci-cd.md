@@ -360,6 +360,33 @@ the `ShellCheck` step's `/mnt/tests/...` arguments in `build.yml`, or it
 silently escapes linting. `tests/check-invariants.sh` fails when a test file is
 missing from any of the three.
 
+### Mutation check on changed lines
+
+The coverage floors prove a line ran under the suite. They cannot tell whether
+any test would notice that line being wrong. On a pull request, the `mutation`
+job in `build.yml` asks that for the lines the pull request changes.
+`tests/mutation-check.sh` takes each changed line in a script
+`.coverage-thresholds.json` gates, makes one small edit at a time in a copy of
+the checkout (a comparison flipped, `&&` swapped for `||`, an exit status
+changed, the line replaced by `:`), and runs that script's tests. An edit the
+tests fail on is caught. An edit they still pass under is a survivor, and the
+job fails unless that exact edit is listed in `tests/mutation-survivors.txt`
+with the reason no test can tell.
+
+The job is advisory: `build_push` does not wait for it, and it is not a
+required check. Run it locally with `./tests/mutation-check.sh origin/main`.
+
+- Which tests run for which script is the `TESTS_FOR` table at the top of the
+  script. A changed script with no row stops the run, so add a row with a new
+  script's floor.
+- Each script's tests run once on the unedited copy first. If they fail there
+  (a host without block devices, say), the run stops instead of counting every
+  edit as caught.
+- `.claude/hooks/gate-git-diff.sh` is left out. Its own test file already
+  mutation-tests each rule, and one run of that file takes minutes.
+- The run stops after `MUTATION_BUDGET` seconds (40 minutes in CI) and fails,
+  naming how many edits it did not reach.
+
 ## Workflow linting (zizmor)
 
 `.github/workflows/zizmor.yaml` runs [zizmor](https://docs.zizmor.sh/) against this repo's

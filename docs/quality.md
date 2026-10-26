@@ -454,7 +454,8 @@ Stated plainly so nobody mistakes silence for coverage:
   setup: `Prepare the host the way bcvk's CI does`, `Give the runner user KVM`,
   `Install the VM stack`, `Put container storage on the larger disk` and
   `Boot the image and check it`, which only calls the boot test script that
-  has its own test file.
+  has its own test file, and `Edit changed lines and run their tests`, which
+  only calls the mutation check script that has its own test file.
   One more, `Run shell tests and enforce coverage floors`, is read for its
   `env:` block but never executed — it is the step that runs the suite, so
   running it here would run the suite inside itself.

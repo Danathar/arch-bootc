@@ -7997,9 +7997,11 @@ else
   ' "${JUSTFILE}" | grep -Ev '^[[:space:]]*#')"
 
   agent_recipe_cmds="$(grep -oE '\./tests/[a-z-]+\.sh' <<<"${agent_recipe_body}" | sort -u | tr '\n' ' ')"
-  # Every ./tests/*.sh command build.yml runs, taken from its `run:` lines.
+  # Every ./tests/*.sh command build.yml runs, taken from its `run:` lines,
+  # except the advisory mutation job's: it needs a base revision and only
+  # reads the lines a pull request changes, so it is not part of the suite.
   agent_ci_cmds="$(grep -oE '^[[:space:]]*run:[[:space:]]*\./tests/[a-z-]+\.sh' "${BUILD_WORKFLOW}" \
-    | grep -oE '\./tests/[a-z-]+\.sh' | sort -u | tr '\n' ' ')"
+    | grep -oE '\./tests/[a-z-]+\.sh' | grep -vxF './tests/mutation-check.sh' | sort -u | tr '\n' ' ')"
 
   if [[ -z "${agent_ci_cmds}" ]]; then
     fail "${BUILD_WORKFLOW} still runs at least one ./tests/*.sh command directly" \

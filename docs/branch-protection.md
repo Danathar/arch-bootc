@@ -87,6 +87,9 @@ job belongs here unless every pull request gets it.
   never gets it.
 - `Build and push image` runs only in `build.yml`, and its matrix reports it as
   `Build and push image (base)`, `(kde)` and `(xfce)`.
+- `Mutation check (changed lines)` runs only in `build.yml`, so a
+  documentation pull request never gets it. It is advisory as well: a change
+  that touches no gated script gives it nothing to check.
 - `Clean up old package versions` is skipped on every pull request by its `if:`.
 - `Clean up old build-cache versions` is skipped on every pull request by its
   `if:`.

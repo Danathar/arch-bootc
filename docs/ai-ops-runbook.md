@@ -74,7 +74,7 @@ means more than it says.
 
 ## `.github/workflows/build.yml`
 
-Five jobs: `lint`, `test`, `build_push` (three flavors), `cleanup_packages`
+Six jobs: `lint`, `test`, `mutation` (advisory, pull requests only), `build_push` (three flavors), `cleanup_packages`
 (three flavors, `main` only) and `cleanup_buildcache` (`main` only). Pull-request builds skip rechunk, push and sign, so
 a green PR means the image builds, not that it boots or upgrades
 ([AGENTS.md](../AGENTS.md#review-ci-and-publication)).
