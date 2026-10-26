@@ -1696,7 +1696,7 @@ status=$?
 assert_status "moving latest onto the signed digest exits 0" 0 "${status}"
 printf -v expected_move_calls '%s\n' \
   "copy --retry-times 3 --preserve-digests --authfile ${PUSH_AUTH_FILE} docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}@${PUSHED_DIGEST} docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:latest" \
-  "inspect --authfile ${PUSH_AUTH_FILE} --format {{.Digest}} docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:latest"
+  "inspect --no-tags --authfile ${PUSH_AUTH_FILE} --format {{.Digest}} docker://${PUSH_REGISTRY}/${PUSH_IMAGE_NAME}:latest"
 assert_equal "latest is copied from the signed digest and then read back" \
   "${expected_move_calls%$'\n'}" "$(cat "${MOVE_CALL_LOG}")"
 assert_absent "the registry password never reaches the move's command line" \

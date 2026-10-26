@@ -575,7 +575,7 @@ jobs:
           skopeo copy --retry-times 3 --preserve-digests --authfile "${AUTH_FILE}" \
             "docker://${IMAGE_FULL}@${PUSH_DIGEST}" \
             "docker://${IMAGE_FULL}:${DEFAULT_TAG}"
-          actual="$(skopeo inspect --authfile "${AUTH_FILE}" --format '{{.Digest}}' "docker://${IMAGE_FULL}:${DEFAULT_TAG}")"
+          actual="$(skopeo inspect --no-tags --authfile "${AUTH_FILE}" --format '{{.Digest}}' "docker://${IMAGE_FULL}:${DEFAULT_TAG}")"
           if [[ "${actual}" != "${PUSH_DIGEST}" ]]; then
             echo "error: ${DEFAULT_TAG} resolves to ${actual}, not the signed ${PUSH_DIGEST}" >&2
             exit 1

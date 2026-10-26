@@ -11608,6 +11608,88 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Registry reads skip the tag list (every skopeo inspect CI runs passes --no-tags or --raw)"
+
+# Without --no-tags (or --raw, which prints only the manifest), `skopeo
+# inspect` reads the image's manifest and then makes a second request for the
+# repository's whole tag list, which it reports as RepoTags. Nothing here reads
+# RepoTags, and that request can fail on its own while the manifest read
+# succeeds. Scope is what CI runs: .github/workflows/, .github/actions/ and
+# scripts/. Snippets people run by hand in docs and issue templates are left
+# out, as are the tests, whose skopeo is a stub.
+#
+# Commands are read as logical lines, with each backslash-newline joined first,
+# because sites wrap their flags across lines. Each call is read up to the end
+# of its own command (the next |, ;, & or `)`), so a `jq --raw-output` after a
+# pipe does not count as --raw. Comment lines are skipped.
+SKOPEO_INSPECT_RE='(^|[^[:alnum:]_-])skopeo[[:space:]]+inspect([[:space:]]|$)'
+SKOPEO_NO_TAGS_RE='(^|[[:space:]])--(no-tags|raw)([[:space:]=]|$)'
+
+# skopeo_inspect_sites <file>... -- print "<file>:<line>:<ok|missing>" for each
+# `skopeo inspect` outside a comment line, at the line its command starts on.
+skopeo_inspect_sites() {
+  local file entry text rest command
+  for file in "$@"; do
+    while IFS= read -r entry; do
+      # "<line>:<text>"; the line number carries no colon.
+      text="${entry#*:}"
+      [[ "${text}" =~ ^[[:space:]]*# ]] && continue
+      rest="${text}"
+      while [[ "${rest}" =~ ${SKOPEO_INSPECT_RE} ]]; do
+        rest="${rest#*"${BASH_REMATCH[0]}"}"
+        command="${rest%%[|;&)]*}"
+        if [[ " ${command}" =~ ${SKOPEO_NO_TAGS_RE} ]]; then
+          printf '%s:%s:ok\n' "${file}" "${entry%%:*}"
+        else
+          printf '%s:%s:missing\n' "${file}" "${entry%%:*}"
+        fi
+      done
+    done < <(awk '
+      buf == "" { start = FNR }
+      /\\$/ { buf = buf substr($0, 1, length($0) - 1) " "; next }
+      { print start ":" buf $0; buf = "" }
+      END { if (buf != "") print start ":" buf }
+    ' "${file}")
+  done
+}
+
+skopeo_work="$(mktemp -d)"
+cat >"${skopeo_work}/fixture.yml" <<'FIXTURE'
+        run: |
+          # skopeo inspect in a comment is not a call
+          actual="$(skopeo inspect --format '{{.Digest}}' \
+                     --authfile "${AUTH_FILE}" \
+                     "docker://${IMAGE_FULL}:${tag}")"
+          raw="$(skopeo inspect --authfile "${AUTH_FILE}" \
+                  --no-tags "docker://${IMAGE_FULL}:latest")"
+          skopeo inspect --raw "oci:${DIR}:chunked" | jq '.layers | length'
+          skopeo inspect "docker://${IMAGE_FULL}" | jq --raw-output .Digest
+          skopeo inspect --no-tags "docker://a" && skopeo inspect "docker://b"
+          echo "two skopeo inspects against a registry"
+FIXTURE
+assert_equal "the skopeo inspect reader finds each call, at the line it starts on, with the right verdict" \
+  "$(skopeo_inspect_sites "${skopeo_work}/fixture.yml" | cut -d: -f2,3 | tr '\n' ' ')" \
+  "3:missing 6:ok 8:ok 9:missing 10:ok 10:missing "
+rm -rf "${skopeo_work}"
+
+mapfile -t skopeo_scanned < <(git ls-files -- .github/workflows .github/actions scripts)
+skopeo_sites="$(skopeo_inspect_sites "${skopeo_scanned[@]}")"
+
+# A scan that finds nothing passes everything, so the files with a call today
+# must still be seen. Drop a file from this list when its call goes away.
+for skopeo_expected in .github/workflows/build.yml scripts/boot-test.sh; do
+  if grep -q "^${skopeo_expected}:" <<<"${skopeo_sites}"; then
+    pass "the scan still sees the skopeo inspect in ${skopeo_expected}"
+  else
+    fail "the scan still sees the skopeo inspect in ${skopeo_expected}" \
+      "no skopeo inspect found there; update this list if the call was removed"
+  fi
+done
+
+assert_equal "every skopeo inspect CI runs passes --no-tags or --raw (nothing here reads RepoTags)" \
+  "$(grep ':missing$' <<<"${skopeo_sites}" | tr '\n' ' ')" ""
+
+# ---------------------------------------------------------------------------
 group "Every command this script calls exists"
 
 # Plain pass/fail rather than assert_equal, and read again in the exit test
