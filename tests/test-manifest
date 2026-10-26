@@ -25,6 +25,7 @@ test-boot-test.sh
 test-gate-git-diff.sh
 test-homebrew-profile.sh
 test-homebrew-shell-integration.sh
+test-mutation-check.sh
 test-nightly-compliance.sh
 test-ostree-pkg-diff-db.sh
 test-ostree-pkg-diff.sh

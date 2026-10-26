@@ -64,6 +64,7 @@ jobs:
             /mnt/tests/check-invariants.sh \
             /mnt/.claude/hooks/gate-git-diff.sh \
             /mnt/tests/tune-coverage.sh \
+            /mnt/tests/mutation-check.sh \
             /mnt/tests/test-gate-git-diff.sh \
             /mnt/tests/test-prune-esp.sh \
             /mnt/tests/test-homebrew-profile.sh \
@@ -71,6 +72,7 @@ jobs:
             /mnt/tests/test-auto-issues.sh \
             /mnt/tests/test-boot-test.sh \
             /mnt/tests/test-homebrew-shell-integration.sh \
+            /mnt/tests/test-mutation-check.sh \
             /mnt/tests/test-nightly-compliance.sh \
             /mnt/tests/test-ostree-pkg-diff.sh \
             /mnt/tests/test-ostree-pkg-diff-db.sh \
@@ -169,6 +171,43 @@ jobs:
       # quietly lost `pam_wheel.so use_uid` builds perfectly well.
       - name: Assert repository invariants
         run: ./tests/check-invariants.sh
+
+  # Edits each line a pull request changes in a script the coverage floors
+  # gate, one at a time, and fails when the script's tests still pass under an
+  # edit that tests/mutation-survivors.txt does not list. Advisory: build_push
+  # does not wait on it. See docs/ci-cd.md.
+  mutation:
+    name: Mutation check (changed lines)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    # tests/mutation-check.sh stops itself after MUTATION_BUDGET (40 minutes)
+    # and reports the edits it did not reach; this cap is for a hang past that.
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # Same reason as in the test job: ostree-pkg-diff's tests need an
+      # unprivileged user namespace, and a test that cannot run would make
+      # every edit look caught. mutation-check.sh runs each script's tests once
+      # unedited first and stops if they fail, so a refusal here shows up as
+      # that error rather than as a pass.
+      - name: Allow unprivileged user namespaces
+        run: |
+          set -euo pipefail
+          key="kernel.apparmor_restrict_unprivileged_userns"
+          if [[ -e "/proc/sys/${key//.//}" ]]; then
+            sudo sysctl -w "${key}=0"
+          fi
+      - name: Edit changed lines and run their tests
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          MUTATION_BUDGET: "2400"
+        run: ./tests/mutation-check.sh "origin/${BASE_REF}"
 
   build_push:
     name: Build and push image
