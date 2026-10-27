@@ -23,6 +23,20 @@ GitHub applies to `main` right now:
 gh api repos/Danathar/arch-bootc/rules/branches/main --jq '[.[].type] | sort'
 ```
 
+The signing key is held back by a GitHub environment, not by the ruleset, and
+the tree cannot show either half of that. To check that `production-signing`
+admits only `main`, and that the key is not also a repository secret, which a
+workflow on any branch could read:
+
+```bash
+gh api repos/Danathar/arch-bootc/environments/production-signing/deployment-branch-policies --jq '[.branch_policies[].name]'
+gh secret list -R Danathar/arch-bootc
+```
+
+The first prints `["main"]`. The second lists no `SIGNING_SECRET`; the key is
+listed by `gh secret list -R Danathar/arch-bootc --env production-signing`
+instead.
+
 ## Why it matters here
 
 Every other gate in this repository sits behind a pull request: the shell suite,
