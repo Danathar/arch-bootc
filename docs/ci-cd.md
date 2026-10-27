@@ -10,10 +10,13 @@ Generate an empty-passphrase keypair:
 COSIGN_PASSWORD="" cosign generate-key-pair
 ```
 
-Upload private key as repository secret:
+Upload the private key as a secret of the `production-signing` environment,
+not as a repository secret, which any branch's workflow could read. In
+Settings, Environments, give that environment a deployment branch rule that
+admits only `main`, then:
 
 ```bash
-gh secret set SIGNING_SECRET < cosign.key
+gh secret set SIGNING_SECRET --env production-signing < cosign.key
 ```
 
 Commit public key:

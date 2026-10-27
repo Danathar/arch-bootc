@@ -124,18 +124,18 @@ Renovate update merges on its own once the build is green
 
 ## What none of this stops
 
-**Push access reaches the signing key.** `SIGNING_SECRET` is read only by the
-`Sign container image` step, and that step's `if:` runs it only on `main`,
-never on a pull request. That keeps the key out of ordinary pull request
-builds. It is not a wall. `build.yml` runs on `pull_request`, and a pull
-request from a branch in this repository runs the workflow files from its own
-branch, with this repository's secrets. GitHub withholds secrets only from
-pull requests opened from forks
-([GitHub Docs](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions)).
-No GitHub environment guards the key either. So anyone, or any agent, that can
-push a branch here can write a workflow that reads it, and CI runs that
-workflow before anyone reviews it. The real boundary around the key is who
-holds push access.
+**Merging to `main` reaches the signing key.** `SIGNING_SECRET` is read only by
+the `Sign container image` step, and it is a secret of the
+`production-signing` environment, whose deployment branch rule admits only
+`main`, not a repository secret. A pull request from a branch in this
+repository runs the workflow files from its own branch, and would get every
+repository secret
+([GitHub Docs](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions)),
+but GitHub hands over an environment's secrets by the ref the job runs on. So
+a workflow on any other branch cannot read the key, even one written to try.
+It is not a wall. Whatever lands on `main` runs with the key, so the boundary
+is who can merge there, and a repository admin can still change the
+environment's rules.
 
 **An agent outside Claude Code.** An agent working through another tool, or
 directly through `git` and `gh` with the maintainer's credentials, meets only

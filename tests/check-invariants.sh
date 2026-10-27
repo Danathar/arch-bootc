@@ -11414,17 +11414,18 @@ group "Agent boundaries page (docs/agent-boundaries.md: each limit an agent work
 # opening the page, and a limit that silently moved from "GitHub" to
 # "instruction only" is the one a reader most needs to hear about.
 #
-# The sharpest claim is the last one: that push access reaches SIGNING_SECRET,
-# because a pull request from a branch here runs its own workflow files with
-# this repository's secrets and no GitHub environment guards the key. That is
-# asserted from the tree (the trigger, the one step that reads the secret, the
-# absence of any `environment:` key), so the day a protected environment is
-# added, this fails and the page is corrected rather than left alarming a
-# reader about a gap that closed.
+# The sharpest claim is the last one: that merging to `main`, not push access,
+# reaches SIGNING_SECRET, because the key is a secret of the main-only
+# `production-signing` environment and only build_push on `main` names it.
+# That is asserted from the tree (the trigger, the one step that reads the
+# secret, the one `environment:` key and its condition), so the day the
+# environment is dropped or named on a pull request run, this fails and the
+# page is corrected rather than left reassuring a reader about a gap that
+# reopened.
 #
-# What the tree cannot show -- the live ruleset, and whether the secret is a
-# repository or an environment secret on GitHub -- is left to
-# docs/branch-protection.md's commands.
+# What the tree cannot show -- the live ruleset, the environment's deployment
+# branch rule, and whether the secret is a repository or an environment secret
+# on GitHub -- is left to docs/branch-protection.md's commands.
 
 AB_DOC="docs/agent-boundaries.md"
 AB_RULESET=".github/rulesets/main.json"
@@ -11552,10 +11553,11 @@ else
 
   # --- What none of this stops ------------------------------------------------------
 
-  # Three facts carry the claim that push access reaches SIGNING_SECRET: build.yml
-  # runs on pull_request, the secret is read by one step only (so the step's `if:`
-  # is the only thing keeping it out of a pull request build), and no workflow
-  # names a GitHub environment that could hold the key back for approval.
+  # Four facts carry the claim that only merging to `main` reaches SIGNING_SECRET:
+  # build.yml runs on pull_request, the secret is read by one step only, that
+  # step runs only on the default branch, and the one GitHub environment any
+  # workflow names is `production-signing`, named by build_push only off a pull
+  # request on the default branch.
   assert_present "build.yml runs on pull_request, as the page says" "${BUILD_WORKFLOW}" '^  pull_request:$'
   ab_secret_reads="$(cat "${workflows[@]}" | grep -Ev '^[[:space:]]*#' | grep -c 'secrets\.SIGNING_SECRET')"
   assert_equal "SIGNING_SECRET is read in exactly one place, as the page says" "${ab_secret_reads}" "1"
@@ -11572,9 +11574,20 @@ else
     fail "the signing step runs only on the default branch and never on a pull request, as the page says" \
       "the 'Sign container image' step's if: changed"
   fi
-  assert_absent_in "no workflow names a GitHub environment, as the page says" \
-    '^[[:space:]]+environment:' "${workflows[@]}"
-  ab_says "the page says no environment guards the key" "No GitHub environment guards the key"
+  ab_environments="$(cat "${workflows[@]}" | grep -E '^[[:space:]]+environment:')"
+  assert_equal "the one environment any workflow names is production-signing, off a pull request on the default branch" \
+    "${ab_environments}" \
+    "    environment: \${{ (github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && 'production-signing' || '' }}"
+  ab_build_push="$(awk '/^  build_push:$/{ inside = 1; print; next } inside && /^  [a-z_]+:$/{ exit } inside' "${BUILD_WORKFLOW}")"
+  if grep -Eq '^    environment:' <<<"${ab_build_push}"; then
+    pass "the environment is named by build_push, the job with the signing step"
+  else
+    fail "the environment is named by build_push, the job with the signing step" \
+      "no environment: key in build_push of ${BUILD_WORKFLOW}"
+  fi
+  # shellcheck disable=SC2016 # the backticks are the page's own markup
+  ab_says "the page says the key is a secret of the main-only environment" \
+    'a secret of the `production-signing` environment, whose deployment branch rule admits only `main`'
   # shellcheck disable=SC2016 # the backticks are the page's own markup
   ab_says "the page names the step that reads the key" '`Sign container image`'
 
