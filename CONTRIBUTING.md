@@ -57,6 +57,11 @@ every shell file appears in **both** hand-maintained ShellCheck lists. If you
 are deliberately changing one of those, update the check in the same commit and
 say so in the pull request; if you are not, a failure means something drifted.
 
+It also holds every `##` and `###` heading of the documentation pages to a row
+in `docs/section-map.txt`. A new or renamed heading needs its row in the same
+change: `joined: tests/<file>` when a test reads what the section says, or
+`prose: narrative:` / `prose: unchecked:` with a reason when nothing does.
+
 ```bash
 just lint          # shellcheck + systemd-analyze verify
 ```

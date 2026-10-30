@@ -1,0 +1,434 @@
+# Docs section map: every section of every tracked documentation page, and
+# whether a test reads it.
+#
+# A page is listed here as [path]. Under it comes every `##` and `###` heading
+# of that page, written exactly as the page writes it, each followed by one
+# indented line:
+#
+#   joined: tests/<file>   that test reads what this section states
+#   prose: <reason>        no test reads it, and the reason says why that is
+#                          fine or names what is left unchecked
+#
+# tests/check-invariants.sh ("Docs section map") fails when a tracked page has
+# a heading with no row here, when a row names a heading the page no longer
+# has, or when a `joined:` test does not exist or names the page only in a
+# comment. It does not prove any sentence true. What it changes is that a
+# section of claims about the machine that nothing checks shows up as a
+# `prose: unchecked:` line in the diff that adds it, instead of being the
+# silent default.
+#
+# `prose: unchecked:` marks a section that states facts about the machine (a
+# workflow, the Containerfile, .claude/settings.json, the Bash guard hook, the
+# ruleset, renovate.json) that no test reads. Each one is a candidate for a
+# join test; turning it into `joined:` is the fix. `prose: narrative:` marks a
+# section that states no such fact.
+#
+# A `joined:` row means the test reads something written in that section,
+# either by extracting the section or by a page-wide check that covers a claim
+# in it (the fenced commands of docs/installation.md, the gh commands of
+# docs/ai-ops-runbook.md). A check that only looks for the heading is not a
+# join, and such a section is classified `prose:` with the reason saying so.
+#
+# Tracked pages: every tracked Markdown file at the repository root, in docs/
+# (not its dated subdirectories) and in docs/security/, plus
+# .github/copilot-instructions.md. A new page in one of those places has to be
+# added here in the change that adds it.
+
+
+[.github/copilot-instructions.md]
+
+[AGENTS.md]
+## Purpose and scope
+  prose: narrative: who these instructions apply to and what they are for
+## What an implementation request authorizes
+  prose: narrative: what an agent may do on an implementation request; conduct, not a fact about the tree
+## Consent standard
+  joined: tests/test-pr-review-state.sh
+## Mandatory preflight
+  prose: narrative: steps an agent runs before editing; conduct, not a fact about the tree
+## Git safety
+  joined: tests/check-invariants.sh
+## File and host safety
+  prose: narrative: how an agent treats local files; conduct, not a fact about the tree
+## Findings about the Bash guard hook: what is in scope
+  prose: unchecked: names what .claude/hooks/gate-git-diff.sh refuses and which spellings are out of scope; no test reads this section
+## Container, image, and virtual machine safety
+  prose: unchecked: names the podman, buildah and virsh operations that destroy user data, which the deny and ask entries in .claude/settings.json mirror; no test joins the two
+## GitHub and external-system safety
+  prose: narrative: which GitHub writes need consent; conduct, not a fact about the tree
+## Repository-specific correctness guardrails
+  joined: tests/check-invariants.sh
+### The comments are part of the product
+  prose: narrative: why Containerfile comments matter; only the heading is read, by the always-on rule join
+### Do not weaken the image's security model
+  joined: tests/check-invariants.sh
+### Package freshness and the build cache
+  joined: tests/check-invariants.sh
+### bootc provenance
+  joined: tests/check-invariants.sh
+### Service enablement policy
+  joined: tests/check-invariants.sh
+### Flavors are separate paths
+  prose: narrative: evidence from one flavor is not evidence for another; only the heading is read, by the always-on rule join
+## Known environment hazards
+  joined: tests/check-invariants.sh
+## Validation expectations
+  joined: tests/test-pr-review-state.sh
+## Writing issues, pull requests, and comments
+  prose: narrative: tone and shape for written output; states no fact about the tree
+## Review, CI, and publication
+  prose: narrative: what a review request does and does not authorize; conduct
+## Completion and cleanup
+  prose: narrative: what an agent reports at the end of a task; conduct
+
+[CLAUDE.md]
+## Non-negotiable safety rules
+  joined: tests/check-invariants.sh
+## Procedure
+  joined: tests/check-invariants.sh
+## Gotchas learned the hard way
+  prose: unchecked: virt-install, libvirt pool and disk-image behaviours the procedure above depends on; no test reads them
+## Authorized cleanup checklist
+  prose: unchecked: the commands that remove test VMs, pools and disk files; no test reads them
+
+[CONTRIBUTING.md]
+## What you need
+  prose: narrative: host tools a contributor installs
+## The shape of the repository
+  prose: unchecked: table of top-level paths and what lives in each; no test checks the paths exist or the table is complete
+## Checks you can run
+  joined: tests/check-invariants.sh
+## Things not to change casually
+  prose: unchecked: short copies of AGENTS.md's load-bearing controls; no test reads this copy
+## Comments are part of the product
+  prose: narrative: why Containerfile comments matter; states no checkable fact
+## Opening a pull request
+  prose: narrative: branching and pull request expectations; conduct
+## If you are an AI agent working in this repository
+  prose: narrative: points an agent at AGENTS.md
+## Licensing of contributions
+  prose: narrative: licence terms
+## Reporting a problem
+  prose: narrative: where to report
+
+[README.md]
+## Goal
+  prose: narrative: what the project is for
+## Quickstart (recommended)
+  prose: unchecked: the quickstart commands and what they do; no test reads this copy (docs/installation.md has its own join)
+## Prerequisites
+  prose: narrative: host tools a user installs
+## Documentation
+  joined: tests/check-invariants.sh
+## Contributing
+  prose: narrative: points at CONTRIBUTING.md and AGENTS.md
+## Project status
+  joined: tests/check-invariants.sh
+## About this project
+  prose: narrative: how the project was made
+## Maintained with Hive (ACMM L6)
+  joined: tests/check-invariants.sh
+## License
+  prose: narrative: licence terms
+
+[SECURITY.md]
+## Reporting a vulnerability
+  prose: narrative: where to report privately
+## Scope
+  prose: narrative: what the policy covers and where the AI-agent page is
+
+[docs/agent-boundaries.md]
+## How the boundaries are enforced
+  joined: tests/check-invariants.sh
+## Enforced by GitHub
+  joined: tests/check-invariants.sh
+## Enforced by the required check
+  joined: tests/check-invariants.sh
+## Enforced by the agent's tool
+  joined: tests/check-invariants.sh
+## Instruction only
+  joined: tests/check-invariants.sh
+## What none of this stops
+  joined: tests/check-invariants.sh
+## Changing a boundary
+  joined: tests/check-invariants.sh
+
+[docs/ai-ops-runbook.md]
+## Start here
+  joined: tests/check-invariants.sh
+## `main` is red
+  joined: tests/check-invariants.sh
+## `.github/workflows/build.yml`
+  joined: tests/check-invariants.sh
+## `.github/workflows/docs-tests.yml`
+  joined: tests/check-invariants.sh
+## `.github/workflows/nightly-compliance.yml`
+  joined: tests/check-invariants.sh
+## `.github/workflows/zizmor.yaml`
+  joined: tests/check-invariants.sh
+## `.github/workflows/labeler.yml`
+  joined: tests/check-invariants.sh
+## `.github/workflows/ai-fix.yml`
+  joined: tests/check-invariants.sh
+## `.github/workflows/agent-audit.yml`
+  joined: tests/check-invariants.sh
+## `.github/workflows/auto-issues.yml`
+  joined: tests/check-invariants.sh
+## `.github/workflows/boot-test.yml`
+  joined: tests/check-invariants.sh
+## A scheduled run is missing
+  joined: tests/check-invariants.sh
+## Renovate automerge went wrong
+  prose: unchecked: what to check in renovate.json and the ruleset when an automerge misfires; only the heading is checked
+## An agent's pull request looks wrong
+  joined: tests/check-invariants.sh
+## An issue for work that is already done
+  prose: narrative: how to close a stale issue; only the heading is checked
+## A gate refusal from `.claude/hooks/gate-git-diff.sh`
+  prose: unchecked: quotes the hook's refusal messages; only the heading is checked
+## An agent acted on text it read
+  joined: tests/check-invariants.sh
+
+[docs/branch-protection.md]
+## Status
+  joined: tests/check-invariants.sh
+## Why it matters here
+  prose: narrative: why a ruleset matters for a single-maintainer repository
+## The ruleset
+  joined: tests/check-invariants.sh
+## Checks that are not required
+  joined: tests/check-invariants.sh
+## Applying it
+  prose: unchecked: the gh api commands that apply the ruleset; no test reads them
+## When there is a second reviewer
+  joined: tests/check-invariants.sh
+
+[docs/ci-cd.md]
+## Enable GitHub Actions + Cosign Secret
+  prose: unchecked: the cosign commands and secret name a fork sets up; no test reads this section
+## Update the in-image signature policy for your fork
+  joined: tests/check-invariants.sh
+### Rotating the signing key
+  prose: unchecked: the key rotation steps; no test reads them
+## Shell tests and coverage gate
+  joined: tests/check-invariants.sh
+### Mutation check on changed lines
+  prose: unchecked: what the mutation job runs and when; no test reads this section's claims
+## Workflow linting (zizmor)
+  joined: tests/check-invariants.sh
+## Review state and the `ai-fix-requested` work order
+  prose: narrative: introduces the two subsections below
+### `scripts/pr-review-state.sh`
+  prose: unchecked: what the review-state script decides; no test reads this section's claims
+### `.github/workflows/ai-fix.yml`
+  prose: unchecked: what the ai-fix workflow does and refuses; the tests read the workflow, not this section
+## Pull request labels
+  joined: tests/test-pr-review-state.sh
+## Nightly compliance
+  joined: tests/check-invariants.sh
+## Agent audit trail
+  joined: tests/check-invariants.sh
+## Boot test
+  joined: tests/check-invariants.sh
+## Auto issues for failed scheduled runs
+  prose: unchecked: which runs open an issue and what it says; tests/test-auto-issues.sh checks only that the heading exists
+## Pruning old package versions
+  joined: tests/check-invariants.sh
+## Pruning old build-cache versions
+  joined: tests/check-invariants.sh
+## Per-package rechunking (`CHUNK_TAG`)
+  joined: tests/check-invariants.sh
+## Keeping pinned versions up to date
+  prose: narrative: points at docs/renovate.md
+
+[docs/customizations.md]
+## Current Customizations In This Repo
+  joined: tests/check-invariants.sh
+## Upstream Bootcrew Compatibility Work (Why This Image Works)
+  joined: tests/check-invariants.sh
+
+[docs/first-boot.md]
+## Bootstrapping the first admin user without a hypervisor (bare metal)
+  prose: narrative: introduces the two subsections below
+### The easy way: seed a cloud-init config
+  joined: tests/check-invariants.sh
+### Manual fallback: editing the offline disk directly
+  joined: tests/check-invariants.sh
+## Homebrew
+  joined: tests/check-invariants.sh
+
+[docs/installation.md]
+## Recommended: Guided Quickstart
+  joined: tests/check-invariants.sh
+### What it refuses to do
+  joined: tests/check-invariants.sh
+## Prerequisites
+  joined: tests/check-invariants.sh
+## Path A: Quick Start (Pre-built Image)
+  joined: tests/check-invariants.sh
+### 1. Create the disk image
+  joined: tests/check-invariants.sh
+### 2. Convert to QCOW2
+  joined: tests/check-invariants.sh
+## Path B: Customizing & Building Locally
+  prose: narrative: introduces the numbered steps below
+### 1. Fork Or Template
+  joined: tests/check-invariants.sh
+### 2. Clone Your Repo
+  joined: tests/check-invariants.sh
+### 3. Build Locally
+  joined: tests/check-invariants.sh
+### 4. Create A 100G Sparse Disk + QCOW2
+  joined: tests/check-invariants.sh
+### 5. Install On Bare Metal (Clean Reimage)
+  joined: tests/check-invariants.sh
+
+[docs/metrics.md]
+## PR acceptance
+  joined: tests/check-invariants.sh
+## Time to merge
+  joined: tests/check-invariants.sh
+## Review friction
+  joined: tests/check-invariants.sh
+## CI health
+  joined: tests/check-invariants.sh
+## Snapshot
+  joined: tests/check-invariants.sh
+## What is deliberately not measured
+  prose: narrative: what the page leaves out and why
+
+[docs/multi-agent.md]
+## Who works here
+  joined: tests/check-invariants.sh
+## How work reaches an agent
+  joined: tests/check-invariants.sh
+## Staying out of each other's way
+  joined: tests/check-invariants.sh
+## Who merges
+  joined: tests/check-invariants.sh
+## What every agent shares
+  joined: tests/check-invariants.sh
+## What this repository does not run
+  joined: tests/check-invariants.sh
+## What is in flight right now
+  joined: tests/check-invariants.sh
+
+[docs/quality.md]
+## The dashboard
+  joined: tests/check-invariants.sh
+## What each signal proves
+  joined: tests/check-invariants.sh
+## Agent guardrails
+  joined: tests/check-invariants.sh
+## Where the gaps are
+  joined: tests/check-invariants.sh
+
+[docs/renovate.md]
+## Who runs it
+  prose: unchecked: Renovate runs as the hosted app, not a workflow here; no test reads this section
+## What is tracked
+  joined: tests/check-invariants.sh
+## What is *not* tracked
+  joined: tests/check-invariants.sh
+## The flow, step by step
+  prose: unchecked: how a Renovate pull request moves to merge; no test reads this section
+## What merges automatically
+  joined: tests/check-invariants.sh
+## Why merging is Renovate's job
+  joined: tests/check-invariants.sh
+### If you ever want instant merges
+  prose: unchecked: the renovate.json and repository settings to change; no test reads them
+## Known blocked updates
+  prose: unchecked: which updates are held and why; no test reads this section
+### bootc, held at v1.16.10 since 2026-09-03
+  prose: unchecked: the bootc hold, its date and its exit criteria; no test reads them
+## The Dependency Dashboard
+  prose: narrative: what the dashboard issue is for
+## Common tasks
+  prose: unchecked: renovate.json edits for common changes; no test reads them
+## Gotchas
+  prose: unchecked: Renovate behaviours this repository has hit; no test reads them
+
+[docs/review-rubric.md]
+## 1. Scope
+  joined: tests/check-invariants.sh
+## 2. Security invariants
+  joined: tests/check-invariants.sh
+## 3. Image and system correctness
+  joined: tests/check-invariants.sh
+## 4. Comments and rationale
+  joined: tests/check-invariants.sh
+## 5. Tests and validation
+  joined: tests/check-invariants.sh
+## 6. Evidence
+  joined: tests/check-invariants.sh
+## 7. Checks and threads
+  joined: tests/check-invariants.sh
+## Merging
+  joined: tests/check-invariants.sh
+
+[docs/risk-tiers.md]
+## The tiers
+  joined: tests/check-invariants.sh
+## T0 — Documentation
+  joined: tests/check-invariants.sh
+## T1 — Build and test harness
+  joined: tests/check-invariants.sh
+## T2 — Image contents
+  joined: tests/check-invariants.sh
+## T3 — Boot, security model, provenance, or published artifacts
+  joined: tests/check-invariants.sh
+## What automation does per tier
+  joined: tests/test-pr-review-state.sh
+## Worked examples
+  prose: narrative: example changes and the tier each gets
+## What this page does not do
+  prose: narrative: limits of the tier model
+
+[docs/security/SECURITY-AI.md]
+## What is actually at risk
+  prose: narrative: what a compromised change could reach; the controls are listed below
+## Trust boundaries
+  joined: tests/check-invariants.sh
+## Invariants that may not be weakened to make something pass
+  joined: tests/check-invariants.sh
+## Secrets
+  prose: unchecked: the secret-handling rules and how .claude/hooks/gate-git-diff.sh closes Bash reads past the Read deny rules; no test reads this section
+## Supply chain
+  joined: tests/check-invariants.sh
+## CI is an execution boundary
+  prose: unchecked: what CI jobs may run and with which token; no test reads this section
+## Reporting something you think is wrong
+  prose: narrative: where to report
+## If an agent action may have caused an incident
+  joined: tests/check-invariants.sh
+## Related
+  prose: narrative: links to related pages
+
+[docs/strategy.md]
+## The goal
+  prose: narrative: what the project is aiming for
+## Measuring each criterion
+  joined: tests/check-invariants.sh
+## Is the work going there?
+  joined: tests/check-invariants.sh
+### Reading on 2026-10-03
+  joined: tests/check-invariants.sh
+## Why there is no report job
+  joined: tests/check-invariants.sh
+
+[docs/updating.md]
+## Updating Installed Systems From Your Repo
+  joined: tests/check-invariants.sh
+## Troubleshooting: composefs garbage collection error ("Invalid splitstream header magic value")
+  joined: tests/check-invariants.sh
+## Troubleshooting: rootless podman fails with `default OCI runtime "crun" not found`
+  joined: tests/check-invariants.sh
+## Comparing packages between deployments
+  joined: tests/check-invariants.sh
+
+[docs/vm-workflow.md]
+## Create VM (User Session Track)
+  joined: tests/check-invariants.sh
+## Running commands in the VM from the host (QEMU guest agent)
+  joined: tests/check-invariants.sh

@@ -11705,6 +11705,198 @@ assert_equal "every skopeo inspect CI runs passes --no-tags or --raw (nothing he
   "$(grep ':missing$' <<<"${skopeo_sites}" | tr '\n' ' ')" ""
 
 # ---------------------------------------------------------------------------
+group "Docs section map (docs/section-map.txt: every section of every documentation page is joined to a test or marked prose)"
+
+# The documentation pages state facts about the machine -- what a workflow
+# runs, what .claude/settings.json allows, what the ruleset requires -- and the
+# groups above join many of those sections to the files they describe. Which
+# sections nothing reads was never written down, so a new or reworded section
+# of such claims went unchecked by default and nobody saw it happen.
+#
+# docs/section-map.txt lists every `##` and `###` heading of every tracked page
+# with one row under it: `joined: tests/<file>` when that test reads what the
+# section states, or `prose: narrative: <reason>` / `prose: unchecked:
+# <reason>` when nothing does. The checks below fail when a page gains a heading
+# with no row, when a row names a heading the page no longer has, when a page
+# is tracked but not listed (or listed but not tracked), and when a `joined:`
+# test is missing or names the page only in a comment.
+#
+# What it cannot see: whether a joined test reads *that* section rather than
+# another part of the same page. That is the reviewer's call, made when the row
+# is written. It proves no sentence true. It makes an unchecked section a
+# visible `prose: unchecked:` line in the diff that adds it.
+DOCMAP="docs/section-map.txt"
+
+# Tracked pages: every tracked Markdown file at the root and in docs/ (not its
+# dated subdirectories), docs/security/, and the always-on Copilot brief.
+docmap_tracked() {
+  git ls-files -- '*.md' |
+    grep -E '^([^/]+|docs/[^/]+|docs/security/[^/]+|\.github/copilot-instructions)\.md$'
+}
+
+# One problem per line, nothing when the map holds. Paths are relative to the
+# current directory, so the fixtures below can run it on a tree of their own.
+docmap_problems() { # map, file listing the tracked pages one per line
+  # shellcheck disable=SC2016 # the backticks are the fence markers awk matches
+  awk -v map="$1" -v listing="$2" '
+    function problem(text) { print text; bad++ }
+    function read_headings(page,   line, fence) {
+      fence = 0
+      while ((getline line < page) > 0) {
+        if (line ~ /^ {0,3}(```|~~~)/) { fence = !fence; continue }
+        if (!fence && line ~ /^###? /) { sub(/[ \t]+$/, "", line); on_page[page SUBSEP line]++ }
+      }
+      close(page)
+    }
+    function opens(test, page,   line, found) {
+      found = 0
+      while ((getline line < test) > 0) {
+        if (line ~ /^[ \t]*#/) continue
+        if (index(line, page)) { found = 1; break }
+      }
+      close(test)
+      return found
+    }
+    BEGIN {
+      while ((getline p < listing) > 0) if (p != "") tracked[p] = 1
+      close(listing)
+      page = ""; waiting = 0
+      while ((getline line < map) > 0) {
+        n++
+        if (line == "" || line ~ /^#( |$)/) continue
+        if (line ~ /^\[[^]]+\]$/) {
+          if (waiting) problem(map ":" at ": no row under " heading)
+          waiting = 0
+          page = substr(line, 2, length(line) - 2)
+          if (page in listed) problem(map ":" n ": " page " is listed twice")
+          listed[page] = 1
+          if (!(page in tracked)) problem(map ":" n ": " page " is not a tracked page")
+          else read_headings(page)
+          continue
+        }
+        if (line ~ /^###? /) {
+          if (page == "") { problem(map ":" n ": heading before any [page] line"); continue }
+          if (waiting) problem(map ":" at ": no row under " heading)
+          sub(/[ \t]+$/, "", line)
+          heading = line; at = n; waiting = 1
+          in_map[page SUBSEP line]++
+          continue
+        }
+        if (line ~ /^  (joined|prose): /) {
+          if (!waiting) { problem(map ":" n ": a row with no heading above it"); continue }
+          waiting = 0
+          value = line
+          sub(/^  (joined|prose): /, "", value)
+          if (line ~ /^  joined: /) {
+            if (value !~ /^tests\/[^ ]+$/ || value ~ /\.\./)
+              problem(map ":" n ": " page " " heading ": joined to " value ", not a file under tests/")
+            else if ((getline probe < value) < 0)
+              problem(map ":" n ": " page " " heading ": joined to " value ", which does not exist")
+            else {
+              close(value)
+              if (!opens(value, page))
+                problem(map ":" n ": " page " " heading ": " value " never names " page " outside a comment")
+            }
+          } else if (value !~ /^(narrative|unchecked): [^ ]/) {
+            problem(map ":" n ": " page " " heading ": a prose row says narrative: or unchecked: and why")
+          }
+          continue
+        }
+        problem(map ":" n ": not a [page], heading, row, comment or blank line: " line)
+      }
+      close(map)
+      if (waiting) problem(map ":" at ": no row under " heading)
+      for (p in tracked) if (!(p in listed)) problem(p " is a tracked page with no [" p "] in " map)
+      for (k in on_page) if (on_page[k] != in_map[k]) {
+        split(k, part, SUBSEP)
+        problem(part[1] " has \"" part[2] "\" " on_page[k] " time(s), " map " " (in_map[k] + 0))
+      }
+      for (k in in_map) if (!(k in on_page)) {
+        split(k, part, SUBSEP)
+        problem(map " has a row for \"" part[2] "\", which " part[1] " no longer has")
+      }
+      exit (bad > 0)
+    }'
+}
+
+if [[ ! -f "${DOCMAP}" ]]; then
+  fail "the docs section map exists" "${DOCMAP} is missing"
+else
+  docmap_pages="$(mktemp)"
+  docmap_tracked >"${docmap_pages}"
+  docmap_found="$(docmap_problems "${DOCMAP}" "${docmap_pages}")"
+  assert_equal "every heading of every tracked page has one row in ${DOCMAP}, and every joined test names its page" \
+    "${docmap_found}" ""
+  rm -f -- "${docmap_pages}"
+
+  # A tracked-page filter that matched nothing, or a map whose rows the reader
+  # skipped, would pass the check above by comparing nothing.
+  docmap_count="$(docmap_tracked | grep -c .)"
+  if ((docmap_count >= 20)); then
+    pass "the section map is checked against ${docmap_count} tracked pages"
+  else
+    fail "the section map is checked against the tracked pages" "only ${docmap_count} found; the filter is broken"
+  fi
+  docmap_rows="$(grep -cE '^  (joined|prose): ' "${DOCMAP}")"
+  if ((docmap_rows >= 150)); then
+    pass "the section map has a row for each of ${docmap_rows} headings"
+  else
+    fail "the section map has a row for each heading" "only ${docmap_rows} rows; the map was truncated"
+  fi
+fi
+
+# The reader itself, on small trees with one fault each. A reader that stopped
+# seeing a fault would otherwise pass the real tree forever.
+docmap_fixture="$(mktemp -d)"
+(
+  cd -- "${docmap_fixture}" || exit 1
+  mkdir -p docs tests
+  # shellcheck disable=SC2016 # the backticks are a fenced block in the fixture
+  printf '%s\n' '# Page' '## One' 'text' '```' '## Inside a fence' '```' '### Two' >docs/page.md
+  printf '%s\n' '#!/usr/bin/env bash' 'grep -q x docs/page.md' >tests/reads.sh
+  printf '%s\n' '#!/usr/bin/env bash' '# docs/page.md is mentioned only here' 'true' >tests/comment-only.sh
+  printf '%s\n' docs/page.md >pages
+  printf '%s\n' '# comment' '' '[docs/page.md]' '## One' '  joined: tests/reads.sh' \
+    '### Two' '  prose: narrative: an aside' >good.txt
+)
+docmap_case() { # description, expected substring (empty = clean), map text
+  local got
+  printf '%s\n' "$3" >"${docmap_fixture}/case.txt"
+  got="$(cd -- "${docmap_fixture}" && docmap_problems case.txt pages)"
+  if [[ -z "$2" ]]; then
+    assert_equal "section map reader: $1" "${got}" ""
+  elif [[ "${got}" == *"$2"* ]]; then
+    pass "section map reader: $1"
+  else
+    fail "section map reader: $1" "expected a problem containing '$2', got: ${got:-nothing}"
+  fi
+}
+docmap_case "a complete map passes, and a heading inside a fence needs no row" "" "$(cat "${docmap_fixture}/good.txt")"
+docmap_case "a heading with no row fails" '"### Two" 1 time(s), case.txt 0' \
+  "$(printf '%s\n' '[docs/page.md]' '## One' '  joined: tests/reads.sh')"
+docmap_case "a row for a heading the page lost fails" 'no longer has' \
+  "$(printf '%s\n' "$(cat "${docmap_fixture}/good.txt")" '## Gone' '  prose: narrative: x')"
+docmap_case "a heading line followed by another heading fails" 'no row under ## One' \
+  "$(printf '%s\n' '[docs/page.md]' '## One' '### Two' '  prose: narrative: x')"
+docmap_case "a last heading with no row under it fails" 'no row under ### Two' \
+  "$(printf '%s\n' '[docs/page.md]' '## One' '  joined: tests/reads.sh' '### Two')"
+docmap_case "a joined test that names the page only in a comment fails" 'never names docs/page.md outside a comment' \
+  "$(printf '%s\n' '[docs/page.md]' '## One' '  joined: tests/comment-only.sh' '### Two' '  prose: narrative: x')"
+docmap_case "a joined test that does not exist fails" 'which does not exist' \
+  "$(printf '%s\n' '[docs/page.md]' '## One' '  joined: tests/nope.sh' '### Two' '  prose: narrative: x')"
+docmap_case "a join outside tests/ fails" 'not a file under tests/' \
+  "$(printf '%s\n' '[docs/page.md]' '## One' '  joined: docs/page.md' '### Two' '  prose: narrative: x')"
+docmap_case "a prose row with no narrative:/unchecked: reason fails" 'narrative: or unchecked:' \
+  "$(printf '%s\n' '[docs/page.md]' '## One' '  prose: fine' '### Two' '  prose: narrative: x')"
+docmap_case "a malformed line fails" 'not a [page], heading, row' \
+  "$(printf '%s\n' "$(cat "${docmap_fixture}/good.txt")" 'joined: tests/reads.sh')"
+docmap_case "a listed page that is not tracked fails" 'docs/other.md is not a tracked page' \
+  "$(printf '%s\n' "$(cat "${docmap_fixture}/good.txt")" '[docs/other.md]')"
+docmap_case "a tracked page with no [page] line fails" 'docs/page.md is a tracked page with no [docs/page.md]' \
+  "$(printf '%s\n' '# nothing listed')"
+rm -rf -- "${docmap_fixture}"
+
+# ---------------------------------------------------------------------------
 group "Every command this script calls exists"
 
 # Plain pass/fail rather than assert_equal, and read again in the exit test
