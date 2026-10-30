@@ -11705,6 +11705,97 @@ assert_equal "every skopeo inspect CI runs passes --no-tags or --raw (nothing he
   "$(grep ':missing$' <<<"${skopeo_sites}" | tr '\n' ' ')" ""
 
 # ---------------------------------------------------------------------------
+group "Known blocked updates (docs/renovate.md: each hold names the version the Containerfile is still pinned to)"
+
+# docs/renovate.md says a red Renovate pull request is how an update is held,
+# and that the reason goes under "Known blocked updates" as a subsection headed
+# `<package>, held at <version> since <date>`. Nothing read those subsections,
+# and the bootc one stayed written up as live (held at v1.16.10, "Both stay
+# open") for a month after the Containerfile started building libselinux, the
+# blocking pull request merged, and the pin moved on to v1.17.x. A reader then
+# goes looking for a red pull request that is not there.
+#
+# The check: every `###` under that section must have the heading shape above,
+# and its version must still be the value of an active `ARG ..._VERSION=` line
+# in the Containerfile. When the pin moves past it, the hold has cleared and
+# the subsection has to go in the same change. Fenced blocks are skipped.
+
+# renovate_hold_verdicts <doc> <containerfile> -- print "<heading>:<verdict>"
+# for each `###` heading under `## Known blocked updates`: live (the version is
+# still pinned), stale (it is not) or malformed (not the documented shape).
+renovate_hold_verdicts() {
+  local doc="$1" containerfile="$2" heading version
+  local pinned
+  pinned="$(awk '/^ARG [A-Z0-9_]+_VERSION=/ { sub(/^ARG [A-Z0-9_]+_VERSION=/, ""); print }' "${containerfile}")"
+  while IFS= read -r heading; do
+    if [[ "${heading}" =~ ^[^,]+,\ held\ at\ ([^ ]+)\ since\ [0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+      version="${BASH_REMATCH[1]}"
+      if grep -qxF -- "${version}" <<<"${pinned}"; then
+        printf '%s:live\n' "${heading}"
+      else
+        printf '%s:stale\n' "${heading}"
+      fi
+    else
+      printf '%s:malformed\n' "${heading}"
+    fi
+  done < <(awk '
+    /^```/ { fenced = !fenced; next }
+    fenced { next }
+    /^## / { in_section = ($0 == "## Known blocked updates"); next }
+    in_section && /^### / { print substr($0, 5) }
+  ' "${doc}")
+}
+
+# renovate_hold_problems <doc> <containerfile> -- the verdicts that are not live.
+renovate_hold_problems() {
+  renovate_hold_verdicts "$1" "$2" | grep -v ':live$'
+}
+
+hold_work="$(mktemp -d)"
+cat >"${hold_work}/doc.md" <<'FIXTURE'
+## Known blocked updates
+
+```markdown
+### quoted, held at v9 since 2026-01-01
+```
+
+### bootc, held at v1.16.10 since 2026-09-03
+### foo, held at 2.0 since 2026-10-01
+### foo2, held at 2 since 2026-10-01
+### digest, held at v3 since 2026-10-01
+### qux, held at v1.16.10 since last week
+### bar is held
+## The Dependency Dashboard
+### baz, held at v0.1 since 2026-01-01
+FIXTURE
+cat >"${hold_work}/Containerfile" <<'FIXTURE'
+ARG BOOTC_VERSION=v1.17.3
+# ARG OLD_VERSION=v1.16.10
+ARG FOO_VERSION=2.0
+ARG DIGEST=v3
+FIXTURE
+assert_equal "the hold reader finds each hold under the section, outside fences, with the right verdict" \
+  "$(renovate_hold_verdicts "${hold_work}/doc.md" "${hold_work}/Containerfile" | tr '\n' '|')" \
+  "bootc, held at v1.16.10 since 2026-09-03:stale|foo, held at 2.0 since 2026-10-01:live|foo2, held at 2 since 2026-10-01:stale|digest, held at v3 since 2026-10-01:stale|qux, held at v1.16.10 since last week:malformed|bar is held:malformed|"
+assert_equal "the hold check reports every hold that is not live, and only those" \
+  "$(renovate_hold_problems "${hold_work}/doc.md" "${hold_work}/Containerfile" | cut -d, -f1 | tr '\n' ' ')" \
+  "bootc foo2 digest qux bar is held:malformed "
+rm -rf "${hold_work}"
+
+# The reader finds nothing when the section is renamed, and nothing passes
+# everything, so the heading it looks under must still be there.
+# (Not assert_present: it drops lines starting with `#`, which is every heading.)
+if grep -qx '## Known blocked updates' docs/renovate.md; then
+  pass "docs/renovate.md still has the section holds are written under"
+else
+  fail "docs/renovate.md still has the section holds are written under" \
+    "no '## Known blocked updates' heading; the hold check below would read nothing"
+fi
+
+assert_equal "every hold in docs/renovate.md names a version the Containerfile still pins (delete a hold's subsection when it clears)" \
+  "$(renovate_hold_problems docs/renovate.md "${CONTAINERFILE}" | tr '\n' '|')" ""
+
+# ---------------------------------------------------------------------------
 group "Docs section map (docs/section-map.txt: every section of every documentation page is joined to a test or marked prose)"
 
 # The documentation pages state facts about the machine -- what a workflow

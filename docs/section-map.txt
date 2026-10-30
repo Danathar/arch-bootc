@@ -339,9 +339,7 @@
 ### If you ever want instant merges
   prose: unchecked: the renovate.json and repository settings to change; no test reads them
 ## Known blocked updates
-  prose: unchecked: which updates are held and why; no test reads this section
-### bootc, held at v1.16.10 since 2026-09-03
-  prose: unchecked: the bootc hold, its date and its exit criteria; no test reads them
+  joined: tests/check-invariants.sh
 ## The Dependency Dashboard
   prose: narrative: what the dashboard issue is for
 ## Common tasks
