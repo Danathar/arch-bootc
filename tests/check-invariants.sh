@@ -11796,6 +11796,132 @@ assert_equal "every hold in docs/renovate.md names a version the Containerfile s
   "$(renovate_hold_problems docs/renovate.md "${CONTAINERFILE}" | tr '\n' '|')" ""
 
 # ---------------------------------------------------------------------------
+group "Mutation check (docs/ci-cd.md: what the mutation job runs, when, for how long, and on which scripts)"
+
+# docs/ci-cd.md "### Mutation check on changed lines" is the page a contributor
+# reads when the mutation job fails on their pull request, and it states facts
+# about build.yml's `mutation` job and tests/mutation-check.sh that nothing
+# read: that it runs on pull requests, that build_push does not wait for it,
+# the 40-minute budget, the command to run it locally, which file is left out,
+# and where the ledger and the per-script test table live. The script's own
+# behaviour is tested in tests/test-mutation-check.sh; these checks join the
+# page to the job and to the script's configuration.
+
+MUTATION_SCRIPT="tests/mutation-check.sh"
+mutation_section="$(awk '
+  /^```/ { fenced = !fenced }
+  !fenced && /^##/ { in_section = ($0 == "### Mutation check on changed lines"); next }
+  in_section { print }
+' docs/ci-cd.md)"
+mutation_job="$(cicd_job "${BUILD_WORKFLOW}" mutation)"
+
+if [[ -z "${mutation_section}" || -z "${mutation_job}" ]]; then
+  fail "docs/ci-cd.md has the mutation check section and ${BUILD_WORKFLOW} has the mutation job" \
+    "section: ${#mutation_section} bytes, job: ${#mutation_job} bytes; the checks below would read nothing"
+else
+  pass "docs/ci-cd.md has the mutation check section and ${BUILD_WORKFLOW} has the mutation job"
+
+  # "On a pull request, the `mutation` job ... asks that for the lines the
+  # pull request changes."
+  assert_equal "the mutation job runs on pull requests only, as the page says" \
+    "$(sed -nE 's/^    if:[[:space:]]*//p' <<<"${mutation_job}")" "github.event_name == 'pull_request'"
+
+  # "The run stops after `MUTATION_BUDGET` seconds (40 minutes in CI)".
+  mutation_doc_minutes="$(grep -oE '\(([0-9]+) minutes in CI\)' <<<"${mutation_section}" | grep -oE '[0-9]+')"
+  mutation_budget="$(sed -nE 's/^[[:space:]]+MUTATION_BUDGET:[[:space:]]*"?([0-9]+)"?[[:space:]]*$/\1/p' <<<"${mutation_job}")"
+  if [[ -z "${mutation_doc_minutes}" || -z "${mutation_budget}" ]]; then
+    fail "the page's CI budget for the mutation run is the job's MUTATION_BUDGET" \
+      "page minutes: '${mutation_doc_minutes}', job MUTATION_BUDGET: '${mutation_budget}'"
+  else
+    assert_equal "the page's CI budget for the mutation run (${mutation_doc_minutes} minutes) is the job's MUTATION_BUDGET" \
+      "$((mutation_doc_minutes * 60))" "${mutation_budget}"
+  fi
+  assert_present "${MUTATION_SCRIPT} reads the budget from MUTATION_BUDGET, the name the page and the job use" \
+    "${MUTATION_SCRIPT}" '^BUDGET="\$\{MUTATION_BUDGET:-[0-9]+\}"$'
+
+  # The job's own timeout is a backstop for a hang past the budget, so it has
+  # to be longer than the budget, or the job is killed before the script can
+  # name the edits it did not reach.
+  mutation_timeout="$(sed -nE 's/^    timeout-minutes:[[:space:]]*([0-9]+)[[:space:]]*$/\1/p' <<<"${mutation_job}")"
+  assert_equal "the mutation job's timeout-minutes is longer than its MUTATION_BUDGET" \
+    "$([[ -n "${mutation_timeout}" && -n "${mutation_budget}" ]] && ((mutation_timeout * 60 > mutation_budget)) && echo longer)" "longer"
+
+  # "The job is advisory: `build_push` does not wait for it". (That it is not
+  # a required check is joined in the branch protection group.)
+  mutation_build_needs="$(cicd_job "${BUILD_WORKFLOW}" build_push | sed -nE 's/^    needs:[[:space:]]*//p')"
+  if [[ -z "${mutation_build_needs}" ]]; then
+    fail "build_push does not wait for the mutation job" "no needs: line read from build_push"
+  elif grep -qwF mutation <<<"${mutation_build_needs}"; then
+    fail "build_push does not wait for the mutation job" "build_push needs: ${mutation_build_needs}"
+  else
+    pass "build_push does not wait for the mutation job (needs: ${mutation_build_needs})"
+  fi
+
+  # "Run it locally with `./tests/mutation-check.sh origin/main`": the same
+  # script the job runs, tracked as executable so the command works as written.
+  # shellcheck disable=SC2016 # backticks are Markdown, not command substitution
+  mutation_doc_cmd="$(grep -oE '`\./tests/[a-z-]+\.sh [^`]*`' <<<"${mutation_section}" | head -1 | tr -d '`')"
+  mutation_job_cmd="$(sed -nE 's/^        run:[[:space:]]*(\.\/tests\/[a-z-]+\.sh).*/\1/p' <<<"${mutation_job}")"
+  assert_equal "the page's local command runs the script the mutation job runs" \
+    "${mutation_doc_cmd%% *}" "${mutation_job_cmd}"
+  assert_equal "${MUTATION_SCRIPT} is tracked as executable, so the page's local command runs as written" \
+    "$(git ls-files -s -- "${MUTATION_SCRIPT}" | cut -d' ' -f1)" "100755"
+
+  # "`.claude/hooks/gate-git-diff.sh` is left out."
+  mutation_excluded="$(sed -nE 's/^EXCLUDED_TARGETS=\((.*)\)$/\1/p' "${MUTATION_SCRIPT}" | grep -oE '"[^"]+"' | tr -d '"' | LC_ALL=C sort)"
+  # shellcheck disable=SC2016 # backticks are Markdown, not command substitution
+  mutation_doc_excluded="$(grep -E '^- `[^`]+` is left out\.' <<<"${mutation_section}" | sed -nE 's/^- `([^`]+)`.*/\1/p' | LC_ALL=C sort)"
+  if [[ -z "${mutation_excluded}" ]]; then
+    fail "the files the page says are left out are ${MUTATION_SCRIPT}'s EXCLUDED_TARGETS" "no EXCLUDED_TARGETS entry read"
+  else
+    assert_equal "the files the page says are left out are ${MUTATION_SCRIPT}'s EXCLUDED_TARGETS" \
+      "${mutation_doc_excluded}" "${mutation_excluded}"
+  fi
+
+  # "A changed script with no row stops the run, so add a row with a new
+  # script's floor": every file the floors gate, less the ones left out, has a
+  # TESTS_FOR row, and no row names anything else. Without this a script added
+  # to .coverage-thresholds.json without a row is only noticed by the first
+  # pull request that changes it, and then as a stopped run.
+  mutation_rows="$(awk '
+    /^declare -A TESTS_FOR=\(/ { in_table = 1; next }
+    in_table && /^\)/ { exit }
+    in_table { print }
+  ' "${MUTATION_SCRIPT}")"
+  mutation_row_scripts="$(sed -nE 's/^[[:space:]]*\["([^"]+)"\]=.*/\1/p' <<<"${mutation_rows}" | LC_ALL=C sort)"
+  mutation_gated="$(jq -r 'keys[]' .coverage-thresholds.json | grep -vxF -f <(printf '%s\n' "${mutation_excluded}") | LC_ALL=C sort)"
+  if [[ -z "${mutation_row_scripts}" || -z "${mutation_gated}" ]]; then
+    fail "TESTS_FOR has a row for every gated script except those left out, and no other row" \
+      "rows: '${mutation_row_scripts}', gated: '${mutation_gated}'"
+  else
+    assert_equal "TESTS_FOR has a row for every gated script except those left out, and no other row" \
+      "${mutation_row_scripts}" "${mutation_gated}"
+  fi
+  mutation_missing_tests=""
+  while read -r -a mutation_tests; do
+    for mutation_test in "${mutation_tests[@]}"; do
+      git ls-files --error-unmatch -- "${mutation_test}" >/dev/null 2>&1 || mutation_missing_tests+="${mutation_test} "
+    done
+  done < <(sed -nE 's/^[[:space:]]*\["[^"]+"\]="([^"]*)"$/\1/p' <<<"${mutation_rows}")
+  assert_equal "every test file a TESTS_FOR row names is tracked" "${mutation_missing_tests}" ""
+
+  # "unless that exact edit is listed in `tests/mutation-survivors.txt`".
+  assert_present "${MUTATION_SCRIPT} reads its ledger from tests/mutation-survivors.txt, the file the page names" \
+    "${MUTATION_SCRIPT}" '^LEDGER="\$\{REPO_ROOT\}/tests/mutation-survivors\.txt"$'
+  # shellcheck disable=SC2016 # backticks are Markdown, not command substitution
+  assert_equal "the page names the ledger file the script reads" \
+    "$(grep -oE '`tests/mutation-survivors\.txt`' <<<"${mutation_section}" | head -1)" '`tests/mutation-survivors.txt`'
+
+  # "(a comparison flipped, `&&` swapped for `||`, an exit status changed, the
+  # line replaced by `:`)": one operator of each kind the page names.
+  assert_present "the script flips a comparison, as the page says" "${MUTATION_SCRIPT}" "^  \\\$' == \\\\t != '$"
+  assert_present "the script swaps && for ||, as the page says" "${MUTATION_SCRIPT}" "^  \\\$' && \\\\t \\|\\| '$"
+  assert_present "the script changes an exit status, as the page says" "${MUTATION_SCRIPT}" "^  \\\$'exit 0\\\\texit 1'$"
+  assert_present "the script replaces a line by \`:\`, as the page says" "${MUTATION_SCRIPT}" \
+    "edits\\+=\\(\\\$'delete\\\\t'\"\\\$\\{text%%\\[!\\[:space:\\]\\]\\*\\}:\"\\)"
+fi
+
+# ---------------------------------------------------------------------------
 group "Docs section map (docs/section-map.txt: every section of every documentation page is joined to a test or marked prose)"
 
 # The documentation pages state facts about the machine -- what a workflow

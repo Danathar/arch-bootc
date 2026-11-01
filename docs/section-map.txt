@@ -213,7 +213,7 @@
 ## Shell tests and coverage gate
   joined: tests/check-invariants.sh
 ### Mutation check on changed lines
-  prose: unchecked: what the mutation job runs and when; no test reads this section's claims
+  joined: tests/check-invariants.sh
 ## Workflow linting (zizmor)
   joined: tests/check-invariants.sh
 ## Review state and the `ai-fix-requested` work order
