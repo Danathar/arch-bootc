@@ -95,7 +95,7 @@
 ## What you need
   prose: narrative: host tools a contributor installs
 ## The shape of the repository
-  prose: unchecked: table of top-level paths and what lives in each; no test checks the paths exist or the table is complete
+  joined: tests/check-invariants.sh
 ## Checks you can run
   joined: tests/check-invariants.sh
 ## Things not to change casually

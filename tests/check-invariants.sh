@@ -11922,6 +11922,203 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "Repository shape (CONTRIBUTING.md: the table of top-level paths, and the build targets over one shared stage)"
+
+# CONTRIBUTING.md's "The shape of the repository" is where a new contributor
+# learns where things live: a table of paths and what each holds, then a
+# sentence saying the build targets share one stage, so evidence from one
+# flavor is not evidence for another. Nothing read it. A path renamed, a flavor
+# added to the build, or the quickstart recipe renamed would leave the table
+# sending a contributor to something that is not there, and "reaches all
+# three" would still say three.
+#
+# The checks: every path in the table is committed (a trailing `/` is a
+# directory with committed files in it, a `*` a glob that matches at least one
+# committed file at that depth); the targets the Containerfile row names are
+# the flavors build_push builds, each a `FROM <stage> AS <target>` over the
+# same stage, which is not itself a target; the count the page writes is the
+# number of targets; the per-flavor package lists are exactly
+# packages-<target>.txt; and the rows that say what the tree does with a path
+# (copied to `/`, driven by `just quickstart`, plain bash) still hold.
+
+# contrib_shape_rows <doc> -- print "<path><TAB><what lives there>" for each row
+# of the table under `## The shape of the repository`. Fenced blocks are skipped.
+contrib_shape_rows() {
+  awk '
+    /^```/ { fenced = !fenced; next }
+    fenced { next }
+    /^## / { in_section = ($0 == "## The shape of the repository"); next }
+    in_section && /^\| `[^`]+` \| / {
+      line = substr($0, 4)
+      path = line; sub(/`.*/, "", path)
+      what = substr(line, length(path) + 5); sub(/ *\|$/, "", what)
+      printf "%s\t%s\n", path, what
+    }
+  ' "$1"
+}
+
+# contrib_shape_missing <doc> <tracked> -- print each path in the table that
+# matches nothing in <tracked>, a list of committed files one per line.
+contrib_shape_missing() {
+  local doc="$1" tracked="$2" path file hit
+  while IFS=$'\t' read -r path _; do
+    hit=""
+    while IFS= read -r file; do
+      if [[ "${path}" == */ ]]; then
+        [[ "${file}" == "${path}"* ]] && hit=1
+      elif [[ "${path}" == *'*'* ]]; then
+        # shellcheck disable=SC2053 # the table's glob is meant to match
+        [[ "${file}" == ${path} && "${file//[^\/]/}" == "${path//[^\/]/}" ]] && hit=1
+      else
+        [[ "${file}" == "${path}" ]] && hit=1
+      fi
+      [[ -n "${hit}" ]] && break
+    done <"${tracked}"
+    [[ -n "${hit}" ]] || printf '%s\n' "${path}"
+  done < <(contrib_shape_rows "${doc}")
+}
+
+# contrib_shape_targets <doc> -- the backticked names after "targets:" in the
+# Containerfile row, sorted, space-separated.
+contrib_shape_targets() {
+  # shellcheck disable=SC2016 # literal backticks
+  contrib_shape_rows "$1" | awk -F'\t' '$1 == "Containerfile" { print $2 }' |
+    sed -n 's/.*targets: //p' | grep -oE '`[^`]+`' | tr -d '`' | sort | tr '\n' ' ' | sed 's/ $//'
+}
+
+# contrib_stage_from <containerfile> <stage> -- what `FROM ... AS <stage>` builds on.
+contrib_stage_from() {
+  awk -v stage="$2" '$1 == "FROM" && toupper($3) == "AS" && $4 == stage { print $2 }' "$1"
+}
+
+shape_work="$(mktemp -d)"
+cat >"${shape_work}/doc.md" <<'FIXTURE'
+## The shape of the repository
+
+| Path | What lives there |
+| --- | --- |
+| `Containerfile` | The image, as two targets: `one`, `two` |
+| `lists-*.txt` | Lists |
+| `deep-*.txt` | Not at this depth |
+| `dir/` | A directory |
+| `empty/` | Nothing committed |
+| `gone.sh` | Renamed away |
+
+```markdown
+| `fenced.sh` | Quoted, not a row |
+```
+
+## Next section
+| `later.sh` | Not this table |
+FIXTURE
+printf '%s\n' Containerfile lists-a.txt sub/deep-a.txt dir/x.sh empty >"${shape_work}/tracked"
+cat >"${shape_work}/Containerfile" <<'FIXTURE'
+FROM scratch AS shared
+FROM shared AS one
+FROM shared as two
+FIXTURE
+assert_equal "the shape reader finds each row of the table, outside fences, and only that table" \
+  "$(contrib_shape_rows "${shape_work}/doc.md" | cut -f1 | tr '\n' ' ')" "Containerfile lists-*.txt deep-*.txt dir/ empty/ gone.sh "
+# shellcheck disable=SC2016 # literal backticks
+assert_equal "the shape reader keeps a row's description whole" \
+  "$(contrib_shape_rows "${shape_work}/doc.md" | head -n 1 | cut -f2)" 'The image, as two targets: `one`, `two`'
+assert_equal "the shape check reports each path, glob or directory that matches nothing committed, and only those" \
+  "$(contrib_shape_missing "${shape_work}/doc.md" "${shape_work}/tracked" | tr '\n' ' ')" "deep-*.txt empty/ gone.sh "
+assert_equal "the shape reader reads the targets the Containerfile row names" \
+  "$(contrib_shape_targets "${shape_work}/doc.md")" "one two"
+assert_equal "the stage reader finds what each target builds on, whatever the case of AS" \
+  "$(contrib_stage_from "${shape_work}/Containerfile" one) $(contrib_stage_from "${shape_work}/Containerfile" two)" "shared shared"
+rm -rf "${shape_work}"
+
+SHAPE_DOC="CONTRIBUTING.md"
+# The reader finds nothing when the section is renamed, and nothing passes
+# everything, so the heading and a full table must still be there.
+# (Not assert_present: it drops lines starting with `#`, which is every heading.)
+if grep -qx '## The shape of the repository' "${SHAPE_DOC}"; then
+  pass "${SHAPE_DOC} still has the section the table is under"
+else
+  fail "${SHAPE_DOC} still has the section the table is under" \
+    "no '## The shape of the repository' heading; the checks below would read nothing"
+fi
+shape_rows="$(contrib_shape_rows "${SHAPE_DOC}")"
+if (($(grep -c . <<<"${shape_rows}") >= 7)); then
+  pass "the table in ${SHAPE_DOC} can be read (at least the seven rows it had when this check was written)"
+else
+  fail "the table in ${SHAPE_DOC} can be read (at least the seven rows it had when this check was written)" \
+    "read: ${shape_rows//$'\n'/ | }"
+fi
+
+shape_tracked="$(mktemp)"
+git ls-files >"${shape_tracked}"
+assert_equal "every path in ${SHAPE_DOC}'s table is committed" \
+  "$(contrib_shape_missing "${SHAPE_DOC}" "${shape_tracked}" | tr '\n' ' ' | sed 's/ $//')" ""
+
+# The targets, three ways: the page, the build matrix, the Containerfile.
+shape_targets="$(contrib_shape_targets "${SHAPE_DOC}")"
+shape_flavors="$(cicd_job "${BUILD_WORKFLOW}" build_push | grep -Ev '^[[:space:]]*#' |
+  sed -n 's/^[[:space:]]*flavor: \[\(.*\)\]$/\1/p' | tr -d ' ' | tr ',' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+if [[ -z "${shape_targets}" ]]; then
+  fail "the Containerfile row of ${SHAPE_DOC}'s table names the build targets" "no 'targets: \`...\`' in the Containerfile row"
+fi
+assert_equal "the targets ${SHAPE_DOC} names are the flavors build_push builds" "${shape_targets}" "${shape_flavors:-<none>}"
+shape_count="$(number_word "$(wc -w <<<"${shape_targets}")")"
+shape_flat="$(awk '
+    /^## / { in_section = ($0 == "## The shape of the repository"); next }
+    in_section { print }
+  ' "${SHAPE_DOC}" | tr '\n' ' ')"
+assert_equal "the Containerfile row counts the targets it names" \
+  "$(grep -oE 'as [a-z]+ targets:' <<<"${shape_flat}" | awk '{ print $2 }')" "${shape_count:-<none>}"
+assert_equal "the sentence under the table counts the targets the shared stage reaches" \
+  "$(grep -oE 'reaches all [a-z]+' <<<"${shape_flat}" | awk '{ print $3 }')" "${shape_count:-<none>}"
+shape_parents=""
+for shape_target in ${shape_targets}; do
+  shape_parent="$(contrib_stage_from "${CONTAINERFILE}" "${shape_target}")"
+  if [[ -z "${shape_parent}" ]]; then
+    fail "${CONTAINERFILE} builds the ${shape_target} target ${SHAPE_DOC} names" "no 'FROM <stage> AS ${shape_target}'"
+  fi
+  shape_parents+="${shape_parent:-<none>}"$'\n'
+done
+shape_shared="$(sort -u <<<"${shape_parents%$'\n'}" | tr '\n' ' ' | sed 's/ $//')"
+if [[ "${shape_shared}" != *' '* && "${shape_shared}" != '<none>' && -n "${shape_shared}" ]] &&
+  [[ " ${shape_targets} " != *" ${shape_shared} "* ]] &&
+  [[ -n "$(contrib_stage_from "${CONTAINERFILE}" "${shape_shared}")" ]]; then
+  pass "every target ${SHAPE_DOC} names builds on the one shared stage, which is a stage and not a target (${shape_shared})"
+else
+  fail "every target ${SHAPE_DOC} names builds on the one shared stage, which is a stage and not a target" \
+    "the targets build on: ${shape_shared:-nothing}"
+fi
+assert_equal "the per-flavor package lists are exactly one packages-<target>.txt per target" \
+  "$(grep -xE 'packages-[^/]*\.txt' "${shape_tracked}" | sort | tr '\n' ' ' | sed 's/ $//')" \
+  "$(for shape_target in ${shape_targets}; do printf 'packages-%s.txt\n' "${shape_target}"; done | sort | tr '\n' ' ' | sed 's/ $//')"
+
+# What the rows say the tree does with a path.
+shape_row() { awk -F'\t' -v path="$1" '$1 == path { print $2 }' <<<"${shape_rows}"; }
+# shellcheck disable=SC2016 # literal backticks
+shape_dest="$(shape_row system_files/ | sed -n 's/.* at `\([^`]*\)`$/\1/p')"
+assert_present "${CONTAINERFILE} copies system_files/ to ${shape_dest:-<none>}, where ${SHAPE_DOC} says it lands" \
+  "${CONTAINERFILE}" "^COPY system_files/ ${shape_dest:-<none>}\$"
+# shellcheck disable=SC2016 # literal backticks
+shape_recipe="$(shape_row scripts/quickstart.sh | sed -n 's/.*driven by `just \([a-z-]*\)`$/\1/p')"
+assert_equal "the Justfile recipe ${SHAPE_DOC} says drives scripts/quickstart.sh runs it" \
+  "$(awk -v recipe="${shape_recipe:-<none>}" '
+      $1 == recipe || index($1, recipe ":") == 1 { in_recipe = 1; next }
+      in_recipe && /^[^[:space:]]/ { exit }
+      in_recipe && /^[[:space:]]+\.\/scripts\/quickstart\.sh( |$)/ { print "runs"; exit }
+    ' "${JUSTFILE}")" "runs"
+if [[ "$(shape_row tests/)" == Plain-bash* ]]; then
+  shape_not_bash=""
+  while IFS= read -r shape_file; do
+    [[ "$(head -n 1 -- "${shape_file}")" == '#!/usr/bin/env bash' ]] || shape_not_bash+="${shape_file} "
+  done < <(grep -E '^tests/.*\.sh$' "${shape_tracked}")
+  assert_equal "every test script is plain bash, as ${SHAPE_DOC} says" "${shape_not_bash% }" ""
+  assert_equal "no test framework's files are committed under tests/, as ${SHAPE_DOC} says" \
+    "$(grep -E '^tests/.*\.bats$' "${shape_tracked}" | tr '\n' ' ' | sed 's/ $//')" ""
+else
+  fail "the tests/ row of ${SHAPE_DOC} still says the tests are plain bash" "row reads: $(shape_row tests/)"
+fi
+rm -f -- "${shape_tracked}"
+
+# ---------------------------------------------------------------------------
 group "Docs section map (docs/section-map.txt: every section of every documentation page is joined to a test or marked prose)"
 
 # The documentation pages state facts about the machine -- what a workflow
