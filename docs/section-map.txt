@@ -231,7 +231,7 @@
 ## Boot test
   joined: tests/check-invariants.sh
 ## Auto issues for failed scheduled runs
-  prose: unchecked: which runs open an issue and what it says; tests/test-auto-issues.sh checks only that the heading exists
+  joined: tests/test-auto-issues.sh
 ## Pruning old package versions
   joined: tests/check-invariants.sh
 ## Pruning old build-cache versions
