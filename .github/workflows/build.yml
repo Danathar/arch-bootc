@@ -712,7 +712,9 @@ jobs:
     runs-on: ubuntu-26.04
     # Listing the package is one request per 100 versions and each delete is
     # one more; while the backlog lasts that is about 125 pages plus 300
-    # deletes paced one second apart, about six minutes.
+    # deletes paced one second apart, about six minutes. A delete that gets a
+    # 5xx is retried after 2, 5 and 10 seconds, 17 seconds at most before the
+    # run stops, so the nine minutes of slack cover about 30 such deletes.
     timeout-minutes: 15
 
     # No checkout: the step below is self-contained and reads nothing from the
@@ -747,6 +749,11 @@ jobs:
       # each run removes only what aged out since the last one. The first
       # failed delete stops the run rather than spending the rest of the cap
       # on the same error (a missing Admin grant fails every one of them).
+      # The exception is a transient server error: a 5xx on a delete is
+      # retried a few times, because one 502 is not the same error again and a
+      # missed delete is only picked up by the next run. A 502 can hide a
+      # delete that did apply, so a 404 on a retry counts as removed. A 403 or
+      # 429 rate limit, and a 404 on the first attempt, are never retried.
       #
       # GitHub refuses to delete a package's last remaining version. Each
       # publish pushes fresh entries before this job runs, so that can only
@@ -803,11 +810,34 @@ jobs:
           # 5 of the 900 points it allows a minute, so an unpaced loop gets a
           # 403/429 after about 180 deletes, and the stop-on-failure below
           # turns every large-backlog run red. 60 a minute stays well inside.
+          # Retries only a 5xx, which is GitHub failing, not refusing. Anything
+          # else, a 403/429 rate limit above all, returns 1 on the first try.
+          delete_version() {
+            local id="$1" delays=(2 5 10) attempt=0 err
+            while :; do
+              if err="$(gh api --method DELETE "${versions_path}/${id}" 2>&1 >/dev/null)"; then
+                return 0
+              fi
+              [[ -z "${err}" ]] || printf '%s\n' "${err}" >&2
+              # The earlier 5xx may have applied the delete.
+              if ((attempt > 0)) && [[ "${err}" == *"HTTP 404"* ]]; then
+                return 0
+              fi
+              if ((attempt < ${#delays[@]})) && [[ "${err}" =~ HTTP\ 5[0-9][0-9] ]]; then
+                echo "buildcache: server error deleting version ${id}; retrying in ${delays[attempt]}s" >&2
+                sleep "${delays[attempt]}"
+                attempt=$((attempt + 1))
+                continue
+              fi
+              return 1
+            done
+          }
+
           removed=0
           while IFS= read -r id; do
             [[ -n "${id}" ]] || continue
             ((removed == 0)) || sleep 1
-            if ! gh api --method DELETE "${versions_path}/${id}" >/dev/null; then
+            if ! delete_version "${id}"; then
               echo "buildcache: FAILED to delete version ${id} after removing ${removed}; stopping" >&2
               exit 1
             fi
