@@ -444,6 +444,151 @@ for read_call in "run list" "issue list"; do
   assert_equal "a failed '${read_call}' writes nothing" "" "$(writes)"
 done
 
+# --- What docs/ci-cd.md says about this job ----------------------------------
+# The cases above run the step. These read the page's section and compare what
+# it states to the step, the workflow file and the permissions policy, so a
+# change to one of them cannot leave the page describing a job that no longer
+# exists. The sentences that only repeat a case above (a run already reported,
+# a close on success) are not read again here.
+CICD_DOC="${REPO_ROOT}/docs/ci-cd.md"
+POLICY="${REPO_ROOT}/.github/policies/workflow-permissions.json"
+doc_section="$(awk '/^## / { on = ($0 == "## Auto issues for failed scheduled runs"); next } on' "${CICD_DOC}")"
+check "docs/ci-cd.md still has the section on this job" \
+  "$([[ -n "${doc_section}" ]] && echo 0 || echo 1)"
+# One line: the page wraps its sentences wherever the width falls.
+doc_text="$(tr -s ' \n' ' ' <<<"${doc_section}")"
+sorted_words() { tr -s ' \n' '\n' | grep . | LC_ALL=C sort | tr '\n' ' '; }
+# The backticked words of the text on stdin.
+# shellcheck disable=SC2016 # the backticks are what grep matches
+backticked() { grep -oE '`[^`]+`' | tr -d '`'; }
+
+# A workflow's daily schedule as minutes after midnight, nothing when its cron
+# is not daily.
+daily_start() {
+  sed -nE 's/^ *- cron: "([0-9]+) ([0-9]+) \* \* \*".*/\2 \1/p' "$1" |
+    while read -r hour minute; do printf '%d\n' "$((10#${hour} * 60 + 10#${minute}))"; done
+}
+# The latest a run can take: every job's cap added up as if none ran alongside
+# another, leaving out the jobs a schedule never starts. GitHub's own cap is 360
+# minutes for a job that sets none.
+run_cap() {
+  awk '
+    function close_job() { if (open && !pr_only) total += cap ? cap : 360 }
+    /^jobs:$/ { in_jobs = 1; next }
+    !in_jobs { next }
+    /^  [A-Za-z_][A-Za-z0-9_-]*:$/ { close_job(); open = 1; cap = 0; pr_only = 0; next }
+    /^    timeout-minutes: / { cap = $2 }
+    /^    if: github\.event_name == .pull_request.$/ { pr_only = 1 }
+    END { close_job(); print total + 0 }
+  ' "$1"
+}
+
+own_start="$(daily_start "${WORKFLOW}")"
+own_time="$(printf '%02d:%02d' "$((own_start / 60))" "$((own_start % 60))")"
+assert_contains "the page gives the job's schedule and its manual trigger" "${doc_text}" \
+  "It runs daily at ${own_time} UTC, after the daily workflows have finished, and on \`workflow_dispatch\`."
+check "the job can still be started by hand, as the page says" \
+  "$(grep -qx '  workflow_dispatch:' "${WORKFLOW}" && echo 0 || echo 1)"
+
+daily_read=0
+for workflow in ${watched}; do
+  start="$(daily_start "${REPO_ROOT}/.github/workflows/${workflow}")"
+  [[ -n "${start}" ]] || continue
+  daily_read=$((daily_read + 1))
+  cap="$(run_cap "${REPO_ROOT}/.github/workflows/${workflow}")"
+  check "${workflow} has finished by the time this job starts, as the page says" \
+    "$(((start + cap) <= own_start ? 0 : 1))" "starts at minute ${start}, may take ${cap}, this job starts at minute ${own_start}"
+done
+assert_equal "three of the workflows read here run daily" "3" "${daily_read}"
+
+doc_watched="$(sed -E 's/.*each on its own: (.*) The audit is included.*/\1/' <<<"${doc_text}" | backticked | sorted_words)"
+assert_equal "the page lists the workflows the step reads" "${watched}" "${doc_watched}"
+
+# The decision table, row by row: each row is found by what it says the job
+# does, and what it says decides it is compared to the step.
+doc_row() { grep -F -- "| $1 |" <<<"${doc_section}"; }
+assert_equal "the page's decision table has five rows" "5" \
+  "$(grep -E '^\| ' <<<"${doc_section}" | grep -cvE '^\| (Newest run|---) ')"
+step_conclusions() {
+  sed -nE "s/^ *([a-z_ |]+)\) state=\"$1\" ;;\$/\1/p" <<<"${step_run}" | tr -d ' ' | tr '|' ' ' | sorted_words
+}
+assert_equal "the conclusions the page says open an issue are the ones the step treats as failed" \
+  "$(step_conclusions failed)" \
+  "$(doc_row 'Opens an issue, or comments on the one already open' | backticked | sorted_words)"
+assert_equal "the conclusion the page says closes the issue is the one the step treats as passed" \
+  "$(step_conclusions passed)" \
+  "$(doc_row 'Closes the open issue, if any, with a comment linking the run' | backticked | sorted_words)"
+
+stale_row="$(doc_row 'Opens or comments the same way: the schedule stopped running')"
+stale_hours="$(sed -nE 's/^\| Started more than ([0-9]+) hours ago .*/\1/p' <<<"${stale_row}")"
+stale_days="$(sed -nE 's/.*\(([0-9]+) days for the monthly .*/\1/p' <<<"${stale_row}")"
+stale_monthly="$(backticked <<<"${stale_row}")"
+assert_contains "the page's daily limit is the step's, in hours" "${step_run}" "max_age_hours=${stale_hours:-none}"
+assert_contains "the page's daily limit is the step's, in the issue's words" "${step_run}" "max_age_text=\"${stale_hours:-none} hours\""
+assert_contains "the page's monthly limit is the step's, in hours" "${step_run}" "max_age_hours=\$((${stale_days:-none} * 24))"
+assert_contains "the page's monthly limit is the step's, in the issue's words" "${step_run}" "max_age_text=\"${stale_days:-none} days\""
+assert_equal "the workflow the page calls monthly is the one the step gives the monthly limit" \
+  "$(awk '/^ *[a-z-]+\.yml\)$/ { arm = $1; sub(/\)$/, "", arm) } /^ *cadence="monthly"$/ { print arm }' <<<"${step_run}")" \
+  "${stale_monthly}"
+
+# A conclusion the page says changes nothing, on a workflow with an issue open.
+ignored="$(doc_row 'Nothing; a cancelled run says nothing about the image' | backticked)"
+reset_fixtures
+stage_run build.yml 110 "${ignored:-none}" 2
+stage_issues < <(issue_entry 46 "${BOT}" "${BUILD_MARKER}")
+run_step >/dev/null 2>&1
+assert_equal "the page names 'cancelled' as what the job leaves alone" "cancelled" "${ignored}"
+assert_equal "the conclusion the page says changes nothing writes nothing" "" "$(writes)"
+check "the page's row for a workflow with no scheduled run is still there" \
+  "$(grep -qxF '| No scheduled run at all | Nothing; a fork that just enabled Actions has none yet |' <<<"${doc_section}" && echo 0 || echo 1)"
+
+# How the job finds its issue.
+assert_contains "the marker the page quotes is the one an issue is found by" "${doc_text}" \
+  "hidden marker in its body (\`${BUILD_MARKER}\`)"
+assert_contains "the author the page names is the bot's, without the prefix a list reply has" "${doc_text}" \
+  "**and** by its author, \`${BOT#app/}\`,"
+
+# The token. tests/check-invariants.sh compares the policy file to the workflow;
+# here the page is compared to both.
+doc_perms="$(sed -E "s/.*The job's token is (.*), declared on the job .*/\1/" <<<"${doc_text}" | backticked | LC_ALL=C sort)"
+job_perms="$(awk '/^    permissions:$/ { on = 1; next } on && /^      [a-z-]+: / { sub(/^ +/, ""); print; next }
+  on && !/^ *#/ { on = 0 }' "${WORKFLOW}" | LC_ALL=C sort)"
+policy_perms="$(jq -r '.workflows["auto-issues.yml"].jobs["file-issues"] | to_entries[] | "\(.key): \(.value)"' "${POLICY}" | LC_ALL=C sort)"
+check "the page names at least one permission" "$([[ -n "${doc_perms}" ]] && echo 0 || echo 1)"
+assert_equal "the token the page gives is the one the job declares" "${job_perms}" "${doc_perms}"
+assert_equal "the token the page gives is the one the policy file allows" "${policy_perms}" "${doc_perms}"
+assert_contains "the page names the policy file" "${doc_text}" \
+  "declared on the job and written down in \`.github/policies/workflow-permissions.json\`"
+assert_equal "the token is declared on the job, so the file has no top-level block" "" \
+  "$(grep -E '^permissions:' "${WORKFLOW}")"
+
+assert_contains "the page says the job checks out nothing and runs no action" "${doc_text}" \
+  "It checks nothing out and runs no action."
+assert_equal "the workflow has no checkout and no action" "" \
+  "$(grep -E '^[[:space:]]*(- )?uses:' "${WORKFLOW}")"
+
+# What reaches an issue. The fields read from the Actions API are the five the
+# page lists, so a field that carries someone's words (a commit title, say)
+# cannot be added without the page saying so.
+doc_fields="$(sed -nE 's/.*comes from the Actions API \(([^)]*)\).*/\1/p' <<<"${doc_text}" | sed -E \
+  -e 's/run id/databaseId/' -e 's/URL/url/' -e 's/start time/createdAt/' -e 's/commit/headSha/' -e 's/,//g' | sorted_words)"
+step_fields="$(tr -s ' \n' ' ' <<<"${step_run}" | sed -nE 's/.*gh run list [^)]*--json ([A-Za-z,]+).*/\1/p' | tr ',' ' ' | sorted_words)"
+check "the step asks the Actions API for named fields" "$([[ -n "${step_fields}" ]] && echo 0 || echo 1)"
+assert_equal "the fields the page lists are the ones the step reads" "${step_fields}" "${doc_fields}"
+
+# And nothing a person wrote is copied: not the open issue's text, not its
+# comments, not the run's title.
+OUTSIDER="text-an-outsider-typed"
+reset_fixtures
+stage_run build.yml 111 failure 2
+jq --arg t "${OUTSIDER}" '.[0].displayTitle = $t' "${FIXTURES}/runs-build.yml.json" >"${FIXTURES}/titled.json"
+mv -- "${FIXTURES}/titled.json" "${FIXTURES}/runs-build.yml.json"
+stage_issues < <(issue_entry 47 "${BOT}" "${BUILD_MARKER} ${OUTSIDER}")
+stage_view 47 "${BUILD_MARKER} ${OUTSIDER}" "${OUTSIDER}"
+run_step >/dev/null 2>&1
+check "the comment this case expects was written" "$([[ -n "$(body_of comment)" ]] && echo 0 || echo 1)"
+assert_absent "nothing an outsider typed reaches the issue, as the page says" "$(body_of comment)" "${OUTSIDER}"
+
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
   printf 'FAILED %d of %d assertion(s)\n' "${failures}" "${tests_run}" >&2
