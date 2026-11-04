@@ -123,8 +123,26 @@ if [[ "${method}" == "DELETE" ]]; then
   version_id="${path##*/}"
   for doomed in ${GH_STUB_FAIL_IDS:-}; do
     if [[ "${doomed}" == "${version_id}" ]]; then
-      printf 'HTTP 403: Forbidden (%s)\n' "${path}" >&2
+      printf 'HTTP %s: failed (%s)\n' "${GH_STUB_FAIL_STATUS:-403}" "${path}" >&2
       exit 1
+    fi
+  done
+  # A flaky id answers 502 to its first GH_STUB_FLAKY_FAILS attempts. With
+  # GH_STUB_FLAKY_APPLIED the delete still happens on those attempts, as it can
+  # behind a real 502, so the retry finds the version gone and gets a 404.
+  for flaky in ${GH_STUB_FLAKY_IDS:-}; do
+    if [[ "${flaky}" == "${version_id}" ]]; then
+      if grep -qx "${version_id}" "${GH_STUB_DELETED}" 2>/dev/null; then
+        printf 'gh: Not Found (HTTP 404)\n' >&2
+        exit 1
+      fi
+      attempts_file="${GH_STUB_REQUESTED}.attempts.${version_id}"
+      printf 'x\n' >>"${attempts_file}"
+      if (($(wc -l <"${attempts_file}") <= ${GH_STUB_FLAKY_FAILS:-1})); then
+        [[ -z "${GH_STUB_FLAKY_APPLIED:-}" ]] || printf '%s\n' "${version_id}" >>"${GH_STUB_DELETED}"
+        printf 'gh: Server Error (HTTP 502)\n' >&2
+        exit 1
+      fi
     fi
   done
   printf '%s\n' "${version_id}" >>"${GH_STUB_DELETED}"
@@ -1447,6 +1465,54 @@ assert_equal "the versions before the failure are removed" "21" "$(pruned_ids)"
 assert_absent "no delete is attempted after the failure" "$(requested_paths)" "/versions/23|"
 assert_contains "a failed delete names the version and what was already removed" \
   "${output}" "buildcache: FAILED to delete version 22 after removing 1"
+
+delete_attempts() { grep -c "^DELETE .*/versions/$1\$" "${REQUESTED}" || true; }
+
+# A server error (5xx) on a delete is retried, with a growing pause, and the run
+# carries on. Only that one id is retried; the pacing pause before the next
+# delete is unchanged.
+three_stale_versions() {
+  rm -f "${REQUESTED}".attempts.*
+  write_versions \
+    "$(make_version 23 "$(iso_ago $((cache_cut + 3600)))" sha256-f)" \
+    "$(make_version 22 "$(iso_ago $((cache_cut + 7200)))" sha256-g)" \
+    "$(make_version 21 "$(iso_ago $((cache_cut + 10800)))" sha256-h)"
+}
+three_stale_versions
+output="$(run_cache_step Danathar User GH_STUB_FLAKY_IDS=22 GH_STUB_FLAKY_FAILS=2)"
+assert_status "a delete that gets two 502s and then succeeds does not fail the step" 0 "$?"
+assert_equal "every version is removed after the retries" "21 22 23" "$(pruned_ids)"
+assert_equal "the flaky delete is attempted three times" "3" "$(delete_attempts 22)"
+assert_equal "retries pause 2s then 5s between the paced 1s pauses" \
+  "1 2 5 1" "$(paste -sd' ' "${CACHE_SLEEPS}")"
+
+# A 502 can hide a delete that applied: the retry then sees a 404, which means
+# the version is gone and counts as removed.
+three_stale_versions
+output="$(run_cache_step Danathar User GH_STUB_FLAKY_IDS=22 GH_STUB_FLAKY_FAILS=1 GH_STUB_FLAKY_APPLIED=1)"
+assert_status "a 404 on a retry after a 502 is not a failure" 0 "$?"
+assert_contains "a 404 on a retry counts as removed" "${output}" "buildcache: removed 3 version(s)"
+
+# The retries are bounded: a delete that keeps answering 502 gives up after
+# three retries and the run stops as before.
+three_stale_versions
+output="$(run_cache_step Danathar User GH_STUB_FLAKY_IDS=22 GH_STUB_FLAKY_FAILS=99)"
+assert_status "a delete that keeps getting 502 fails the step" 1 "$?"
+assert_equal "a persistent 502 is attempted four times, no more" "4" "$(delete_attempts 22)"
+assert_equal "no delete is attempted after the retries run out" "21" "$(pruned_ids)"
+assert_contains "the give-up names the version" \
+  "${output}" "buildcache: FAILED to delete version 22 after removing 1"
+
+# Everything else keeps stopping on the first try: a rate limit must not be
+# hammered, and a 404 with no earlier 5xx keeps today's behaviour.
+three_stale_versions
+output="$(run_cache_step Danathar User GH_STUB_FAIL_IDS=22 GH_STUB_FAIL_STATUS=429)"
+assert_status "a 429 fails the step" 1 "$?"
+assert_equal "a 429 is attempted once" "1" "$(delete_attempts 22)"
+three_stale_versions
+output="$(run_cache_step Danathar User GH_STUB_FAIL_IDS=22 GH_STUB_FAIL_STATUS=404)"
+assert_status "a 404 on the first attempt fails the step" 1 "$?"
+assert_equal "a 404 on the first attempt is attempted once" "1" "$(delete_attempts 22)"
 
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then

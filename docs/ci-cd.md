@@ -943,7 +943,13 @@ The cap exists because `GITHUB_TOKEN` gets 1,000 REST requests an hour per
 repository, and `cleanup_packages` needs some of them in the same hour. At about
 four publishes a day the existing backlog clears in roughly nine days. The first
 failed delete stops the run, so a missing permission does not spend the rest of
-the budget on the same error. Deletes are also paced one second apart: GitHub's
+the budget on the same error. The one exception is a transient server error
+(HTTP 5xx), which is retried up to three times after 2, 5 and 10 seconds before
+the run stops: one GitHub 502 on one delete used to turn the whole daily build
+red, although a missed delete costs nothing because the next run removes it.
+Rate limits (403, 429) are never retried. A 502 can hide a delete that applied,
+so a 404 on a retry counts as removed; a 404 on the first attempt still stops
+the run. Deletes are also paced one second apart: GitHub's
 secondary rate limit charges a DELETE 5 of the 900 points it allows a minute,
 so an unpaced loop is refused after about 180 deletes and the run stops red.
 
@@ -956,7 +962,8 @@ until then the job fails on its first delete.
 The job's `run:` body is covered by `tests/test-prune-package-versions.sh`, which
 lifts it out of `build.yml` and runs it against the same stubbed `gh`. It pins the
 seven-day cut in both directions and in UTC, the oldest-first order, the 300
-cap, the owner scope, the stop on a failed delete, that the listing is read past
+cap, the owner scope, the stop on a failed delete, the bounded retry of a 5xx
+(and that a 429 or a first-attempt 404 is not retried), that the listing is read past
 its first page (the stub returns only the first page to a call without
 `--paginate`, as `gh` does, and the API lists the newest first), and that the
 package it lists is the last path segment of the `CACHE_IMAGE` that `build_push`
