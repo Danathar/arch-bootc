@@ -46,7 +46,9 @@ The guardrails are enforced in code rather than left to you to remember:
   any pool it created (including on failure) with separate cleanup commands;
   it never removes a pool automatically.
 - For bare metal, refuses the target if it is **not a whole disk**, if it
-  **backs the running system**, if anything on it is **mounted**, or if it
+  **backs the running system**, if anything on it is **mounted**, if it is a
+  member of a **mounted multi-device btrfs** filesystem (nothing shows as
+  mounted on such a member, so the kernel's member list is checked), or if it
   carries **ZFS / LVM / RAID / LUKS signatures** — that last one matters
   because pool and array members are typically *not* mounted, so "nothing is
   mounted" alone would happily wipe a live ZFS pool. Beyond that it makes you
