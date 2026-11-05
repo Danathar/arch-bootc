@@ -271,7 +271,7 @@ run_case() {
     PATH="${STUB_DIR}:${PATH}" "${BASH}" -c '
       source "$1" 2>/dev/null
       shift
-      BTRFS_SYSFS_DIR="${STUB_BTRFS_DIR:-${WORK_DIR}/no-btrfs-here}"
+      BTRFS_SYSFS_DIR="${STUB_BTRFS_DIR:-/nonexistent/btrfs-sysfs}"
       if [ -n "${STUB_SYSDISKS_FAIL:-}" ]; then
         running_system_disks() { return 1; }
       elif [ -n "${STUB_SYSDISKS+x}" ]; then
@@ -773,7 +773,6 @@ assert_absent "a plain ext4 disk is not refused" "${OUT}" "storage-subsystem sig
 btrfs_dir="${WORK_DIR}/btrfs-sysfs"
 mkdir -p "${btrfs_dir}/fsid-one/devices"
 : >"${btrfs_dir}/fsid-one/devices/memberdev"
-export WORK_DIR
 
 STUB_BTRFS_DIR="${btrfs_dir}" STUB_ANCESTORS="${BLOCK_TOKEN} disk" \
   STUB_SYSDISKS="" STUB_MOUNTS="" STUB_SIGS="" \
