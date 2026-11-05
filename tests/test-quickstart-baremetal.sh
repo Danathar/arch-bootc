@@ -271,6 +271,7 @@ run_case() {
     PATH="${STUB_DIR}:${PATH}" "${BASH}" -c '
       source "$1" 2>/dev/null
       shift
+      BTRFS_SYSFS_DIR="${STUB_BTRFS_DIR:-${WORK_DIR}/no-btrfs-here}"
       if [ -n "${STUB_SYSDISKS_FAIL:-}" ]; then
         running_system_disks() { return 1; }
       elif [ -n "${STUB_SYSDISKS+x}" ]; then
@@ -765,6 +766,33 @@ STUB_SYSDISKS="" STUB_MOUNTS="" STUB_SIGS="${BLOCK_TOKEN} ext4" \
   run_case validate_baremetal_target "${BLOCK_TOKEN}"
 assert_status "an ordinary filesystem is not mistaken for a storage subsystem" 0 "${STATUS}"
 assert_absent "a plain ext4 disk is not refused" "${OUT}" "storage-subsystem signatures"
+
+# A disk that is one member of a mounted multi-device btrfs shows nothing
+# mounted, so the kernel's member list is the only thing that reveals it. The
+# directory stands in for /sys/fs/btrfs: <fsid>/devices/<member>.
+btrfs_dir="${WORK_DIR}/btrfs-sysfs"
+mkdir -p "${btrfs_dir}/fsid-one/devices"
+: >"${btrfs_dir}/fsid-one/devices/memberdev"
+export WORK_DIR
+
+STUB_BTRFS_DIR="${btrfs_dir}" STUB_ANCESTORS="${BLOCK_TOKEN} disk" \
+  STUB_SYSDISKS="" STUB_MOUNTS="" STUB_SIGS="" \
+  run_case validate_baremetal_target "${BLOCK_TOKEN}"
+assert_status "a disk holding a mounted btrfs member is refused" 1 "${STATUS}"
+assert_contains "the btrfs refusal names the member" "${OUT}" "memberdev"
+assert_contains "the btrfs refusal says it is a mounted btrfs" "${OUT}" "a member of a mounted btrfs filesystem"
+
+STUB_BTRFS_DIR="${btrfs_dir}" STUB_ANCESTORS="/dev/definitely-not-the-target disk" \
+  STUB_SYSDISKS="" STUB_MOUNTS="" STUB_SIGS="" \
+  run_case validate_baremetal_target "${BLOCK_TOKEN}"
+assert_status "a disk beside a mounted btrfs on other disks is accepted" 0 "${STATUS}"
+assert_contains "the accepted disk is reported as outside any mounted btrfs" "${OUT}" "is not part of a mounted btrfs filesystem"
+
+STUB_BTRFS_DIR="${btrfs_dir}" STUB_ANCESTORS_FAIL=1 \
+  STUB_SYSDISKS="" STUB_MOUNTS="" STUB_SIGS="" \
+  run_case validate_baremetal_target "${BLOCK_TOKEN}"
+assert_status "a btrfs member that cannot be mapped to a disk is refused" 1 "${STATUS}"
+assert_contains "the unmappable member is reported" "${OUT}" "could not map btrfs member memberdev"
 
 # ---------------------------------------------------------------------------
 # running_system_disks

@@ -34,6 +34,7 @@ SEED_STAGING_DIR=''
 BAREMETAL_MOUNT_DIR=''
 ISO_TOOL=''
 SELINUX_ENFORCE_FILE=/sys/fs/selinux/enforce
+BTRFS_SYSFS_DIR=/sys/fs/btrfs
 
 # ---------------------------------------------------------------- output ---
 
@@ -317,7 +318,7 @@ block_identity() {
 }
 
 validate_baremetal_target() {
-    local disk="$1" devtype sysdisks sysdisk mounted sigs
+    local disk="$1" devtype sysdisks sysdisk mounted sigs member member_disks
 
     [ -b "${disk}" ] || die "'${disk}' is not a block device."
 
@@ -351,6 +352,22 @@ $(printf '%s\n' "${mounted}" | sed 's/^/      /')
     Refusing to install onto a disk that is in use."
     fi
     ok "${disk} has nothing mounted and no active swap"
+
+    # A mounted multi-device btrfs shows nothing mounted on its other members:
+    # findmnt names one source and lsblk matches a mount by that one device. The
+    # kernel lists every member of each mounted btrfs, so ask it. A member that
+    # cannot be mapped to its disk is refused rather than assumed to be elsewhere.
+    for member in "${BTRFS_SYSFS_DIR}"/*/devices/*; do
+        [ -e "${member}" ] || continue
+        if ! member_disks="$(lsblk -srnpo NAME,TYPE -- "/dev/${member##*/}" 2>/dev/null)"; then
+            die "could not map btrfs member ${member##*/} to its disk"
+        fi
+        if awk '$2 == "disk" { print $1 }' <<< "${member_disks}" | grep -qxF -- "${disk}"; then
+            die "${disk} holds ${member##*/}, a member of a mounted btrfs filesystem.
+    Nothing shows as mounted on it, but it is in use. Refusing."
+        fi
+    done
+    ok "${disk} is not part of a mounted btrfs filesystem"
 
     if ! sigs="$(lsblk -nrpo NAME,FSTYPE -- "${disk}" 2>/dev/null)"; then
         die "could not inspect storage signatures on ${disk}"
