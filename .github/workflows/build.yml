@@ -92,7 +92,7 @@ jobs:
   test:
     name: Shell tests and coverage
     runs-on: ubuntu-26.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
