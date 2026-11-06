@@ -877,6 +877,64 @@ test_fixed_internal_esp_is_genuine() {
     "${RUN_OUTPUT}" "would prune EFI/Linux/old"
 }
 
+# A mountpoint behind a systemd automount reports a stack: the autofs layer
+# first, then the real filesystem once something touched it. The script judges
+# the top line only, and every refusal still has to apply to that line.
+test_automounted_fixed_esp_is_genuine() {
+  local esp bin
+  if ! have_block_device; then
+    skip "an automounted fixed ESP is accepted" "${no_block_device_reason}"
+    return
+  fi
+  esp="$(new_discovery_fixture "automount-genuine-esp")"
+  bin="$(new_stub_bin "automount-genuine" findmnt lsblk)"
+  run_discovery "${bin}" "${esp}" \
+    "SOURCE=\"systemd-1\" FSTYPE=\"autofs\""$'\n'"SOURCE=\"${BLOCK_DEVICE}\" FSTYPE=\"vfat\"" \
+    "PARTTYPE=\"${ESP_PARTTYPE_GUID}\" RM=\"0\" HOTPLUG=\"0\""
+  assert_eq "an automounted fixed ESP exits 0" "0" "${RUN_STATUS}"
+  assert_contains "an automounted fixed ESP is discovered and pruned" \
+    "${RUN_OUTPUT}" "would prune EFI/Linux/old"
+}
+
+test_automounted_non_vfat_is_not_genuine() {
+  local esp bin
+  if ! have_block_device; then
+    skip "an automounted non-vfat filesystem is not genuine" "${no_block_device_reason}"
+    return
+  fi
+  esp="$(new_discovery_fixture "automount-ext4-esp")"
+  bin="$(new_stub_bin "automount-ext4" findmnt lsblk)"
+  run_discovery "${bin}" "${esp}" \
+    "SOURCE=\"systemd-1\" FSTYPE=\"autofs\""$'\n'"SOURCE=\"${BLOCK_DEVICE}\" FSTYPE=\"ext4\"" \
+    "PARTTYPE=\"${ESP_PARTTYPE_GUID}\" RM=\"0\" HOTPLUG=\"0\""
+  assert_refused_by_genuineness_check "an automounted ext4 filesystem" "${RUN_OUTPUT}"
+}
+
+test_automounted_removable_device_is_not_genuine() {
+  local esp bin
+  if ! have_block_device; then
+    skip "an automounted removable device is not genuine" "${no_block_device_reason}"
+    return
+  fi
+  esp="$(new_discovery_fixture "automount-removable-esp")"
+  bin="$(new_stub_bin "automount-removable" findmnt lsblk)"
+  run_discovery "${bin}" "${esp}" \
+    "SOURCE=\"systemd-1\" FSTYPE=\"autofs\""$'\n'"SOURCE=\"${BLOCK_DEVICE}\" FSTYPE=\"vfat\"" \
+    "PARTTYPE=\"${ESP_PARTTYPE_GUID}\" RM=\"1\" HOTPLUG=\"0\""
+  assert_refused_by_genuineness_check "an automounted ESP on removable media" "${RUN_OUTPUT}"
+}
+
+# An automount nothing could trigger leaves only the autofs line.
+test_untriggered_automount_is_not_genuine() {
+  local esp bin
+  esp="$(new_discovery_fixture "automount-idle-esp")"
+  bin="$(new_stub_bin "automount-idle" findmnt lsblk)"
+  run_discovery "${bin}" "${esp}" \
+    "SOURCE=\"systemd-1\" FSTYPE=\"autofs\"" \
+    "PARTTYPE=\"${ESP_PARTTYPE_GUID}\" RM=\"0\" HOTPLUG=\"0\""
+  assert_refused_by_genuineness_check "an automount that never mounted" "${RUN_OUTPUT}"
+}
+
 # --- the systemd units that actually run this script ------------------------
 #
 # Everything above proves the script does the right thing when something runs
@@ -1175,6 +1233,10 @@ main() {
     test_non_vfat_filesystem_on_a_device_is_not_genuine \
     test_empty_rm_or_hotplug_value_is_not_genuine \
     test_fixed_internal_esp_is_genuine \
+    test_automounted_fixed_esp_is_genuine \
+    test_automounted_non_vfat_is_not_genuine \
+    test_automounted_removable_device_is_not_genuine \
+    test_untriggered_automount_is_not_genuine \
     test_service_execstart_runs_the_script_this_repo_ships \
     test_service_condition_guards_the_path_execstart_uses \
     test_service_execstart_command_line_prunes_a_fixture_esp \
