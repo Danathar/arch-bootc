@@ -67,7 +67,18 @@ is_genuine_esp() {
   command -v findmnt >/dev/null 2>&1 || return 1
   command -v lsblk >/dev/null 2>&1 || return 1
 
+  # An idle systemd automount (autofs) sits on the mountpoint until something
+  # touches it, and findmnt would then describe only the autofs layer. Touch a
+  # path below it first so the real filesystem is mounted before we look. A
+  # failure here is fine: the checks below still decide, and they fail closed.
+  stat -- "$mnt/EFI" >/dev/null 2>&1 || true
+
   mnt_info=$(findmnt -Pno SOURCE,FSTYPE "--mountpoint=$mnt" 2>/dev/null) || return 1
+  # Once the automount fired, the mountpoint holds a stack (autofs, then the
+  # real filesystem) and findmnt prints one line per layer, bottom first. Only
+  # the top of the stack is what the system actually reads and writes, so judge
+  # that line alone; every check below still applies to it.
+  mnt_info="${mnt_info##*$'\n'}"
   [[ "$mnt_info" =~ SOURCE=\"([^\"]*)\" ]] || return 1
   source="${BASH_REMATCH[1]}"
   [[ "$mnt_info" =~ FSTYPE=\"([^\"]*)\" ]] || return 1
