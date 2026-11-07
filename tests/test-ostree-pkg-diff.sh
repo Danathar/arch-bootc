@@ -418,6 +418,23 @@ test_status_rollback_verity_rejects_non_status_input() {
   check "JSON with no status object fails rather than reading as no rollback" "$?"
 }
 
+# A rollback that bootc lists but whose verity id is not where this reads it --
+# a rollback that is not a composefs deployment, or a bootc that moved the
+# field -- is "could not read", not "no rollback". Reporting no rollback there
+# would tell the reader something bootc never said.
+test_status_rollback_verity_rejects_rollback_without_verity() {
+  local without_composefs without_verity empty_verity
+  without_composefs='{"status":{"staged":null,"booted":{"composefs":{"verity":"new222"}},"rollback":{"ostree":{"checksum":"abc"},"composefs":null}}}'
+  without_verity='{"status":{"staged":null,"booted":{"composefs":{"verity":"new222"}},"rollback":{"composefs":{"bootType":"bls"}}}}'
+  empty_verity='{"status":{"staged":null,"booted":{"composefs":{"verity":"new222"}},"rollback":{"composefs":{"verity":""}}}}'
+  ! status_rollback_verity "${without_composefs}" >/dev/null 2>&1
+  check "a rollback with no composefs object fails rather than reading as no rollback" "$?"
+  ! status_rollback_verity "${without_verity}" >/dev/null 2>&1
+  check "a rollback with no verity id fails rather than reading as no rollback" "$?"
+  ! status_rollback_verity "${empty_verity}" >/dev/null 2>&1
+  check "a rollback with an empty verity id fails rather than reading as no rollback" "$?"
+}
+
 # --- emit_pkg_diff ---------------------------------------------------------
 
 test_emit_pkg_diff_reports_each_change_kind() {
@@ -900,6 +917,36 @@ test_program_composefs_falls_back_when_bootc_output_is_not_status() {
   assert_eq "unreadable bootc output still diffs, exiting 0" "0" "${status}"
   assert_contains "the fallback warning is printed" \
     "${output}" "warning: could not read the rollback deployment"
+  assert_contains "the only other deployment is compared" \
+    "${output}" "- gone 2.0"
+}
+
+test_program_composefs_falls_back_when_rollback_has_no_verity() {
+  # bootc answered and lists a rollback, but not with a verity id where the
+  # program reads it. That is "could not read the rollback", so the program
+  # takes the warning path; refusing with "no rollback" would be false.
+  local dir bin root cmdline output status
+  dir="$(case_dir composefs-rollback-no-verity)"
+  bin="${dir}/bin"
+  root="${dir}/sysroot"
+  write_program_stubs "${bin}"
+  write_composefs_layout "${root}" old111 new222
+  printf '%s\n' '{"apiVersion":"org.containers.bootc/v1","kind":"BootcHost","status":{"staged":null,"booted":{"composefs":{"verity":"new222"}},"rollback":{"composefs":{"bootType":"bls"}}}}' \
+    >"${bin}/bootc.status"
+  write_db_listing "${root}/composefs/images/old111.listing" 'gone 2.0'
+  write_db_listing "${root}/composefs/images/new222.listing" 'added 3.0'
+  cmdline="$(write_cmdline composefs-rollback-no-verity-cmdline \
+    'root=UUID=1234 composefs=new222 rw')"
+
+  output="$(run_program "${cmdline}" "${bin}" "${dir}/tmp" "" "" \
+    "OSTREE_SYSROOT=${root}")"
+  status=$?
+
+  assert_eq "a rollback without a verity id still diffs, exiting 0" "0" "${status}"
+  assert_contains "the could-not-read warning is printed" \
+    "${output}" "warning: could not read the rollback deployment"
+  assert_not_contains "it does not claim bootc reported no rollback" \
+    "${output}" "bootc status reports no rollback deployment"
   assert_contains "the only other deployment is compared" \
     "${output}" "- gone 2.0"
 }
@@ -1530,6 +1577,7 @@ main() {
     test_status_rollback_verity_picks_rollback_not_staged \
     test_status_rollback_verity_without_rollback_is_empty \
     test_status_rollback_verity_rejects_non_status_input \
+    test_status_rollback_verity_rejects_rollback_without_verity \
     test_emit_pkg_diff_reports_each_change_kind \
     test_emit_pkg_diff_identical_lists_are_silent \
     test_emit_pkg_diff_empty_old_list_is_all_additions \
@@ -1550,6 +1598,7 @@ main() {
     test_program_composefs_compares_against_rollback_not_staged
     test_program_composefs_rejects_when_bootc_reports_no_rollback
     test_program_composefs_falls_back_when_bootc_output_is_not_status
+    test_program_composefs_falls_back_when_rollback_has_no_verity
     test_program_composefs_rejects_an_unknown_booted_image
     test_program_composefs_rejects_a_sole_deployment
     test_program_composefs_rejects_a_previous_without_an_image

@@ -62,13 +62,21 @@ status_previous() {
 # at all, so the caller can tell "bootc says there is nothing to compare
 # against" apart from "bootc could not be asked".
 #
-# The field path (.status.rollback.composefs.verity) is part of the contract
-# pinned by BOOTC_VERSION in the Containerfile (HostStatus / BootEntryComposefs
-# in bootc's crates/lib/src/spec.rs); re-check it when bumping that pin.
+# The field path (.status.rollback.composefs.verity) is bootc's own detail
+# (HostStatus / BootEntryComposefs in bootc's crates/lib/src/spec.rs) and can
+# move in any bootc release. What protects this lookup from that is the rule
+# below: a rollback that is present but carries no verity id where this reads
+# it fails like unreadable input, so the caller warns that it could not read
+# the rollback instead of claiming there is none. Only an absent (null)
+# rollback reads as "no rollback".
 status_rollback_verity() {
   jq -r '.status
-    | if type == "object" then (.rollback.composefs.verity // "")
-      else error("not a bootc status document") end' <<<"$1"
+    | if type != "object" then error("not a bootc status document")
+      elif .rollback == null then ""
+      else (.rollback.composefs.verity
+        | if type == "string" and . != "" then .
+          else error("rollback deployment has no composefs verity id") end)
+      end' <<<"$1"
 }
 
 # Emit the +/-/! report for two `pacman -Q` listings. Both files must already be
@@ -187,8 +195,9 @@ if [[ -n "${composefs_id}" && -n "${composefs_root}" ]]; then
       exit 1
     fi
   else
-    # Only when bootc (or jq) could not be asked at all. Say so: before a
-    # reboot this guess picks the staged update.
+    # Only when bootc (or jq) could not be asked at all, or bootc listed a
+    # rollback without a verity id this can read. Say so: before a reboot
+    # this guess picks the staged update.
     echo "warning: could not read the rollback deployment from 'bootc status';" \
       "using the newest other directory under ${state_deploy}, which is the" \
       "staged update if one is pending." >&2

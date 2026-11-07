@@ -14,9 +14,15 @@ set -euo pipefail
 # kernel/initrd into /EFI/Linux/<id>/ at `bootc upgrade`/`bootc switch` time
 # and only moves the staged entries into loader/entries at shutdown. Both
 # directories are read below, or the kernel the next boot needs is deleted in
-# the window between staging and reboot. Which directories bootc references
-# its artifacts from is part of the contract pinned by BOOTC_VERSION in the
-# Containerfile; re-check this list when bumping it.
+# the window between staging and reboot.
+#
+# Reading those directories is not what keeps a staged kernel safe, though,
+# because where bootc keeps staged entries is its own detail and can move in
+# any bootc release. Before pruning anything the script asks bootc itself
+# (`bootc status`, see bootc_allows_prune below) and prunes nothing while a
+# deployment is staged, or when bootc cannot be asked or answers with
+# something that is not a status document. loader/entries.staged stays in the
+# keep-set as a second layer behind that check.
 
 usage() {
   cat <<'USAGE'
@@ -195,12 +201,51 @@ prune_esp() {
   done
 }
 
+# Succeed only when bootc reports, in a status document this script can read,
+# that no deployment is staged. A staged deployment's kernel sits in
+# EFI/Linux/<id>/ from `bootc upgrade` until the reboot, and nothing outside
+# bootc says for certain where its entry is kept, so while one is staged the
+# script prunes nothing at all. Fails closed: no bootc or jq, a bootc that
+# fails, and output with no .status object all count as "cannot tell", which
+# skips one cleanup run and costs nothing else.
+bootc_allows_prune() {
+  local status_json staged
+
+  if ! command -v bootc >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    log "arch-bootc-prune-esp: bootc status cannot be run here; refusing to prune"
+    return 1
+  fi
+  if ! status_json="$(bootc status --format=json --format-version=1 2>/dev/null)"; then
+    log "arch-bootc-prune-esp: bootc status failed; refusing to prune"
+    return 1
+  fi
+  staged="$(jq -r '.status
+    | if type == "object" then (.staged != null)
+      else error("not a bootc status document") end' <<<"$status_json" 2>/dev/null)" || staged=""
+
+  case "$staged" in
+    false)
+      return 0
+      ;;
+    true)
+      log "arch-bootc-prune-esp: bootc reports a staged deployment; refusing to prune until it is booted"
+      return 1
+      ;;
+    *)
+      log "arch-bootc-prune-esp: bootc status output has no status object; refusing to prune"
+      return 1
+      ;;
+  esac
+}
+
 mapfile -t esps < <(find_esps | sort -u)
 
 if (( ${#esps[@]} == 0 )); then
   log "arch-bootc-prune-esp: no mounted ESP with EFI/Linux and loader/entries found"
   exit 0
 fi
+
+bootc_allows_prune || exit 0
 
 for esp in "${esps[@]}"; do
   prune_esp "$esp"
