@@ -32,6 +32,13 @@ set -uo pipefail
 # block device node at all (a minimal container), the group reports SKIP rather
 # than failing, so the suite stays runnable where test-quickstart-baremetal.sh
 # is not.
+#
+# Before it prunes, the script asks `bootc status` whether a deployment is
+# staged. No test here ever reaches the host's bootc: run_prune puts a stub
+# `bootc` first on PATH, and the discovery runs' PATH holds that stub and
+# nothing else called bootc. The stub reports nothing staged unless a test
+# says otherwise through STUB_BOOTC_STATUS / STUB_BOOTC_EXIT, so every test
+# that expects a prune still gets one.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -162,16 +169,42 @@ write_bls_entry() {
   } >"${esp}/loader/${entries_dir}/${entry}.conf"
 }
 
+# Write a stub `bootc` into the given directory. It answers `bootc status` with
+# STUB_BOOTC_STATUS when that is set (even to the empty string), and otherwise
+# with a status document in which nothing is staged, then exits with
+# STUB_BOOTC_EXIT (default 0). When STUB_BOOTC_ARGV names a file, it appends
+# its arguments there, so a test can see exactly what bootc was asked.
+write_bootc_stub() {
+  local bin="$1"
+  mkdir -p "${bin}"
+  cat >"${bin}/bootc" <<'STUB'
+#!/usr/bin/env bash
+[[ -z "${STUB_BOOTC_ARGV:-}" ]] || printf '%s\n' "$*" >>"${STUB_BOOTC_ARGV}"
+if [[ -n "${STUB_BOOTC_STATUS+x}" ]]; then
+  printf '%s\n' "${STUB_BOOTC_STATUS}"
+else
+  printf '%s\n' '{"apiVersion":"org.containers.bootc/v1","kind":"BootcHost","metadata":{"name":"host"},"spec":{"image":null},"status":{"staged":null,"booted":{"composefs":{"verity":"booted"}},"rollback":null,"type":"bootcHost"}}'
+fi
+exit "${STUB_BOOTC_EXIT:-0}"
+STUB
+  chmod +x "${bin}/bootc"
+}
+
+BOOTC_STUB_BIN="${WORK_DIR}/bootc-stub-bin"
+write_bootc_stub "${BOOTC_STUB_BIN}"
+
 # Run the script against an ESP fixture, capturing stdout+stderr in RUN_OUTPUT
 # and the exit status in RUN_STATUS. Both are globals rather than a command
 # substitution so the status survives -- a subshell's assignment would not.
+# The stub bootc comes first on PATH, so the host's bootc is never asked.
 RUN_OUTPUT=""
 RUN_STATUS=0
 run_prune() {
   local esp="$1"
   shift
   local out_file="${WORK_DIR}/.run-output"
-  BOOTC_PRUNE_ESP_PATH="${esp}" "${PRUNE_ESP}" "$@" >"${out_file}" 2>&1
+  PATH="${BOOTC_STUB_BIN}:${PATH}" BOOTC_PRUNE_ESP_PATH="${esp}" \
+    "${PRUNE_ESP}" "$@" >"${out_file}" 2>&1
   RUN_STATUS=$?
   RUN_OUTPUT="$(cat "${out_file}")"
 }
@@ -183,17 +216,21 @@ run_prune() {
 # branch gets exercised without altering the host.
 #
 # bash is symlinked because the stubs' `#!/usr/bin/env bash` shebang resolves
-# bash through this PATH, and sort/rm because find_esps and prune_esp call
-# them. Anything else the script reaches for is a shell builtin.
+# bash through this PATH, sort/rm because find_esps and prune_esp call them,
+# and jq because bootc_allows_prune reads bootc's answer with it. Anything else
+# the script reaches for is a shell builtin. Every directory also gets the
+# stub bootc, reporting nothing staged, so a run that finds an ESP gets past
+# the staged check; a test that needs bootc missing deletes it.
 new_stub_bin() {
   local name="$1"
   shift
   local bin="${WORK_DIR}/${name}-bin"
   mkdir -p "${bin}"
   local tool
-  for tool in bash sort rm; do
+  for tool in bash sort rm jq; do
     ln -sf "$(command -v "${tool}")" "${bin}/${tool}"
   done
+  write_bootc_stub "${bin}"
 
   # findmnt is called two ways: with --mountpoint=<path> by is_genuine_esp, to
   # describe one mountpoint, and with -t vfat -o TARGET by find_esps, to list
@@ -577,6 +614,102 @@ test_dry_run_still_refuses_without_references() {
   assert_eq "--dry-run without references exits 0" "0" "${RUN_STATUS}"
   assert_contains "--dry-run without references refuses" "${output}" "refusing to prune"
   assert_dir_exists "--dry-run without references keeps everything" "${esp}/EFI/Linux/old"
+}
+
+# --- the bootc staged check ------------------------------------------------
+#
+# Which directory bootc keeps a staged deployment's BLS entry in is bootc's
+# detail, and a bootc release can move it. So the keep-set is not what protects
+# a staged kernel: before pruning anything the script asks bootc whether a
+# deployment is staged, and prunes nothing while one is, or while bootc cannot
+# give an answer it can read. Skipping a cleanup run costs nothing; deleting
+# the kernel the next boot needs costs the machine.
+
+BOOTC_STATUS_STAGED='{"apiVersion":"org.containers.bootc/v1","kind":"BootcHost","metadata":{"name":"host"},"spec":{"image":null},"status":{"staged":{"composefs":{"verity":"staged"}},"booted":{"composefs":{"verity":"booted"}},"rollback":null,"type":"bootcHost"}}'
+
+test_bootc_is_asked_for_format_version_1_json() {
+  local esp argv_log
+  esp="$(new_esp bootc-argv-esp current old)"
+  write_bls_entry "${esp}" current current
+  argv_log="${WORK_DIR}/bootc-argv"
+  : >"${argv_log}"
+  STUB_BOOTC_ARGV="${argv_log}" run_prune "${esp}" --dry-run
+  # The whole argv: --format-version=1 selects the document shape the script
+  # reads, and without it bootc answers in whatever its default is.
+  assert_eq "bootc is asked for its status as format-version 1 JSON, once" \
+    "status --format=json --format-version=1" "$(cat "${argv_log}")"
+  assert_contains "bootc reporting nothing staged lets the prune go ahead" \
+    "${RUN_OUTPUT}" "would prune EFI/Linux/old"
+}
+
+# The case the staged check exists for: a bootc that keeps a staged entry in a
+# directory this script does not read (entries.next here is a made-up name).
+# The keep-set cannot see the staged kernel, so only bootc's answer saves it.
+test_staged_deployment_in_an_unread_directory_is_kept() {
+  local esp output
+  esp="$(new_esp staged-elsewhere-esp booted staged stale)"
+  write_bls_entry "${esp}" booted booted
+  ENTRIES_DIR=entries.next write_bls_entry "${esp}" staged staged
+  STUB_BOOTC_STATUS="${BOOTC_STATUS_STAGED}" run_prune "${esp}"
+  output="${RUN_OUTPUT}"
+  assert_eq "a run with a deployment staged exits 0" "0" "${RUN_STATUS}"
+  assert_contains "a staged deployment is logged as the reason for not pruning" \
+    "${output}" "bootc reports a staged deployment; refusing to prune until it is booted"
+  assert_dir_exists "the staged deployment's kernel is kept" "${esp}/EFI/Linux/staged"
+  assert_dir_exists "the booted deployment is kept" "${esp}/EFI/Linux/booted"
+  assert_dir_exists "nothing at all is pruned while a deployment is staged" \
+    "${esp}/EFI/Linux/stale"
+  check "a run with a deployment staged reports no prune" \
+    "$(not_contains_result "${output}" "pruning")"
+}
+
+test_failing_bootc_prunes_nothing() {
+  local esp output
+  esp="$(new_esp bootc-fails-esp current old)"
+  write_bls_entry "${esp}" current current
+  # The stub still prints a nothing-staged document: a bootc that failed is
+  # not believed, whatever it printed.
+  STUB_BOOTC_EXIT=1 run_prune "${esp}"
+  output="${RUN_OUTPUT}"
+  assert_eq "a failing bootc exits 0" "0" "${RUN_STATUS}"
+  assert_contains "a failing bootc is logged as the reason for not pruning" \
+    "${output}" "bootc status failed; refusing to prune"
+  assert_dir_exists "a failing bootc prunes nothing" "${esp}/EFI/Linux/old"
+}
+
+test_bootc_output_without_status_prunes_nothing() {
+  local esp output reply n=0
+  for reply in '{"kind":"Something"}' '{"status":null}' 'error: not json' ''; do
+    n=$((n + 1))
+    esp="$(new_esp "bootc-no-status-${n}-esp" current old)"
+    write_bls_entry "${esp}" current current
+    STUB_BOOTC_STATUS="${reply}" run_prune "${esp}"
+    output="${RUN_OUTPUT}"
+    assert_eq "bootc output '${reply}' exits 0" "0" "${RUN_STATUS}"
+    assert_contains "bootc output '${reply}' is logged as unreadable" \
+      "${output}" "bootc status output has no status object; refusing to prune"
+    assert_dir_exists "bootc output '${reply}' prunes nothing" "${esp}/EFI/Linux/old"
+  done
+}
+
+# Safe with a PATH this small because BOOTC_PRUNE_ESP_PATH is set, so the host's
+# mount table is never read; --dry-run on top, as for every minimal-PATH run.
+test_missing_bootc_prunes_nothing() {
+  local esp bin output
+  esp="$(new_esp no-bootc-esp current old)"
+  write_bls_entry "${esp}" current current
+  bin="$(new_stub_bin no-bootc)"
+  rm -f -- "${bin}/bootc"
+  env "BOOTC_PRUNE_ESP_PATH=${esp}" \
+    "PATH=${bin}" \
+    "${BASH}" "${PRUNE_ESP}" --dry-run >"${WORK_DIR}/.run-output" 2>&1
+  RUN_STATUS=$?
+  output="$(cat "${WORK_DIR}/.run-output")"
+  assert_eq "a host without bootc exits 0" "0" "${RUN_STATUS}"
+  assert_contains "a missing bootc is logged as the reason for not pruning" \
+    "${output}" "bootc status cannot be run here; refusing to prune"
+  check "a host without bootc prunes nothing" \
+    "$(not_contains_result "${output}" "would prune")"
 }
 
 # --- is_genuine_esp (discovery without BOOTC_PRUNE_ESP_PATH) ---------------
@@ -1213,6 +1346,11 @@ main() {
     test_empty_efi_linux_directory_is_a_noop \
     test_dry_run_deletes_nothing \
     test_dry_run_still_refuses_without_references \
+    test_bootc_is_asked_for_format_version_1_json \
+    test_staged_deployment_in_an_unread_directory_is_kept \
+    test_failing_bootc_prunes_nothing \
+    test_bootc_output_without_status_prunes_nothing \
+    test_missing_bootc_prunes_nothing \
     test_discovery_control_fixture_is_prunable \
     test_missing_findmnt_is_not_genuine \
     test_missing_lsblk_is_not_genuine \

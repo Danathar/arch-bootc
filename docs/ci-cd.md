@@ -162,7 +162,10 @@ CRLF line endings, a final line with no newline, and an `initrd` line naming a
 directory the `linux` line does not), the refuse-to-prune guard when no
 finalized entry under `loader/entries/` references `/EFI/Linux/<id>/` (a staged
 entry alone does not pass it, and neither does a path directly under
-`EFI/Linux/`), `--dry-run`, and the fail-closed
+`EFI/Linux/`), `--dry-run`, the check that asks `bootc status` first and
+prunes nothing while a deployment is staged (including one whose entry sits in
+a directory the script does not read) or while bootc is missing, fails, or
+answers without a `.status` object, and the fail-closed
 rejections in `is_genuine_esp` — the check that stops the script from treating a
 plugged-in bootable USB stick as the ESP.
 
