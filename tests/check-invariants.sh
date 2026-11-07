@@ -745,6 +745,23 @@ else
   fail "cosign.key is ignored by Git" "no .gitignore rule matches cosign.key"
 fi
 
+# A renamed copy of the private key (a backup, a pre-rotation key kept for
+# reference) is exactly as secret as the key itself, and the exact-name rule
+# above does not match it. The pattern must keep covering those names without
+# swallowing the public key, which is committed on purpose.
+if git check-ignore -q --no-index -- cosign.key.old-backup; then
+  pass "a renamed copy of cosign.key is ignored by Git"
+else
+  fail "a renamed copy of cosign.key is ignored by Git" \
+    "no .gitignore rule matches cosign.key.old-backup"
+fi
+
+if git check-ignore -q --no-index -- cosign.pub; then
+  fail "cosign.pub is not ignored by Git" "a .gitignore rule matches the public key"
+else
+  pass "cosign.pub is not ignored by Git"
+fi
+
 # The signature rule is scoped to this repository's own published images, one
 # key per flavor, and not to the whole ghcr.io/danathar account: a namespace
 # key matches every repository under it, so the owner's other projects --

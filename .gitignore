@@ -1,4 +1,5 @@
 cosign.key
+cosign.key.*
 *.img
 output/
 build.log
