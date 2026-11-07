@@ -293,7 +293,9 @@ Useful sections:
 Dependencies*. If a pin is not listed there, Renovate cannot see it.
 
 **Add a new tracked version** that isn't a container image or an action — add an annotation
-comment above it, following the bootc example:
+comment above it. The `customManagers:dockerfileVersions` preset in `renovate.json` reads it. No
+`ARG` in the `Containerfile` uses one today (bootc has its own regex manager, see above), so
+copy this shape:
 
 ```dockerfile
 # renovate: datasource=github-releases depName=owner/repo

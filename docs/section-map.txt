@@ -325,27 +325,27 @@
 
 [docs/renovate.md]
 ## Who runs it
-  prose: unchecked: Renovate runs as the hosted app, not a workflow here; no test reads this section
+  joined: tests/check-invariants.sh
 ## What is tracked
   joined: tests/check-invariants.sh
 ## What is *not* tracked
   joined: tests/check-invariants.sh
 ## The flow, step by step
-  prose: unchecked: how a Renovate pull request moves to merge; no test reads this section
+  joined: tests/check-invariants.sh
 ## What merges automatically
   joined: tests/check-invariants.sh
 ## Why merging is Renovate's job
   joined: tests/check-invariants.sh
 ### If you ever want instant merges
-  prose: unchecked: the renovate.json and repository settings to change; no test reads them
+  joined: tests/check-invariants.sh
 ## Known blocked updates
   joined: tests/check-invariants.sh
 ## The Dependency Dashboard
   prose: narrative: what the dashboard issue is for
 ## Common tasks
-  prose: unchecked: renovate.json edits for common changes; no test reads them
+  joined: tests/check-invariants.sh
 ## Gotchas
-  prose: unchecked: Renovate behaviours this repository has hit; no test reads them
+  joined: tests/check-invariants.sh
 
 [docs/review-rubric.md]
 ## 1. Scope
