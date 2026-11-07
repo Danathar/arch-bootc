@@ -3,7 +3,7 @@
 [![Lint workflows](https://github.com/Danathar/arch-bootc/actions/workflows/zizmor.yaml/badge.svg?branch=main)](https://github.com/Danathar/arch-bootc/actions/workflows/zizmor.yaml)
 [![Ask DeepWiki](https://img.shields.io/badge/Ask-DeepWiki-1f6feb)](https://deepwiki.com/Danathar/arch-bootc)
 [![Maintenance assisted by Hivecommons Hive](https://img.shields.io/badge/maintenance%20assisted%20by-Hivecommons%20Hive-1f6feb)](https://github.com/hivecommons/hive)
-[![ACMM L6 Fully Autonomous](https://img.shields.io/badge/ACMM-L6%20Fully%20Autonomous-2da44e)](#maintained-with-hive-acmm-l6)
+[![ACMM L6 Autonomous](https://img.shields.io/badge/ACMM-L6%20Autonomous-2da44e)](#maintained-with-hive-acmm-l6)
 [![AI assisted](https://img.shields.io/badge/AI-assisted-d29922)](#about-this-project)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
@@ -133,7 +133,7 @@ It moves to stable when all of these hold:
 ## Maintained with Hive (ACMM L6)
 
 > [!NOTE]
-> **This repository's Hive runs at ACMM L6 (Fully Autonomous).** Maintenance here is assisted by [Hivecommons Hive](https://github.com/hivecommons/hive), which orchestrates a fleet of AI agents that continuously review this codebase and file what they find as issues and pull requests.
+> **This repository's Hive runs at ACMM L6 (Autonomous).** Maintenance here is assisted by [Hivecommons Hive](https://github.com/hivecommons/hive), which orchestrates a fleet of AI agents that continuously review this codebase and file what they find as issues and pull requests.
 
 At L6 agents open pull requests and auto-merge when checks pass. Non-outreach pull requests have no level hold, and outreach pull requests remain held for human review. Hive, not a workflow in this repository, applies any `hold` label. This level includes three agents:
 
