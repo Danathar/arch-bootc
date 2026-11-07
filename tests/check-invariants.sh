@@ -12119,6 +12119,177 @@ fi
 rm -f -- "${shape_tracked}"
 
 # ---------------------------------------------------------------------------
+group "Renovate operations (docs/renovate.md: who runs it, how an update reaches main, instant merges, common tasks and gotchas)"
+
+# The other groups read the page's tables. These five sections are what someone
+# reads when Renovate has gone quiet or a change to its setup is due, and nothing
+# read them: "Common tasks" went on telling a reader to copy a bootc annotation
+# that the page itself says was removed on purpose, because bringing it back lets
+# the tag move without its commit.
+#
+# `delete_branch_on_merge` and `allow_auto_merge` are repository settings, which
+# no file here records, so those two sentences stay unread.
+
+# One section of the page on one line, so a sentence reads the same wherever the
+# page wraps it.
+renovate_section() {
+  awk -v heading="$1" '
+    /^```/ { fenced = !fenced }
+    !fenced && /^##/ { in_section = ($0 == heading); next }
+    in_section { print }
+  ' "${RENOVATE_DOC}" | tr '\n' ' ' | tr -s ' '
+}
+
+renovate_says() {
+  local description="$1" section="$2" phrase="$3"
+  if [[ "${section}" == *"${phrase}"* ]]; then
+    pass "${description}"
+  else
+    fail "${description}" "the section does not say: ${phrase}"
+  fi
+}
+
+# The `if:` of one step of build_push.
+renovate_step_if() {
+  cicd_job "${BUILD_WORKFLOW}" build_push | awk -v step="      - name: $1" '
+    /^      - name: / { in_step = ($0 == step) }
+    in_step && /^        if:/ { sub(/^        if:[[:space:]]*/, ""); print }
+  '
+}
+
+renovate_who="$(renovate_section '## Who runs it')"
+renovate_flow="$(renovate_section '## The flow, step by step')"
+renovate_instant="$(renovate_section '### If you ever want instant merges')"
+renovate_tasks="$(renovate_section '## Common tasks')"
+renovate_gotchas="$(renovate_section '## Gotchas')"
+renovate_build_job="$(cicd_job "${BUILD_WORKFLOW}" build_push)"
+renovate_flavors="$(sed -nE 's/^[[:space:]]+flavor:[[:space:]]*\[(.*)\][[:space:]]*$/\1/p' <<<"${renovate_build_job}" | tr -d ' ' | tr ',' ' ')"
+
+if [[ -z "${renovate_who}" || -z "${renovate_flow}" || -z "${renovate_instant}" ||
+  -z "${renovate_tasks}" || -z "${renovate_gotchas}" || -z "${renovate_flavors}" ]]; then
+  fail "${RENOVATE_DOC} has its five operations sections and build_push has its flavor matrix" \
+    "who: ${#renovate_who}, flow: ${#renovate_flow}, instant: ${#renovate_instant}, tasks: ${#renovate_tasks}, gotchas: ${#renovate_gotchas} bytes, flavors: '${renovate_flavors}'; the checks below would read nothing"
+else
+  pass "${RENOVATE_DOC} has its five operations sections and build_push has its flavor matrix"
+
+  # "## Who runs it": the hosted app, on a schedule this repository does not set.
+  renovate_says "the page says no workflow here runs Renovate" "${renovate_who}" \
+    "There is no Renovate workflow in \`.github/workflows/\`"
+  assert_equal "no workflow runs Renovate itself, as the page says" \
+    "$(grep -lE '^[^#]*(renovatebot/|renovate-config|npx .*renovate)' .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null)" ""
+  assert_equal "${RENOVATE} sets no schedule of its own, as the page says" \
+    "$(jq -r 'has("schedule")' "${RENOVATE}")" "false"
+  assert_equal "the forkProcessing value the page quotes is the one ${RENOVATE} sets" \
+    "$(grep -oE '"forkProcessing": "[a-z]+"' <<<"${renovate_who}" | sed -E 's/.*: "(.*)"/\1/')" \
+    "$(jq -r '.forkProcessing' "${RENOVATE}")"
+  # The manual trigger the page sends a reader to is on the dashboard, which
+  # config:best-practices turns on.
+  assert_equal "${RENOVATE} leaves on the Dependency Dashboard the page's manual trigger lives on" \
+    "$(jq -r '[(.extends | index("config:best-practices") != null), (.extends | index(":disableDependencyDashboard") == null), (has("dependencyDashboard") | not)] | all' "${RENOVATE}")" "true"
+
+  # "## The flow, step by step".
+  renovate_says "the page names the renovate/ branches" "${renovate_flow}" "\`renovate/<something>\`"
+  assert_equal "${RENOVATE} keeps Renovate's renovate/ branch prefix" \
+    "$(jq -r 'has("branchPrefix")' "${RENOVATE}")" "false"
+  renovate_says "the page says the pull request does not wait for a build" "${renovate_flow}" \
+    "**It opens a PR immediately.** It does *not* wait for a build first."
+  assert_equal "${RENOVATE} opens the pull request at once, as the page says" \
+    "$(jq -r '.prCreation // "immediate"' "${RENOVATE}")" "immediate"
+  assert_equal "${BUILD_WORKFLOW} triggers on the pull request and on the merge, the page's steps 4 and 6" \
+    "$(cicd_triggers "${BUILD_WORKFLOW}" | tr ' ' '\n' | grep -xE 'pull_request|push' | tr '\n' ' ')" "pull_request push "
+  assert_equal "build_push has no job-level if:, so the page's step 4 build runs on a pull request" \
+    "$(grep -cE '^    if:' <<<"${renovate_build_job}")" "0"
+  # shellcheck disable=SC2016
+  assert_equal "the flavors the page lists are the build_push matrix" \
+    "$(grep -oE 'compiles all [a-z]+ flavors \(`[a-z]+`(, `[a-z]+`)*\)' <<<"${renovate_flow}" | grep -oE '`[a-z]+`' | tr -d '`' | tr '\n' ' ' | sed 's/ $//')" \
+    "${renovate_flavors}"
+  read -ra renovate_flavor_list <<<"${renovate_flavors}"
+  renovate_says "the count of flavors and check runs the page gives is the matrix's" "${renovate_flow}" \
+    "compiles all $(number_word "${#renovate_flavor_list[@]}") flavors"
+  renovate_says "the page gives one check run per flavor" "${renovate_flow}" "$(number_word "${#renovate_flavor_list[@]}") check runs"
+  renovate_says "the page says the merge squashes" "${renovate_flow}" "Green → it squash-merges."
+  assert_equal "every automerging rule squashes, as the page says" \
+    "$(jq -r '[.packageRules[] | select(.automerge == true) | .automergeStrategy] | unique | join(" ")' "${RENOVATE}")" "squash"
+  renovate_says "the page gives the publish order of step 6" "${renovate_flow}" \
+    "build → rechunk with chunkah → push to GHCR → sign with cosign."
+  assert_equal "${BUILD_WORKFLOW} rechunks, pushes and signs in the order the page gives" \
+    "$(grep -E '^      - name: (Rechunk image with chunkah|Push To GHCR|Sign container image)$' <<<"${renovate_build_job}" | sed 's/^      - name: //' | tr '\n' ',')" \
+    "Rechunk image with chunkah,Push To GHCR,Sign container image,"
+  for renovate_step in "Rechunk image with chunkah" "Push To GHCR" "Install Cosign" "Sign container image"; do
+    if [[ "$(renovate_step_if "${renovate_step}")" == *"github.event_name != 'pull_request'"* ]]; then
+      pass "'${renovate_step}' does not run on a pull request, as the page's step 4 says"
+    else
+      fail "'${renovate_step}' does not run on a pull request, as the page's step 4 says" \
+        "its if: is '$(renovate_step_if "${renovate_step}")'"
+    fi
+  done
+
+  # "### If you ever want instant merges".
+  renovate_says "the page names one build check per flavor" "${renovate_instant}" \
+    "\`Build and push image (${renovate_flavors// /|})\`"
+  assert_equal "the build job carries the check name the page gives" \
+    "$(sed -nE 's/^    name:[[:space:]]*//p' <<<"${renovate_build_job}")" "Build and push image"
+  renovate_says "the page says which check the ruleset requires" "${renovate_instant}" \
+    "the ruleset requires only \`Shell tests and coverage\` today"
+  assert_equal "the ruleset requires that check and no other" \
+    "$(jq -r '[.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | join(",")' .github/rulesets/main.json)" \
+    "Shell tests and coverage"
+  renovate_says "the page says the build skips documentation-only pull requests" "${renovate_instant}" \
+    "\`build.yml\` skips them"
+  assert_equal "${BUILD_WORKFLOW} skips docs-only pull requests on the two globs" \
+    "$(awk '
+      /^  pull_request:/ { in_pr = 1; next }
+      in_pr && /^  [a-z]/ { exit }
+      in_pr && /^      - / { sub(/^      - /, ""); gsub(/"/, ""); print }
+      ' "${BUILD_WORKFLOW}" | grep -xE '\*\*/\*\.md|docs/\*\*' | sort | tr '\n' ' ')" \
+    "**/*.md docs/** "
+
+  # "## Common tasks".
+  renovate_says "the page says what reads an annotation comment" "${renovate_tasks}" \
+    "The \`customManagers:dockerfileVersions\` preset in \`renovate.json\` reads it."
+  assert_equal "${RENOVATE} extends that preset" \
+    "$(jq -r '.extends | index("customManagers:dockerfileVersions") != null' "${RENOVATE}")" "true"
+  # The preset matches a comment directly above an `ARG ..._VERSION=` line.
+  assert_equal "the page's annotation example has the shape that preset reads" \
+    "$(grep -A1 -E '^# renovate: datasource=[a-z-]+ depName=[^ ]+$' "${RENOVATE_DOC}" | grep -cE '^ARG [A-Z0-9_]+_VERSION=')" "1"
+  renovate_says "the page says no ARG carries an annotation yet" "${renovate_tasks}" \
+    "No \`ARG\` in the \`Containerfile\` uses one today"
+  assert_equal "no ARG in the Containerfile carries an annotation comment" \
+    "$(grep -cE '^[[:space:]]*#[[:space:]]*renovate:' Containerfile)" "0"
+  renovate_says "the page names its two workflow examples" "${renovate_tasks}" \
+    "the chunkah and cosign entries are the two worked examples"
+  for renovate_example in quay.io/coreos/chunkah sigstore/cosign; do
+    assert_equal "${RENOVATE} has the ${renovate_example} regex manager over the workflow files" \
+      "$(jq -r --arg dep "${renovate_example}" '[.customManagers[] | select(.depNameTemplate == $dep and .customType == "regex") | .managerFilePatterns[] | select(contains(".github/workflows"))] | length' "${RENOVATE}")" "1"
+  done
+  renovate_says "the page validates the file it says holds the configuration" "${renovate_tasks}" \
+    "renovate-config-validator ${RENOVATE}"
+  renovate_says "the page warns about the option an old validator rejects" "${renovate_tasks}" \
+    "reject \`managerFilePatterns\` as unknown"
+  assert_equal "every custom manager uses managerFilePatterns, the option the page warns about" \
+    "$(jq -r '[.customManagers[] | has("managerFilePatterns")] | all' "${RENOVATE}")" "true"
+  renovate_says "the page says to place a stop rule after the automerge rule" "${renovate_tasks}" \
+    "place it after the automerge rule, as the shellcheck rule does"
+  assert_equal "the shellcheck rule stops updates with the keys the page gives, after the automerge rule" \
+    "$(jq -r '
+      (.packageRules | map(.automerge == true) | index(true)) as $automerge
+      | (.packageRules | map(.enabled == false and ((.matchPackageNames // []) | index("koalaman/shellcheck") != null)) | index(true)) as $stop
+      | $automerge != null and $stop != null and $stop > $automerge' "${RENOVATE}")" "true"
+
+  # "## Gotchas".
+  assert_equal "the rebaseWhen value the page quotes is the one ${RENOVATE} sets" \
+    "$(grep -oE 'It is set to `?"[a-z-]+"' <<<"${renovate_gotchas}" | grep -oE '"[a-z-]+"' | tr -d '"')" \
+    "$(jq -r '.rebaseWhen' "${RENOVATE}")"
+  renovate_says "the page says the ruleset wants an up-to-date branch" "${renovate_gotchas}" \
+    "(\`strict_required_status_checks_policy\`)"
+  assert_equal "the ruleset's check is strict, as the page says" \
+    "$(jq -r '.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy' .github/rulesets/main.json)" "true"
+  renovate_fork="$(grep -oE 'gh repo set-default [^ ]+' "${RENOVATE_DOC}" | awk '{ print $4 }')"
+  assert_present "the fork the page tells gh to default to is the repository README.md's build badge reads (${renovate_fork})" \
+    README.md "^\[!\[Build container image\]\(https://github\.com/${renovate_fork}/actions/"
+fi
+
+# ---------------------------------------------------------------------------
 group "Docs section map (docs/section-map.txt: every section of every documentation page is joined to a test or marked prose)"
 
 # The documentation pages state facts about the machine -- what a workflow
