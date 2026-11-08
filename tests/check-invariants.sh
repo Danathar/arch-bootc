@@ -11896,8 +11896,8 @@ else
   fi
 
   # "A changed script with no row stops the run, so add a row with a new
-  # script's floor": every file the floors gate, less the ones left out, has a
-  # TESTS_FOR row, and no row names anything else. Without this a script added
+  # script's floor": every file the floors gate or UNTRACED_TARGETS lists, less
+  # the ones left out, has a TESTS_FOR row, and no row names anything else. Without this a script added
   # to .coverage-thresholds.json without a row is only noticed by the first
   # pull request that changes it, and then as a stopped run.
   mutation_rows="$(awk '
@@ -11906,13 +11906,25 @@ else
     in_table { print }
   ' "${MUTATION_SCRIPT}")"
   mutation_row_scripts="$(sed -nE 's/^[[:space:]]*\["([^"]+)"\]=.*/\1/p' <<<"${mutation_rows}" | LC_ALL=C sort)"
-  mutation_gated="$(jq -r 'keys[]' .coverage-thresholds.json | grep -vxF -f <(printf '%s\n' "${mutation_excluded}") | LC_ALL=C sort)"
+  # Files in UNTRACED_TARGETS are targets too, though the floors cannot gate them.
+  mutation_untraced="$(sed -nE 's/^UNTRACED_TARGETS=\((.*)\)$/\1/p' "${MUTATION_SCRIPT}" | grep -oE '"[^"]+"' | tr -d '"' | LC_ALL=C sort)"
+  mutation_gated="$({ jq -r 'keys[]' .coverage-thresholds.json; printf '%s\n' "${mutation_untraced}"; } | grep -v '^$' | grep -vxF -f <(printf '%s\n' "${mutation_excluded}") | LC_ALL=C sort)"
   if [[ -z "${mutation_row_scripts}" || -z "${mutation_gated}" ]]; then
     fail "TESTS_FOR has a row for every gated script except those left out, and no other row" \
       "rows: '${mutation_row_scripts}', gated: '${mutation_gated}'"
   else
     assert_equal "TESTS_FOR has a row for every gated script except those left out, and no other row" \
       "${mutation_row_scripts}" "${mutation_gated}"
+  fi
+  # "`system_files/etc/profile.d/homebrew.sh` is edited too": the files the page
+  # says are checked without a floor are UNTRACED_TARGETS.
+  # shellcheck disable=SC2016 # backticks are Markdown, not command substitution
+  mutation_doc_untraced="$(grep -E '^- `[^`]+` is edited too' <<<"${mutation_section}" | sed -nE 's/^- `([^`]+)`.*/\1/p' | LC_ALL=C sort)"
+  if [[ -z "${mutation_untraced}" ]]; then
+    fail "the files the page says are edited without a floor are ${MUTATION_SCRIPT}'s UNTRACED_TARGETS" "no UNTRACED_TARGETS entry read"
+  else
+    assert_equal "the files the page says are edited without a floor are ${MUTATION_SCRIPT}'s UNTRACED_TARGETS" \
+      "${mutation_doc_untraced}" "${mutation_untraced}"
   fi
   mutation_missing_tests=""
   while read -r -a mutation_tests; do

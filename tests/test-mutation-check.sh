@@ -60,10 +60,12 @@ assert_contains() {
 # every edit of the base script. Cases then change the script on top of it.
 new_fixture() {
   local dir="$1"
-  mkdir -p "${dir}/scripts" "${dir}/tests" "${dir}/.claude/hooks"
+  mkdir -p "${dir}/scripts" "${dir}/tests" "${dir}/.claude/hooks" "${dir}/system_files/etc/profile.d"
   cp -- "${CHECK}" "${dir}/tests/mutation-check.sh"
   printf '{"scripts/boot-test.sh": 1, ".claude/hooks/gate-git-diff.sh": 1}\n' >"${dir}/.coverage-thresholds.json"
   printf '#!/usr/bin/env bash\necho hook\n' >"${dir}/.claude/hooks/gate-git-diff.sh"
+  # In UNTRACED_TARGETS, so it is a target with no line in the floors above.
+  printf 'greeting=hello\n' >"${dir}/system_files/etc/profile.d/homebrew.sh"
   cat >"${dir}/scripts/boot-test.sh" <<'SCRIPT'
 #!/usr/bin/env bash
 answer=no
@@ -214,6 +216,27 @@ sed -i 's/== yes ]]/== yes ]] || [[ "${1:-}" == y ]]/' "${WORK_DIR}/budget/scrip
 output="$(run_check "${WORK_DIR}/budget" MUTATION_BUDGET=1)"
 assert_status "edits left unchecked when the budget runs out fail the run" 2 "$?"
 assert_contains "the unchecked edits are counted" "${output}" "ran out of budget"
+
+# --- A file the floors cannot gate is still edited ---------------------------
+# homebrew.sh is sourced, so it has no shebang and no coverage floor. Its tests
+# load it from the copy of the checkout, so edits reach them all the same.
+new_fixture "${WORK_DIR}/untraced"
+cat >"${WORK_DIR}/untraced/tests/test-homebrew-profile.sh" <<'TEST'
+#!/usr/bin/env bash
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+greeting=""
+# shellcheck source=/dev/null
+. "${root}/system_files/etc/profile.d/homebrew.sh"
+[[ "${greeting}" == hello ]] || exit 1
+TEST
+printf '#!/usr/bin/env bash\nexit 0\n' >"${WORK_DIR}/untraced/tests/test-homebrew-shell-integration.sh"
+commit_fixture "${WORK_DIR}/untraced"
+printf 'greeting=hello\n[ -n "${greeting}" ] || greeting=bye\n' \
+  >"${WORK_DIR}/untraced/system_files/etc/profile.d/homebrew.sh"
+output="$(run_check "${WORK_DIR}/untraced")"
+assert_status "a changed file listed only in UNTRACED_TARGETS: an edit nothing notices fails the run" 1 "$?"
+assert_contains "the untraced file's line is edited and its tests run" "${output}" \
+  "SURVIVED system_files/etc/profile.d/homebrew.sh:2 [delete] :"
 
 # --- The hook is left out -----------------------------------------------------
 new_fixture "${WORK_DIR}/hook"

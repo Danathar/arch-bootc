@@ -8,3 +8,19 @@
 # List an edit here only when it changes nothing a test could observe -- for
 # example a line inside a here-document whose text no test reads. When a test
 # could notice it, write that test instead.
+
+# __ab_brew is assigned and never read; the end of the file only unsets it.
+system_files/etc/profile.d/homebrew.sh	delete	__ab_brew="$1/linuxbrew/.linuxbrew/bin/brew"
+# Unset reads as 0 in $(( )). A value left by the /var/home call only makes the
+# 40-hop limit for the /home call stricter, never looser.
+system_files/etc/profile.d/homebrew.sh	delete	__ab_hops=0
+# The `..` arm only climbs to the parent of a path whose stat already
+# succeeded, and that stat needed search permission on every parent, so this
+# stat cannot fail and the `|| return` never runs.
+system_files/etc/profile.d/homebrew.sh	return 1	__ab_uid=$(stat -c %u -- "${__ab_path}" 2>/dev/null) || return 1
+# Runs only after [ -L ] said the entry is a link; readlink fails only if the
+# link is removed between the two, which no test can arrange.
+system_files/etc/profile.d/homebrew.sh	return 1	__ab_link=$(readlink -- "${__ab_next}" 2>/dev/null) || return 1
+# Without the strip, the leading / becomes an empty first component, and the
+# `'' | .) continue` arm skips it, so the walk is the same.
+system_files/etc/profile.d/homebrew.sh	delete	__ab_link=${__ab_link#/}

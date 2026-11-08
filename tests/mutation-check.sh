@@ -9,7 +9,7 @@ set -uo pipefail
 # it. This script asks that second question, for changed lines only.
 #
 # For each line that differs from the base revision in a file
-# .coverage-thresholds.json gates, it writes one small edit at a time into a
+# .coverage-thresholds.json gates (or UNTRACED_TARGETS lists), it writes one small edit at a time into a
 # copy of the checkout -- a comparison flipped, `&&` swapped for `||`, an exit
 # status changed, the line replaced by `:` -- and runs the test files that name
 # that script. A test file failing (or timing out) means the edit was caught.
@@ -33,6 +33,12 @@ set -uo pipefail
 # already mutation-tests each of its rules, and one run of that file takes
 # minutes, so a hook change would spend the whole budget below on it.
 #
+# UNTRACED_TARGETS adds files the coverage floors cannot gate. A sourced
+# fragment has no floor because its tests load a copy of it from a temporary
+# directory, so the trace never names the file in the checkout. Its tests
+# still read that copy from this script's copy of the checkout, so an edit
+# here reaches them and the question above can still be asked.
+#
 # Usage: tests/mutation-check.sh [BASE_REF]   (default: origin/main)
 #   MUTATION_TIMEOUT  seconds one test file may run before the edit counts as
 #                     caught (default 300)
@@ -43,6 +49,7 @@ set -uo pipefail
 # 2 the check could not run or ran out of budget.
 
 EXCLUDED_TARGETS=(".claude/hooks/gate-git-diff.sh")
+UNTRACED_TARGETS=("system_files/etc/profile.d/homebrew.sh")
 
 # Script -> the test files (space separated, relative to the root) that run it.
 declare -A TESTS_FOR=(
@@ -51,6 +58,7 @@ declare -A TESTS_FOR=(
   ["scripts/prune-package-versions.sh"]="tests/test-prune-package-versions.sh"
   ["scripts/quickstart.sh"]="tests/e2e/test-quickstart-dry-run.sh tests/test-quickstart-baremetal.sh"
   ["system_files/usr/bin/ostree-pkg-diff"]="tests/test-ostree-pkg-diff.sh tests/test-ostree-pkg-diff-db.sh"
+  ["system_files/etc/profile.d/homebrew.sh"]="tests/test-homebrew-profile.sh tests/test-homebrew-shell-integration.sh"
   ["system_files/usr/libexec/arch-bootc-prune-esp"]="tests/test-prune-esp.sh"
 )
 
@@ -96,6 +104,7 @@ LEDGER="${REPO_ROOT}/tests/mutation-survivors.txt"
 git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null || die "base revision '${BASE_REF}' does not exist"
 mapfile -t targets < <(jq -r 'keys[]' "${THRESHOLDS}") || die "cannot read ${THRESHOLDS}"
 (( ${#targets[@]} > 0 )) || die "${THRESHOLDS} names no files"
+targets+=("${UNTRACED_TARGETS[@]}")
 
 # Ledger entries: file<TAB>from<TAB>original line, trimmed. Keyed by text rather
 # than line number so an unrelated edit above a listed line does not unlist it.
@@ -165,7 +174,7 @@ for target in "${targets[@]}"; do
   for excluded in "${EXCLUDED_TARGETS[@]}"; do
     [[ "${target}" == "${excluded}" ]] && continue 2
   done
-  [[ -f "${target}" ]] || die "${THRESHOLDS} names ${target}, which does not exist"
+  [[ -f "${target}" ]] || die "${target} is a target and does not exist"
   mapfile -t lines < <(changed_lines "${target}")
   (( ${#lines[@]} > 0 )) || continue
 

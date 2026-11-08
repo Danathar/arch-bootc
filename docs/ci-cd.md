@@ -390,6 +390,12 @@ required check. Run it locally with `./tests/mutation-check.sh origin/main`.
   edit as caught.
 - `.claude/hooks/gate-git-diff.sh` is left out. Its own test file already
   mutation-tests each rule, and one run of that file takes minutes.
+- `system_files/etc/profile.d/homebrew.sh` is edited too, though it has no
+  floor. It is sourced, so its tests load a copy and the coverage trace never
+  names it, but that copy comes from the edited checkout. Such files are
+  `UNTRACED_TARGETS` in the script. The fish half,
+  `system_files/etc/fish/conf.d/homebrew.fish`, is not: every edit is Bash
+  syntax and is dropped unless `bash -n` accepts the file.
 - The run stops after `MUTATION_BUDGET` seconds (40 minutes in CI) and fails,
   naming how many edits it did not reach.
 
