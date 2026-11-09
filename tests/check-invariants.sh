@@ -3389,6 +3389,23 @@ else
     "${PKG_DIFF} calls jq (line ${pkg_diff_jq%%:*}) and no jq line is in packages-base.txt; without it every composefs run falls back to the newest directory"
 fi
 
+# The ESP prune reads `bootc status` with jq too (bootc_allows_prune), and it
+# fails closed: with no jq it logs "bootc status cannot be run here" and exits
+# 0 without pruning, on every run, with every unit green. tests/test-prune-esp.sh
+# links the host's jq into its PATH, so it cannot notice the image losing it.
+# The check above does not cover this on its own: it passes once
+# ostree-pkg-diff stops calling jq, whatever the prune still needs.
+PRUNE_ESP="system_files/usr/libexec/arch-bootc-prune-esp"
+prune_esp_jq="$(grep -En '(^|[^[:alnum:]_-])jq[[:space:]]' "${PRUNE_ESP}" | grep -v '^[0-9]*:[[:space:]]*#')"
+if [[ -z "${prune_esp_jq}" ]]; then
+  pass "arch-bootc-prune-esp calls no jq, so packages-base.txt need not install it for it"
+elif grep -qx 'jq' packages-base.txt; then
+  pass "jq, which arch-bootc-prune-esp reads bootc's staged deployment with, is in packages-base.txt"
+else
+  fail "jq, which arch-bootc-prune-esp reads bootc's staged deployment with, is in packages-base.txt" \
+    "${PRUNE_ESP} calls jq (line ${prune_esp_jq%%:*}) and no jq line is in packages-base.txt; without it the prune refuses every run and the ESP is never cleaned"
+fi
+
 # docs/updating.md's paragraph under "Comparing packages between deployments"
 # makes two promises about that lookup, and each is a line of the program.
 pkg_diff_section="$(awk '/^## Comparing packages between deployments/ { on = 1; next } on && /^## / { on = 0 } on' "${UPDATING_DOC}" |
