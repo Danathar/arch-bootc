@@ -1,0 +1,21 @@
+# Reviewed uses of a fixed /tmp/<name> in shipped files, read by the
+# "No fixed folder name in the shared temporary folder" group of
+# tests/check-invariants.sh.
+#
+# One entry per line: file<TAB>/tmp/<name><TAB>reason. An entry allows exactly
+# that name in exactly that file; a new name in a listed file still fails. An
+# entry that matches nothing fails too, so a fixed use that goes away takes its
+# line with it. Lines starting with # and blank lines are ignored.
+Containerfile	/tmp/packages-base.txt	target of a read-only RUN --mount=type=bind inside the build container
+Containerfile	/tmp/packages-kde.txt	target of a read-only RUN --mount=type=bind inside the build container
+Containerfile	/tmp/packages-xfce.txt	target of a read-only RUN --mount=type=bind inside the build container
+Containerfile	/tmp/shipped-units	target of a read-only RUN --mount=type=bind inside the build container
+Containerfile	/tmp/brew-payload	target of a read-only RUN --mount=type=bind inside the build container
+Containerfile	/tmp/brew-payload.manifest	target of a read-only RUN --mount=type=bind inside the build container
+Containerfile	/tmp/selinux	clone made inside RUN --mount=type=tmpfs,dst=/tmp in the build container
+Containerfile	/tmp/bootc	clone made inside RUN --mount=type=tmpfs,dst=/tmp in the build container
+Containerfile	/tmp/homebrew	comment describing the upstream brew-setup.service
+system_files/usr/lib/systemd/system/brew-setup.service.d/10-private-tmp.conf	/tmp/homebrew	comment quoting the upstream unit that this drop-in confines with PrivateTmp=yes
+docs/first-boot.md	/tmp/homebrew	user documentation explaining that drop-in
+docs/security/SECURITY-AI.md	/tmp/evil	attack example for the agent command gate, not an instruction
+docs/security/SECURITY-AI.md	/tmp/timeout	attack example for the agent command gate, not an instruction
