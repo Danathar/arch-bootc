@@ -2049,6 +2049,12 @@ if ((settings_readable)); then
     'shellcheck ./.env' 'shellcheck prints the source line'
   assert_hook_refuses_naming "the hook refuses shellcheck pointed at ./cosign.key" \
     'shellcheck ./cosign.key' 'shellcheck prints the source line'
+  assert_hook_refuses_naming "the hook refuses shellcheck pointed at a renamed copy of the signing key" \
+    'shellcheck ./cosign.key.old-backup' 'shellcheck prints the source line'
+  assert_equal "Read(./cosign.key.*) is denied alongside Read(./cosign.key)" \
+    "$(jq -r '[.permissions.deny[]? | select(. == "Read(./cosign.key.*)")] | length' "${CLAUDE_SETTINGS}")" "1"
+  assert_hook_permits "shellcheck on an unrelated file is still unprompted" \
+    'shellcheck tests/run-tests.sh'
   assert_hook_refuses_naming "the hook refuses shellcheck pointed at a .pem inside the tree" \
     'shellcheck system_files/etc/pki/anything.pem' 'shellcheck prints the source line'
   # And anything outside it, which is where the interesting material usually
