@@ -12348,8 +12348,10 @@ group "No fixed folder name in the shared temporary folder (tests/tmp-path-allow
 # attack example.
 #
 # A match counts only where /tmp starts an absolute path: when the text just
-# before it ends in /<name>, as in /var/tmp/x, it is a part of another path.
-# `-I/tmp/x` is a hit, so this is not "preceded by a non-word character".
+# before it ends in a path name, as in /var/tmp/x or build/tmp/x, it is a part
+# of another path. A name never starts with "-", so `-I/tmp/x` is a hit: the
+# "-I" before it is an option, and this is not "preceded by a non-word
+# character".
 TMP_ALLOWLIST="tests/tmp-path-allowlist.txt"
 
 # Tracked file names on stdin (one per line) -> file<TAB>line<TAB>/tmp/<name>
@@ -12368,8 +12370,10 @@ tmp_scan() {
       off = 0
       while (match(substr($0, off + 1), /\/tmp\/[A-Za-z0-9._-]+/)) {
         start = off + RSTART
-        if (substr($0, 1, start - 1) !~ /\/[A-Za-z0-9._-]+$/)
-          printf "%s\t%d\t%s\n", FILENAME, FNR, substr($0, start, RLENGTH)
+        len = RLENGTH
+        before = substr($0, 1, start - 1)
+        if (!match(before, /[A-Za-z0-9._-]+$/) || substr(before, RSTART, 1) == "-")
+          printf "%s\t%d\t%s\n", FILENAME, FNR, substr($0, start, len)
         off = start + 3
       }
     }
