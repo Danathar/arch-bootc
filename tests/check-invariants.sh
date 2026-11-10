@@ -12336,6 +12336,145 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+group "No fixed folder name in the shared temporary folder (tests/tmp-path-allowlist.txt: the reviewed exceptions)"
+
+# Any account on a machine can create /tmp/<name> before the program that
+# expects to own it does, so a shipped file or instruction that uses a fixed
+# folder name there can be pre-claimed (the Homebrew setup unit did, and
+# PrivateTmp=yes fixed it). The rule: a tracked text file outside tests/ and
+# .claude/ may not name /tmp/<name> unless tests/tmp-path-allowlist.txt lists
+# that exact file and name with the reason it is safe. Every current use runs
+# only inside the throwaway image build, or describes the earlier problem or an
+# attack example.
+#
+# A match counts only where /tmp starts an absolute path: when the text just
+# before it ends in a path name, as in /var/tmp/x or build/tmp/x, it is a part
+# of another path. A name never starts with "-", so `-I/tmp/x` is a hit: the
+# "-I" before it is an option, and this is not "preceded by a non-word
+# character".
+TMP_ALLOWLIST="tests/tmp-path-allowlist.txt"
+
+# Tracked file names on stdin (one per line) -> file<TAB>line<TAB>/tmp/<name>
+# for each hit. Files under tests/ and .claude/ are not shipped and are
+# skipped, as are binary files and anything that is not a regular file.
+tmp_scan() {
+  local file
+  local -a files=()
+  while IFS= read -r file; do
+    case "${file}" in tests/* | .claude/*) continue ;; esac
+    [[ -f "${file}" ]] && grep -Iq . -- "${file}" && files+=("${file}")
+  done
+  ((${#files[@]} > 0)) || return 0
+  awk '
+    {
+      off = 0
+      while (match(substr($0, off + 1), /\/tmp\/[A-Za-z0-9._-]+/)) {
+        start = off + RSTART
+        len = RLENGTH
+        before = substr($0, 1, start - 1)
+        if (!match(before, /[A-Za-z0-9._-]+$/) || substr(before, RSTART, 1) == "-")
+          printf "%s\t%d\t%s\n", FILENAME, FNR, substr($0, start, len)
+        off = start + 3
+      }
+    }
+  ' "${files[@]}"
+}
+
+# Hits on stdin, allowlist file as $1 -> one line per problem:
+#   unlisted<TAB>file:line<TAB>/tmp/<name>   a hit the allowlist does not list
+#   stale<TAB>file<TAB>/tmp/<name>           an entry that matches no hit
+#   malformed<TAB>line                       an entry without three fields
+tmp_judge() {
+  awk -F'\t' -v allow="$1" '
+    BEGIN {
+      while ((getline line < allow) > 0) {
+        if (line ~ /^[[:space:]]*(#|$)/) continue
+        n = split(line, f, "\t")
+        if (n < 3 || f[1] == "" || f[2] == "" || f[3] == "") { print "malformed\t" line; continue }
+        listed[f[1] SUBSEP f[2]] = 1
+        entry[++count] = f[1] SUBSEP f[2]
+      }
+    }
+    {
+      key = $1 SUBSEP $3
+      if (key in listed) used[key] = 1
+      else print "unlisted\t" $1 ":" $2 "\t" $3
+    }
+    END {
+      for (i = 1; i <= count; i++) {
+        if (entry[i] in used) continue
+        split(entry[i], part, SUBSEP)
+        print "stale\t" part[1] "\t" part[2]
+      }
+    }
+  '
+}
+
+# Each case runs in a throwaway tree, so the rule is checked against the shapes
+# it has to tell apart before the real tree is judged by it.
+tmp_fixture="$(mktemp -d)"
+mkdir -p "${tmp_fixture}/system_files" "${tmp_fixture}/tests" "${tmp_fixture}/.claude" "${tmp_fixture}/docs"
+printf '[Service]\nExecStart=/usr/bin/true /tmp/fixed-name\n' >"${tmp_fixture}/system_files/unit.service"
+printf 'work=/tmp/fixed-name\n' >"${tmp_fixture}/tests/check.sh"
+printf 'work=/tmp/fixed-name\n' >"${tmp_fixture}/.claude/hook.sh"
+printf 'dir=/var/tmp/x\nother=/usr/tmp/y\nrel=build/tmp/z\n' >"${tmp_fixture}/docs/vartmp.md"
+printf 'RUN make CPPFLAGS=-I/tmp/selinux\n' >"${tmp_fixture}/Containerfile"
+printf 'a /tmp/ok\nb /tmp/other\n' >"${tmp_fixture}/docs/listed.md"
+printf 'x=/tmp/a/tmp/b\ny=/tmp/\nz=/tmpfoo\n' >"${tmp_fixture}/docs/nested.md"
+printf '\0/tmp/binary\n' >"${tmp_fixture}/blob.bin"
+
+# description, expected output, allowlist text, then the tracked file names.
+tmp_fixture_check() {
+  local description="$1" expected="$2" allow="$3"
+  shift 3
+  printf '%s' "${allow}" >"${tmp_fixture}/allow.txt"
+  assert_equal "${description}" \
+    "$(cd -- "${tmp_fixture}" && printf '%s\n' "$@" | tmp_scan | tmp_judge allow.txt)" "${expected}"
+}
+tmp_fixture_check "a fixed /tmp/<name> in a shipped file fails with its file and line" \
+  $'unlisted\tsystem_files/unit.service:2\t/tmp/fixed-name' "" system_files/unit.service
+tmp_fixture_check "the same text under tests/ or .claude/ passes" \
+  "" "" tests/check.sh .claude/hook.sh
+tmp_fixture_check "/var/tmp/x and other paths that only end in /tmp/<name> pass" \
+  "" "" docs/vartmp.md
+tmp_fixture_check "-I/tmp/x is reported, not read as part of another path" \
+  $'unlisted\tContainerfile:1\t/tmp/selinux' "" Containerfile
+tmp_fixture_check "an allowlisted file and name passes, another name in the same file fails" \
+  $'unlisted\tdocs/listed.md:2\t/tmp/other' $'docs/listed.md\t/tmp/ok\treviewed\n' docs/listed.md
+tmp_fixture_check "an allowlisted name in a different file still fails" \
+  $'unlisted\tsystem_files/unit.service:2\t/tmp/fixed-name\nstale\tdocs/listed.md\t/tmp/fixed-name' \
+  $'docs/listed.md\t/tmp/fixed-name\treviewed\n' system_files/unit.service
+tmp_fixture_check "an allowlist line that matches nothing fails" \
+  $'stale\tdocs/vartmp.md\t/tmp/x' $'docs/vartmp.md\t/tmp/x\treviewed\n' docs/vartmp.md
+tmp_fixture_check "an allowlist line for a file outside the scope is stale" \
+  $'stale\ttests/check.sh\t/tmp/fixed-name' $'tests/check.sh\t/tmp/fixed-name\treviewed\n' tests/check.sh
+tmp_fixture_check "an allowlist line without a reason fails" \
+  $'malformed\tdocs/listed.md\t/tmp/ok\nunlisted\tdocs/listed.md:1\t/tmp/ok\nunlisted\tdocs/listed.md:2\t/tmp/other' \
+  $'docs/listed.md\t/tmp/ok\n' docs/listed.md
+tmp_fixture_check "comments and blank lines in the allowlist are ignored" \
+  "" $'# why\n\ndocs/listed.md\t/tmp/ok\treviewed\ndocs/listed.md\t/tmp/other\treviewed\n' docs/listed.md
+tmp_fixture_check "a second /tmp/<name> after the first on one line is judged on its own" \
+  $'unlisted\tdocs/nested.md:1\t/tmp/a' "" docs/nested.md
+tmp_fixture_check "a binary file is skipped" "" "" blob.bin
+rm -rf -- "${tmp_fixture}"
+
+if [[ ! -f "${TMP_ALLOWLIST}" ]]; then
+  fail "no shipped file uses a fixed /tmp/<name> outside ${TMP_ALLOWLIST}" "${TMP_ALLOWLIST} does not exist"
+else
+  tmp_problems="$(git ls-files | tmp_scan | tmp_judge "${TMP_ALLOWLIST}")"
+  if [[ -z "${tmp_problems}" ]]; then
+    pass "no shipped file uses a fixed /tmp/<name> outside ${TMP_ALLOWLIST}"
+  else
+    fail "no shipped file uses a fixed /tmp/<name> outside ${TMP_ALLOWLIST}" \
+      "$(awk -F'\t' '
+        $1 == "unlisted" { print $2 " uses " $3 ": any account can create that folder first. Use PrivateTmp=yes, RuntimeDirectory=/StateDirectory=, mktemp -d, or a root-owned /run/<name>; or, if it is safe, add file<TAB>path<TAB>reason to tests/tmp-path-allowlist.txt" }
+        $1 == "stale" { print "tests/tmp-path-allowlist.txt lists " $3 " in " $2 ", which no longer uses it: remove the line" }
+        $1 == "malformed" { print "tests/tmp-path-allowlist.txt line is not file<TAB>path<TAB>reason: " $2 }
+      ' <<<"${tmp_problems}")"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 group "Docs section map (docs/section-map.txt: every section of every documentation page is joined to a test or marked prose)"
 
 # The documentation pages state facts about the machine -- what a workflow
