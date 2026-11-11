@@ -119,6 +119,10 @@ job belongs here unless every pull request gets it.
   runs on a pull request only when `nightly-compliance.yml` itself changes.
 - `Post a work order` runs on a pull request only when the `ai-fix-requested`
   label is added.
+- `Check the agent signature line` runs only in `agent-signature.yml`, and its
+  `if:` skips every pull request the Hive app did not open unless its branch
+  starts with `ai-fix/`. It is advisory for now: it can be made required once
+  it has run clean for a month.
 
 ## Applying it
 
