@@ -12341,20 +12341,23 @@ group "No fixed folder name in the shared temporary folder (tests/tmp-path-allow
 # Any account on a machine can create /tmp/<name> before the program that
 # expects to own it does, so a shipped file or instruction that uses a fixed
 # folder name there can be pre-claimed (the Homebrew setup unit did, and
-# PrivateTmp=yes fixed it). The rule: a tracked text file outside tests/ and
-# .claude/ may not name /tmp/<name> unless tests/tmp-path-allowlist.txt lists
-# that exact file and name with the reason it is safe. Every current use runs
+# PrivateTmp=yes fixed it). /var/tmp and /dev/shm are open to every account in
+# the same way (PrivateTmp= covers /var/tmp for that reason), so they count too.
+# The rule: a tracked text file outside tests/ and .claude/ may not name
+# /tmp/<name>, /var/tmp/<name> or /dev/shm/<name> unless
+# tests/tmp-path-allowlist.txt lists that exact file and name with the reason it
+# is safe. Every current use runs
 # only inside the throwaway image build, or describes the earlier problem or an
 # attack example.
 #
-# A match counts only where /tmp starts an absolute path: when the text just
-# before it ends in a path name, as in /var/tmp/x or build/tmp/x, it is a part
-# of another path. A name never starts with "-", so `-I/tmp/x` is a hit: the
+# A match counts only where the folder starts an absolute path: when the text
+# just before it ends in a path name, as in /usr/tmp/x or build/tmp/x, it is a
+# part of another path. /var/tmp/x is matched whole, as /var/tmp/x. A name never starts with "-", so `-I/tmp/x` is a hit: the
 # "-I" before it is an option, and this is not "preceded by a non-word
 # character".
 TMP_ALLOWLIST="tests/tmp-path-allowlist.txt"
 
-# Tracked file names on stdin (one per line) -> file<TAB>line<TAB>/tmp/<name>
+# Tracked file names on stdin (one per line) -> file<TAB>line<TAB>/<folder>/<name>
 # for each hit. Files under tests/ and .claude/ are not shipped and are
 # skipped, as are binary files and anything that is not a regular file.
 tmp_scan() {
@@ -12368,7 +12371,7 @@ tmp_scan() {
   awk '
     {
       off = 0
-      while (match(substr($0, off + 1), /\/tmp\/[A-Za-z0-9._-]+/)) {
+      while (match(substr($0, off + 1), /\/(var\/tmp|dev\/shm|tmp)\/[A-Za-z0-9._-]+/)) {
         start = off + RSTART
         len = RLENGTH
         before = substr($0, 1, start - 1)
@@ -12417,7 +12420,8 @@ mkdir -p "${tmp_fixture}/system_files" "${tmp_fixture}/tests" "${tmp_fixture}/.c
 printf '[Service]\nExecStart=/usr/bin/true /tmp/fixed-name\n' >"${tmp_fixture}/system_files/unit.service"
 printf 'work=/tmp/fixed-name\n' >"${tmp_fixture}/tests/check.sh"
 printf 'work=/tmp/fixed-name\n' >"${tmp_fixture}/.claude/hook.sh"
-printf 'dir=/var/tmp/x\nother=/usr/tmp/y\nrel=build/tmp/z\n' >"${tmp_fixture}/docs/vartmp.md"
+printf 'other=/usr/tmp/y\nrel=build/tmp/z\nnested=/srv/var/tmp/w\n' >"${tmp_fixture}/docs/othertmp.md"
+printf 'dir=/var/tmp/x\nshm=/dev/shm/y\n' >"${tmp_fixture}/docs/vartmp.md"
 printf 'RUN make CPPFLAGS=-I/tmp/selinux\n' >"${tmp_fixture}/Containerfile"
 printf 'a /tmp/ok\nb /tmp/other\n' >"${tmp_fixture}/docs/listed.md"
 printf 'x=/tmp/a/tmp/b\ny=/tmp/\nz=/tmpfoo\n' >"${tmp_fixture}/docs/nested.md"
@@ -12435,8 +12439,10 @@ tmp_fixture_check "a fixed /tmp/<name> in a shipped file fails with its file and
   $'unlisted\tsystem_files/unit.service:2\t/tmp/fixed-name' "" system_files/unit.service
 tmp_fixture_check "the same text under tests/ or .claude/ passes" \
   "" "" tests/check.sh .claude/hook.sh
-tmp_fixture_check "/var/tmp/x and other paths that only end in /tmp/<name> pass" \
-  "" "" docs/vartmp.md
+tmp_fixture_check "paths that only end in /tmp/<name> or /var/tmp/<name> pass" \
+  "" "" docs/othertmp.md
+tmp_fixture_check "a fixed /var/tmp/<name> or /dev/shm/<name> fails like /tmp/<name>" \
+  $'unlisted\tdocs/vartmp.md:1\t/var/tmp/x\nunlisted\tdocs/vartmp.md:2\t/dev/shm/y' "" docs/vartmp.md
 tmp_fixture_check "-I/tmp/x is reported, not read as part of another path" \
   $'unlisted\tContainerfile:1\t/tmp/selinux' "" Containerfile
 tmp_fixture_check "an allowlisted file and name passes, another name in the same file fails" \
@@ -12445,7 +12451,7 @@ tmp_fixture_check "an allowlisted name in a different file still fails" \
   $'unlisted\tsystem_files/unit.service:2\t/tmp/fixed-name\nstale\tdocs/listed.md\t/tmp/fixed-name' \
   $'docs/listed.md\t/tmp/fixed-name\treviewed\n' system_files/unit.service
 tmp_fixture_check "an allowlist line that matches nothing fails" \
-  $'stale\tdocs/vartmp.md\t/tmp/x' $'docs/vartmp.md\t/tmp/x\treviewed\n' docs/vartmp.md
+  $'stale\tdocs/othertmp.md\t/tmp/y' $'docs/othertmp.md\t/tmp/y\treviewed\n' docs/othertmp.md
 tmp_fixture_check "an allowlist line for a file outside the scope is stale" \
   $'stale\ttests/check.sh\t/tmp/fixed-name' $'tests/check.sh\t/tmp/fixed-name\treviewed\n' tests/check.sh
 tmp_fixture_check "an allowlist line without a reason fails" \
