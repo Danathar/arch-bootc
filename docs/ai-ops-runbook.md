@@ -48,6 +48,7 @@ the daily scheduled build and a manual dispatch also build, publish and sign
 | `.github/workflows/labeler.yml` | `Label pull requests` | PR opened, reopened, pushed to, ready for review | [Labeler](#githubworkflowslabeleryml) |
 | `.github/workflows/ai-fix.yml` | `AI fix work order` | An issue or PR labelled, manual | [Work order](#githubworkflowsai-fixyml) |
 | `.github/workflows/agent-audit.yml` | `Agent audit trail` | Monthly on the 1st, 05:23 UTC, manual | [Agent audit](#githubworkflowsagent-audityml) |
+| `.github/workflows/agent-signature.yml` | `Agent PR signature` | Agent PRs opened, reopened, pushed to | [Agent signature](#githubworkflowsagent-signatureyml) |
 | `.github/workflows/auto-issues.yml` | `File issues for failed scheduled runs` | Daily 13:17 UTC, manual | [Auto issues](#githubworkflowsauto-issuesyml) |
 | `.github/workflows/boot-test.yml` | `Boot test` | Daily 12:07 UTC, manual | [Boot test](#githubworkflowsboot-testyml) |
 
@@ -180,6 +181,19 @@ cannot be fixed by a new commit, so report the pull request; do not rewrite
 a pull request's commits or files) are refusals, not findings: dispatch a
 narrower window, or check that pull request yourself. A T3 path in a row is a
 place to look first, not a failure. Detail:
+[ci-cd.md](ci-cd.md#agent-audit-trail).
+
+## `.github/workflows/agent-signature.yml`
+
+`Agent PR signature`. Its only job is `signature`, with the single step
+`Look for the signature line in the description`. It runs only on a pull
+request the Hive app opened or one whose branch starts with `ai-fix/`; on every
+other pull request the job is skipped. Its token has no permissions. It is the
+audit's signature rule asked while the pull request is still open, with the same
+jq definition. It is advisory: no ruleset requires it. Red means the
+description has no line starting `— hive:`. Add the signature line to the
+description, then push or close and reopen the pull request to run it again.
+Do not edit the workflow to exempt a pull request. Detail:
 [ci-cd.md](ci-cd.md#agent-audit-trail).
 
 ## `.github/workflows/auto-issues.yml`

@@ -17,6 +17,10 @@ set -uo pipefail
 # section in both directions, and to the tree: a path the document names that
 # the step does not report fails here, and so does a path the step reports that
 # the document no longer names or the tree no longer holds.
+#
+# The last group runs agent-signature.yml's step, which asks the audit's
+# signature question of an open pull request, and fails when its copy of the
+# jq `signature` definition is not the audit's, word for word.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -655,6 +659,77 @@ assert_contains "the row counts it as an exempt merge" "$(cat "${SUMMARY}")" "| 
 assert_equal "its parents are read" \
   "api repos/Danathar/arch-bootc/commits/7979797aaaa --jq .parents | length" \
   "$(grep '^api' "${GH_LOG}")"
+
+# --- The open pull request check: agent-signature.yml -----------------------
+#
+# agent-signature.yml asks the audit's signature question of a pull request
+# that is still open, so a missing line can be added before the merge. It
+# carries its own copy of the jq `signature` definition, so the copy is held to
+# the audit's here, word for word, and the step is run the way Actions runs it
+# against descriptions that do and do not carry the line. The description
+# reaches the step only through PR_BODY, as in the workflow.
+SIGNATURE_WORKFLOW="${REPO_ROOT}/.github/workflows/agent-signature.yml"
+SIGNATURE_JOB="signature"
+SIGNATURE_STEP="Look for the signature line in the description"
+signature_run="$(workflow_step_run "${SIGNATURE_WORKFLOW}" "${SIGNATURE_JOB}" "${SIGNATURE_STEP}")"
+assert_extracted "the signature check's body is still where this test expects it" "${signature_run}"
+# shellcheck disable=SC2016
+assert_absent "the signature check's body is plain shell" "${signature_run}" '${{'
+
+signature_definition() { grep -E '^[[:space:]]*def signature:' <<<"$1" | sed -E 's/^[[:space:]]*//'; }
+audit_definition="$(signature_definition "${audit_run}")"
+check_definition="$(signature_definition "${signature_run}")"
+assert_extracted "the audit still defines its signature test in one place" "${audit_definition}"
+assert_equal "the audit has exactly one signature definition" "1" "$(grep -c . <<<"${audit_definition}")"
+assert_equal "the open pull request check uses the audit's signature definition, word for word" \
+  "${audit_definition}" "${check_definition}"
+
+signature_workflow_text="$(cat "${SIGNATURE_WORKFLOW}")"
+assert_contains "the check runs on pull_request and nothing else" \
+  "${signature_workflow_text}" $'on:\n  pull_request:\n    types:\n      - opened\n      - reopened\n      - synchronize\n\nconcurrency:'
+assert_contains "the check's token has no permissions" "${signature_workflow_text}" $'\n    permissions: {}\n'
+assert_contains "the check runs for the Hive app's pull requests and ai-fix/ branches" "${signature_workflow_text}" \
+  "if: github.event.pull_request.user.login == 'danathar-atomic-hive[bot]' || startsWith(github.event.pull_request.head.ref, 'ai-fix/')"
+# shellcheck disable=SC2016
+assert_contains "the description reaches the step only through PR_BODY" "${signature_workflow_text}" \
+  'PR_BODY: ${{ github.event.pull_request.body }}'
+assert_absent "the check runs no action" "${signature_workflow_text}" "uses:"
+assert_absent "the check is advisory: the ruleset does not require it" \
+  "$(cat "${REPO_ROOT}/.github/rulesets/main.json")" "Check the agent signature line"
+
+run_signature() {
+  (
+    cd -- "${RUN_DIR}" || exit 99
+    PR_BODY="$1" "${BASH}" --noprofile --norc -e -c "${signature_run}"
+  )
+}
+
+output="$(run_signature $'Does a thing.\n\n'"${SIG_LINE}" 2>&1)"
+assert_status "a description that ends with the signature line passes" 0 "$?"
+assert_contains "the check prints the signature it found" "${output}" "Signed: ${SIG_LINE}"
+
+run_signature $'An omp run.\n\n— hive: backend=omp model=anthropic/claude-fable-5-1 effort=high' >/dev/null 2>&1
+assert_status "a signature with no agent key passes, as the audit counts it signed" 0 "$?"
+
+run_signature $'Written in the browser.\r\n\r\n'"${SIG_LINE}"$'\r\n' >/dev/null 2>&1
+assert_status "a description with CRLF line endings, as GitHub stores a web edit, passes" 0 "$?"
+
+output="$(run_signature "" 2>&1)"
+assert_status "an empty description fails" 1 "$?"
+assert_contains "the failure is an Actions error annotation" "${output}" "::error::"
+
+run_signature $'Does a thing.\n\nFiled by the scanner agent.' >/dev/null 2>&1
+assert_status "a description with no signature line fails" 1 "$?"
+
+run_signature $'This mentions the — hive: line mid-sentence.' >/dev/null 2>&1
+assert_status "a description that only quotes the line mid-line fails, as the audit counts it unsigned" 1 "$?"
+
+signature_ran="${WORK_DIR}/ran"
+rm -f -- "${signature_ran}"
+run_signature "\$(touch ${signature_ran}) \`touch ${signature_ran}\` '\""$'\n\n'"${SIG_LINE}" >/dev/null 2>&1
+assert_status "shell syntax in the description does not stop the check" 0 "$?"
+assert_equal "shell syntax in the description is never run" "absent" \
+  "$([[ -e "${signature_ran}" ]] && echo present || echo absent)"
 
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then
