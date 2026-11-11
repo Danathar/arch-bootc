@@ -717,6 +717,18 @@ counted as signed; the line must start the line. A human pull request without
 the line is not audited, and neither is a Renovate pull request: the Hive app
 is matched by login, not by the bot flag.
 
+A finding here cannot be fixed, because a merged description is history.
+`.github/workflows/agent-signature.yml` asks the signature half of the question
+earlier, while the pull request is open. It runs on `pull_request` (opened,
+reopened, pushed to) for a pull request the Hive app opened or one
+whose branch starts with `ai-fix/`, and fails when the description has no line
+starting `— hive:`. Its jq program carries the audit's `signature` definition,
+copied exactly; `tests/test-agent-audit.sh` fails when the two differ. Its
+token has no permissions, it checks nothing out, runs no action, and reads
+the description only from an environment variable. It is advisory: the
+ruleset does not require it, and the owner can make it required once it has
+run clean for a month.
+
 **The rules were chosen against live data.** Run by hand on 2026-10-03 against
 this repository, the step body listed 106 agent pull requests of the 191 merged
 since 2026-09-02 and reported nine findings: three Hive-app pull requests with

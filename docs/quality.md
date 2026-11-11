@@ -23,6 +23,7 @@ produced:
 | Dependency freshness | Renovate PRs | Continuously |
 | Thread-aware review state | `./scripts/pr-review-state.sh` | On demand; embedded in the `ai-fix-requested` work order |
 | Agent pull requests leave their record (signature line, sign-off) | `Audit merged agent pull requests` step, `Agent audit trail` workflow | Monthly; on demand |
+| An open agent pull request carries its signature line (advisory) | `Look for the signature line in the description` step, `Agent PR signature` workflow | Agent pull requests: opened, reopened, pushed to |
 | Path labels (incl. `documentation`, which marks a PR no build ran on) | Labels on the PR | Pull requests from this repository |
 
 ```bash
@@ -440,7 +441,9 @@ Stated plainly so nobody mistakes silence for coverage:
   its fish cases a failure rather than a skip in CI; and
   `tests/test-agent-audit.sh` runs `agent-audit.yml`'s
   `Audit merged agent pull requests`, the monthly read-back of the record an
-  agent pull request leaves; and `tests/test-auto-issues.sh` runs
+  agent pull request leaves, and `agent-signature.yml`'s
+  `Look for the signature line in the description`, the same signature rule
+  asked while the pull request is open; and `tests/test-auto-issues.sh` runs
   `auto-issues.yml`'s `File or close issues for scheduled runs`, which turns a
   red scheduled run into an issue. The work-order case covers
   what neither side can see alone — that the script is reached by the relative

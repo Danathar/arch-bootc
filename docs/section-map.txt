@@ -172,6 +172,8 @@
   joined: tests/check-invariants.sh
 ## `.github/workflows/agent-audit.yml`
   joined: tests/check-invariants.sh
+## `.github/workflows/agent-signature.yml`
+  joined: tests/check-invariants.sh
 ## `.github/workflows/auto-issues.yml`
   joined: tests/check-invariants.sh
 ## `.github/workflows/boot-test.yml`

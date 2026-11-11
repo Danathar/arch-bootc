@@ -10,7 +10,9 @@ name: Agent audit trail
 # required check in the `main` ruleset, and an omp-backed run pushes under the
 # maintainer's own login, so the author alone cannot say which merged pull
 # requests an agent wrote -- the signature line is the provenance there, and
-# this is what notices when it is missing.
+# this is what notices when it is missing. agent-signature.yml asks the same
+# question of an open pull request with an exact copy of the jq `signature`
+# definition below, and tests/test-agent-audit.sh fails when the two differ.
 #
 # The job lists every pull request merged in the window, keeps the ones an
 # agent wrote (opened by the Hive app, or carrying the signature line), and
