@@ -191,6 +191,12 @@ not:
 That last point is the weakest link in the automerge gate. If a publish step starts failing on
 `main` shortly after an automerged update, check those three first.
 
+A new **GitHub Actions** release waits three days (`minimumReleaseAge`) before Renovate takes
+it. A compromised action usually ships as a fresh release that is found and pulled within days,
+and `sigstore/cosign-installer` would otherwise reach the signing job on `main` untested. The
+wait applies to the `github-actions` manager only: container digest updates often carry no
+release date, and a wait on them could stall them.
+
 That trade is accepted deliberately: this is an experimental image, not production. A bad
 update surfaces either as a red build on `main` (GitHub notifies) or on the next
 `bootc upgrade`, and is then investigated.

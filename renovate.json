@@ -124,6 +124,11 @@
       "matchPackageNames": ["bootc-dev/bootc"],
       "matchUpdateTypes": ["major"],
       "automerge": false
+    },
+    {
+      "description": "Wait three days before taking a new GitHub Actions release. Every action update automerges once the PR build is green (rule above), and sigstore/cosign-installer is not even run by that build -- it first runs on main, in the job that pushes and signs the image. A compromised action usually ships as a fresh release that is found and pulled within days; this is the window in which it can be caught first. Actions only: their releases carry dates, while digest-only container updates often do not and a wait could stall them.",
+      "matchManagers": ["github-actions"],
+      "minimumReleaseAge": "3 days"
     }
   ]
 }

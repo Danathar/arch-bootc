@@ -2118,6 +2118,19 @@ if ((renovate_readable)); then
   assert_equal "merging waits for the build instead of GitHub's auto-merge" \
     "$(jq -r 'if has("platformAutomerge") then (.platformAutomerge | tostring) else "unset" end' "${RENOVATE}")" "false"
 
+  # docs/renovate.md, "What merges automatically": every action update
+  # automerges once the PR build is green, and sigstore/cosign-installer is
+  # not run by that build at all -- it first runs on main, in the job that
+  # pushes and signs the image. The three-day wait is what gives a
+  # compromised action release time to be found and pulled before Renovate
+  # takes it. Read from the rule itself, not the top level: a top-level wait
+  # would also hold digest-only container updates, which often carry no
+  # release date and could stall.
+  assert_equal "a new GitHub Actions release waits three days before Renovate takes it" \
+    "$(jq -r '[.packageRules[]? | select(.matchManagers == ["github-actions"]) | .minimumReleaseAge] | first // "unset"' "${RENOVATE}")" "3 days"
+  assert_equal "the release-age wait is not set at the top level" \
+    "$(jq -r 'if has("minimumReleaseAge") then "set" else "unset" end' "${RENOVATE}")" "unset"
+
   manager_count="$(jq -r '.customManagers | length' "${RENOVATE}")"
   if ((manager_count == 0)); then
     fail "${RENOVATE} still declares custom regex managers" \
