@@ -80,6 +80,8 @@
   prose: narrative: what a review request does and does not authorize; conduct
 ## Completion and cleanup
   prose: narrative: what an agent reports at the end of a task; conduct
+## Owner's standing decisions
+  prose: narrative: a standing ruling on which owner questions agents decide themselves
 
 [CLAUDE.md]
 ## Non-negotiable safety rules
