@@ -12355,6 +12355,17 @@ group "No fixed folder name in the shared temporary folder (tests/tmp-path-allow
 # part of another path. /var/tmp/x is matched whole, as /var/tmp/x. A name never starts with "-", so `-I/tmp/x` is a hit: the
 # "-I" before it is an option, and this is not "preceded by a non-word
 # character".
+#
+# The shell reaches the same fixed path through other spellings, so they count
+# too: a fallback (${TMPDIR:-/tmp}/x, with or without quotes), quote or brace
+# characters around the folder or the name ("/tmp"/x, /tmp/'x'), a doubled
+# slash (/tmp//x), a backslash (/tmp/\x), and a variable as the name
+# (/tmp/$X, /tmp/${X}): a mktemp result is already a full path, so a name
+# joined onto /tmp is fixed when the file is written. The hit is reported, and
+# allowlisted, as the text matched. ${TMPDIR}/x is not a hit, and neither is a
+# bare /tmp followed by relative names (cd /tmp && cp x name,
+# WorkingDirectory=/tmp): those are left to review. This is the pattern the
+# owner chose for the same check in Danathar/dns-failover#166.
 TMP_ALLOWLIST="tests/tmp-path-allowlist.txt"
 
 # Tracked file names on stdin (one per line) -> file<TAB>line<TAB>/<folder>/<name>
@@ -12371,7 +12382,7 @@ tmp_scan() {
   awk '
     {
       off = 0
-      while (match(substr($0, off + 1), /\/(var\/tmp|dev\/shm|tmp)\/[A-Za-z0-9._-]+/)) {
+      while (match(substr($0, off + 1), /\/(var\/tmp|dev\/shm|tmp)["\047}]*\/+["\047\\$]*[{]?[A-Za-z0-9._-]+/)) {
         start = off + RSTART
         len = RLENGTH
         before = substr($0, 1, start - 1)
@@ -12426,6 +12437,17 @@ printf 'RUN make CPPFLAGS=-I/tmp/selinux\n' >"${tmp_fixture}/Containerfile"
 printf 'a /tmp/ok\nb /tmp/other\n' >"${tmp_fixture}/docs/listed.md"
 printf 'x=/tmp/a/tmp/b\ny=/tmp/\nz=/tmpfoo\n' >"${tmp_fixture}/docs/nested.md"
 printf '\0/tmp/binary\n' >"${tmp_fixture}/blob.bin"
+cat >"${tmp_fixture}/docs/spellings.md" <<'SPELLINGS'
+a ${TMPDIR:-/tmp}/s1
+b ${TMPDIR:-"/tmp"}/s2
+c "${TMPDIR:-/tmp}"/s3
+d cp x /tmp//s4
+e cp x "/tmp"/s5
+f cp x /tmp/"s6" /tmp/'s7'
+g cp x /tmp/$S8 /tmp/${S9} /tmp/'$S10'
+h cp x /tmp/\s11 /var/tmp//s12 "/dev/shm"/s13
+i ${TMPDIR}/x /tmp/ /tmp https://example.com/tmp/x
+SPELLINGS
 
 # description, expected output, allowlist text, then the tracked file names.
 tmp_fixture_check() {
@@ -12462,6 +12484,8 @@ tmp_fixture_check "comments and blank lines in the allowlist are ignored" \
 tmp_fixture_check "a second /tmp/<name> after the first on one line is judged on its own" \
   $'unlisted\tdocs/nested.md:1\t/tmp/a' "" docs/nested.md
 tmp_fixture_check "a binary file is skipped" "" "" blob.bin
+tmp_fixture_check "fallback, quoted, doubled-slash, backslash and variable spellings fail; \${TMPDIR}/x, bare /tmp and URLs pass" \
+  $'unlisted\tdocs/spellings.md:1\t/tmp}/s1\nunlisted\tdocs/spellings.md:2\t/tmp\"}/s2\nunlisted\tdocs/spellings.md:3\t/tmp}\"/s3\nunlisted\tdocs/spellings.md:4\t/tmp//s4\nunlisted\tdocs/spellings.md:5\t/tmp\"/s5\nunlisted\tdocs/spellings.md:6\t/tmp/\"s6\nunlisted\tdocs/spellings.md:6\t/tmp/\'s7\nunlisted\tdocs/spellings.md:7\t/tmp/$S8\nunlisted\tdocs/spellings.md:7\t/tmp/${S9\nunlisted\tdocs/spellings.md:7\t/tmp/\'$S10\nunlisted\tdocs/spellings.md:8\t/tmp/\\s11\nunlisted\tdocs/spellings.md:8\t/var/tmp//s12\nunlisted\tdocs/spellings.md:8\t/dev/shm\"/s13' "" docs/spellings.md
 rm -rf -- "${tmp_fixture}"
 
 if [[ ! -f "${TMP_ALLOWLIST}" ]]; then
