@@ -58,8 +58,9 @@ main() {
   local actual expected
   actual="$(jq -S -c '.env' "${SETTINGS}")"
   expected='{"GIT_CONFIG_COUNT":"1","GIT_CONFIG_KEY_0":"safe.bareRepository","GIT_CONFIG_VALUE_0":"explicit"}'
-  [[ "${actual}" == "${expected}" ]]
-  check "settings.json sets safe.bareRepository=explicit through GIT_CONFIG_* for agent commands" "$?" \
+  local ok=0
+  [[ "${actual}" == "${expected}" ]] || ok=1
+  check "settings.json sets safe.bareRepository=explicit through GIT_CONFIG_* for agent commands" "${ok}" \
     "got ${actual}"
 
   # Plant a bare repository `evil/` holding one commit, inside a repository that
@@ -86,8 +87,9 @@ main() {
     rm -f -- "${marker}"
     # shellcheck disable=SC2086 # ${route} is a word list on purpose
     (cd "${victim}/evil" && clean_git ${route} >/dev/null 2>&1)
-    [[ -e "${marker}" ]]
-    check "precondition: without safe.bareRepository, git ${route} inside the planted repository runs its program" "$?"
+    ok=0
+    [[ -e "${marker}" ]] || ok=1
+    check "precondition: without safe.bareRepository, git ${route} inside the planted repository runs its program" "${ok}"
   done
 
   # With the settings env, both pre-approved history commands refuse it.
@@ -97,15 +99,17 @@ main() {
     # shellcheck disable=SC2086 # ${route} is a word list on purpose
     output="$(cd "${victim}/evil" && agent_git ${route} 2>&1)"
     local status=$?
-    [[ "${status}" -ne 0 && "${output}" == *safe.bareRepository* && ! -e "${marker}" ]]
-    check "with the settings env, git ${route} inside the planted repository is refused and runs nothing" "$?" \
+    ok=0
+    [[ "${status}" -ne 0 && "${output}" == *safe.bareRepository* && ! -e "${marker}" ]] || ok=1
+    check "with the settings env, git ${route} inside the planted repository is refused and runs nothing" "${ok}" \
       "status ${status}, marker present: $([[ -e "${marker}" ]] && echo yes || echo no), output: ${output}"
   done
 
   # The checkout's own repository (.git/, not bare) still works.
   output="$(cd "${victim}" && agent_git log -1 --format=%s 2>&1)"
-  [[ "${output}" == "planted-tree" ]]
-  check "with the settings env, git log still works in the checkout's own repository" "$?" "got ${output}"
+  ok=0
+  [[ "${output}" == "planted-tree" ]] || ok=1
+  check "with the settings env, git log still works in the checkout's own repository" "${ok}" "got ${output}"
   (cd "${victim}" && agent_git status --short >/dev/null 2>&1)
   check "with the settings env, git status still works in the checkout's own repository" "$?"
 
