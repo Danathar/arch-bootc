@@ -71,6 +71,7 @@ jobs:
             /mnt/tests/test-agent-audit.sh \
             /mnt/tests/test-auto-issues.sh \
             /mnt/tests/test-boot-test.sh \
+            /mnt/tests/test-claude-settings-git.sh \
             /mnt/tests/test-homebrew-shell-integration.sh \
             /mnt/tests/test-mutation-check.sh \
             /mnt/tests/test-nightly-compliance.sh \
