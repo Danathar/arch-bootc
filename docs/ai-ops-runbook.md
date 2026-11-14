@@ -204,7 +204,9 @@ scheduled run of `build.yml`, `nightly-compliance.yml`, `agent-audit.yml` and `b
 `main`. A failed, timed-out or never-started run, or one older than 48 hours
 (33 days for the monthly audit), opens an issue titled `Scheduled run of ... failed on main` or
 `... has stopped running on main`, or comments on the one already open. A
-later successful run closes it. The issue is a pointer, not a diagnosis: go to
+later successful run closes it. Closing it by hand also holds: a run already
+on a closed issue is not filed again, so only a newer run, or the same one going
+stale, opens a new one. The issue is a pointer, not a diagnosis: go to
 the section for the workflow it names. A cancelled run is ignored. It writes
 issues only, and only ones it opened itself. If it is red, the step's log names
 the API call that failed; that is a token or permission error, not a finding.
