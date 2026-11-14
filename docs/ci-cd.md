@@ -857,6 +857,14 @@ written on. Each issue or comment also carries a run marker, so a run that is
 already on the issue is not reported a second time when the job is dispatched
 again by hand.
 
+A run already on one of the job's **closed** issues, in its body or in a
+comment the job wrote, is not filed again either. Closing an issue while its
+run is still the newest therefore holds until the next run: a newer failure,
+or the same run going stale, opens a new issue. Before this, a closed issue
+came back as a new one every day. A failed agent audit cannot be fixed
+([Agent audit trail](#agent-audit-trail)), so its issue was closed and
+reopened as #627, #658, #661 and #689 for one run in November 2026.
+
 The job's token is `actions: read` and `issues: write`, declared on the job and
 written down in `.github/policies/workflow-permissions.json`. It checks nothing
 out and runs no action. Everything it writes into an issue comes from the
@@ -873,8 +881,10 @@ disables every scheduled workflow at once, this one included.
 and `startup_failure`, a comment on the open issue, a person's look-alike
 issue, a run already reported, a close on success, a cancelled run, a stale
 schedule on either side of 48 hours, a failed agent audit and an audit
-schedule on either side of 33 days, a failed boot test, no runs at all, and a
-failed API read, which must fail the step rather than open a duplicate.
+schedule on either side of 33 days, a failed boot test, a run already on a
+closed issue (in its body or the job's comment, and not in a person's), no runs
+at all, and a failed API read, which must fail the step rather than open a
+duplicate.
 
 ## Pruning old package versions
 

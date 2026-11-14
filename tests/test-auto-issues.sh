@@ -125,7 +125,8 @@ fi
 assert_absent "the step's body is plain shell" "${step_run}" '${{'
 
 # Replies: runs-<workflow>.json for `run list` (an empty array when absent),
-# issues.json for `issue list`, view-<n>.json for `issue view`. Writes are
+# issues.json for `issue list` (closed-issues.json with `--state closed`),
+# view-<n>.json for `issue view`. Writes are
 # logged, and each body handed over with --body-file is kept as
 # bodies/<n>-<verb>, numbered in call order. GH_STUB_FAIL names one
 # "<noun> <verb>" pair that fails instead of answering.
@@ -135,10 +136,11 @@ set -euo pipefail
 
 printf '%s\n' "$*" >>"${GH_STUB_LOG}"
 args=("$@")
-workflow="" body_file=""
+workflow="" body_file="" state=""
 for ((i = 0; i < ${#args[@]}; i++)); do
   case "${args[i]}" in
     --workflow) workflow="${args[i + 1]}" ;;
+    --state) state="${args[i + 1]}" ;;
     --body-file) body_file="${args[i + 1]}" ;;
   esac
 done
@@ -150,7 +152,13 @@ keep_body() {
 [[ "${1:-} ${2:-}" != "${GH_STUB_FAIL:-}" ]] || exit 1
 case "${1:-} ${2:-}" in
   "run list") cat "${GH_STUB_FIXTURES}/runs-${workflow}.json" 2>/dev/null || printf '[]\n' ;;
-  "issue list") cat "${GH_STUB_FIXTURES}/issues.json" 2>/dev/null || printf '[]\n' ;;
+  "issue list")
+    if [[ "${state}" == "closed" ]]; then
+      cat "${GH_STUB_FIXTURES}/closed-issues.json" 2>/dev/null || printf '[]\n'
+    else
+      cat "${GH_STUB_FIXTURES}/issues.json" 2>/dev/null || printf '[]\n'
+    fi
+    ;;
   "issue view") cat "${GH_STUB_FIXTURES}/view-${3}.json" ;;
   "issue create") keep_body create ;;
   "issue comment") keep_body comment ;;
@@ -307,6 +315,81 @@ assert_absent "a comment does not repeat the issue's marker" "${body}" "${BUILD_
 stage_view 42 "${BUILD_MARKER}" "older comment" $'Newer comment.\n<!-- auto-issues-run:103:failed -->'
 run_step >/dev/null 2>&1
 assert_equal "a run the open issue already mentions is not mentioned again" "" "$(writes)"
+
+# --- A run already on a closed issue is not filed again ----------------------
+#
+# The issue for a failure that cannot be fixed (an agent audit finding, say)
+# is closed while that run is still the newest. The next day must not open a
+# fresh issue for the same run; a newer run, or the same run gone stale, must.
+closed_entry() {
+  jq -n --argjson n "$1" --arg login "$2" --arg body "$3" '
+    {number: $n, author: {login: $login, is_bot: ($login | startswith("app/"))}, body: $body,
+     comments: ($ARGS.positional | map({author: {login: (.[0:index(":")])}, body: .[index(":") + 1:]}))}' \
+    --args "${@:4}"
+}
+stage_closed() { jq -s '.' >"${FIXTURES}/closed-issues.json"; }
+
+reset_fixtures
+stage_run agent-audit.yml 304 failure 24
+stage_issues </dev/null
+stage_closed < <(
+  closed_entry 50 "${BOT}" $'Audit failed.\n<!-- auto-issues-run:304:failed -->\n'"<!-- auto-issues:agent-audit.yml -->"
+)
+output="$(run_step 2>&1)"
+assert_status "a run already on a closed issue exits 0" 0 "$?"
+assert_equal "a run a closed issue already reported opens no new issue" "" "$(writes)"
+assert_contains "the log names the closed issue that reported it" "${output}" \
+  "closed #50 already reported run 304 (failed); not filing it again"
+assert_contains "closed issues are read with their comments" "$(grep '^issue list' "${GH_LOG}")" \
+  "issue list --repo Danathar/arch-bootc --state closed --limit 1000 --json number,author,body,comments"
+
+# Reported in a comment of the closed issue, not its body: still reported.
+stage_closed < <(
+  closed_entry 50 "${BOT}" $'<!-- auto-issues-run:290:failed -->\n'"<!-- auto-issues:agent-audit.yml -->" \
+    $'github-actions:Again.\n<!-- auto-issues-run:304:failed -->'
+)
+run_step >/dev/null 2>&1
+assert_equal "a run a closed issue's comment already reported opens no new issue" "" "$(writes)"
+
+# A newer run fails: that is news, and gets a new issue.
+stage_run agent-audit.yml 305 failure 2
+run_step >/dev/null 2>&1
+assert_equal "a newer failed run than the closed issue reported opens a new issue" \
+  "issue create --repo Danathar/arch-bootc --title Scheduled run of the monthly agent audit failed on main --body-file" \
+  "$(writes | sed -E 's/ [^ ]+$//')"
+
+# The same run, now past the monthly limit: the schedule stopped, which is news.
+reset_fixtures
+stage_run agent-audit.yml 304 failure $((34 * 24))
+stage_issues </dev/null
+stage_closed < <(
+  closed_entry 50 "${BOT}" $'<!-- auto-issues-run:304:failed -->\n'"<!-- auto-issues:agent-audit.yml -->"
+)
+run_step >/dev/null 2>&1
+assert_equal "the reported run gone stale opens a 'stopped running' issue" \
+  "issue create --repo Danathar/arch-bootc --title Scheduled run of the monthly agent audit has stopped running on main --body-file" \
+  "$(writes | sed -E 's/ [^ ]+$//')"
+
+# Only the bot's own words count: a person's closed issue quoting both markers,
+# or a person's comment on the bot's issue, does not silence a failure. Nor
+# does the same run on another workflow's closed issue.
+for case_name in "a person's closed issue" "a person's comment" "another workflow's issue"; do
+  reset_fixtures
+  stage_run agent-audit.yml 306 failure 2
+  stage_issues </dev/null
+  case "${case_name}" in
+    "a person's closed issue")
+      stage_closed < <(closed_entry 51 "Danathar" $'<!-- auto-issues-run:306:failed -->\n<!-- auto-issues:agent-audit.yml -->') ;;
+    "a person's comment")
+      stage_closed < <(closed_entry 52 "${BOT}" "<!-- auto-issues:agent-audit.yml -->" \
+        $'Danathar:Quoting <!-- auto-issues-run:306:failed -->') ;;
+    "another workflow's issue")
+      stage_closed < <(closed_entry 53 "${BOT}" $'<!-- auto-issues-run:306:failed -->\n'"${BUILD_MARKER}") ;;
+  esac
+  run_step >/dev/null 2>&1
+  assert_equal "${case_name} carrying the run does not stop a new issue" \
+    "issue create" "$(writes | cut -d' ' -f1,2)"
+done
 
 # --- A green run closes the issue; a cancelled one does not -------------------
 reset_fixtures

@@ -40,7 +40,10 @@ concurrency:
 # One open issue per workflow at most. It is found by a marker comment in its
 # body and by its author, so a person's issue quoting the marker is never
 # taken over. A run already mentioned on that issue is not mentioned again, so
-# re-running this workflow by hand does not repeat a comment.
+# re-running this workflow by hand does not repeat a comment. Nor is a run
+# already on one of this job's closed issues: closing an issue while its run is
+# still the newest holds until the next run, instead of reopening it as a new
+# issue every day.
 #
 # Nothing here is read from an issue: the only text written into one is the
 # run's id, URL, conclusion, start time and commit, all from the Actions API,
@@ -180,6 +183,21 @@ jobs:
             } >"${body}"
 
             if [[ -z "${issue}" ]]; then
+              # A closed issue of this job's that already carries this run and
+              # state was closed on purpose: say nothing until a newer run. Only
+              # the bot's own words count, so a person cannot quote the marker
+              # into a comment to silence a failure.
+              closed="$(gh issue list --repo "${REPO}" --state closed --limit 1000 \
+                --json number,author,body,comments |
+                jq -r --arg bot "${bot}" --arg marker "${marker}" --arg run "${run_marker}" \
+                  '[.[] | select(.author.login == $bot and (.body | contains($marker)))
+                        | select(([.body] + [.comments[] | select(.author.login == ($bot | ltrimstr("app/"))) | .body])
+                                 | any(contains($run)))]
+                   | sort_by(.number) | last | .number // empty')"
+              if [[ -n "${closed}" ]]; then
+                echo "closed #${closed} already reported run ${run_id} (${state}); not filing it again"
+                continue
+              fi
               {
                 echo
                 echo "${marker}"
