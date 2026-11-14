@@ -1,9 +1,9 @@
 {
-  ".claude/hooks/gate-git-diff.sh": 595,
-  "scripts/boot-test.sh": 138,
+  ".claude/hooks/gate-git-diff.sh": 858,
+  "scripts/boot-test.sh": 143,
   "scripts/pr-review-state.sh": 81,
-  "scripts/prune-package-versions.sh": 110,
-  "scripts/quickstart.sh": 276,
-  "system_files/usr/bin/ostree-pkg-diff": 116,
-  "system_files/usr/libexec/arch-bootc-prune-esp": 72
+  "scripts/prune-package-versions.sh": 123,
+  "scripts/quickstart.sh": 282,
+  "system_files/usr/bin/ostree-pkg-diff": 132,
+  "system_files/usr/libexec/arch-bootc-prune-esp": 82
 }
