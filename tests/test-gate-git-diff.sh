@@ -2001,8 +2001,10 @@ if ((settings_readable)); then
   # corpus group below records as a decision rather than as an accident.
   assert_hook_permits "a two-revision diff behind --namespace is still unprompted" \
     'git --namespace ns diff HEAD HEAD'
-  assert_hook_permits "git --work-tree ... diff --stat is still unprompted" \
-    'git --work-tree . diff --stat'
+  # `--work-tree` is no longer in that set either: it is the file-read form of
+  # `-C`, so it is refused with the other global options (issue #691).
+  assert_hook_refuses_naming "git --work-tree ... diff --stat is refused as a git global option" \
+    'git --work-tree . diff --stat' 'git global option'
 
   # --- The other allow-listed command that opens a file it is pointed at ----
   #
@@ -3230,6 +3232,27 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row options refused 'git global option' \
     'the value form of GIT_EXEC_PATH, which the environment rule refuses in every other spelling' \
     'git status; git --exec-path=/tmp diff HEAD'
+  corpus_row options refused 'git global option' \
+    "names the repository whose config git loads, which safe.bareRepository=explicit lets through because naming it is what makes it explicit (issue #691)" \
+    'git --git-dir=evil log -p -1'
+  corpus_row options refused 'git global option' \
+    'the same option with its value in the next word' \
+    'git --git-dir evil show'
+  corpus_row options refused 'git global option' \
+    'makes the current directory the git dir, so inside a planted bare repository it loads that config' \
+    'git --bare log -p -1'
+  corpus_row options refused 'git global option' \
+    'behind another global option that is stepped over' \
+    'git --no-pager --bare show'
+  corpus_row options refused 'git global option' \
+    'after an allowed command in the same string' \
+    'git status; git --bare log -p -1'
+  corpus_row options refused 'git global option' \
+    'the file-read form of -C: git compares the tracked paths against the files under that directory' \
+    'git --work-tree=/tmp diff HEAD'
+  corpus_row options refused 'git global option' \
+    'the same option with its value in the next word' \
+    'git --work-tree /tmp diff HEAD'
   corpus_row options refused '--output=FILE' \
     'writes the diff to a path instead of stdout, in every subcommand that generates one' \
     'git log -p --output=cosign.pub -1'
@@ -3279,8 +3302,11 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     "-c after the subcommand is git's combined-diff flag, not the config option" \
     'git show -c HEAD'
   corpus_row options allowed '' \
-    '--namespace, --super-prefix, --attr-source, --git-dir and --work-tree rename or relocate what git reports rather than loading a program, so they are stepped over and the subcommand behind them is still found' \
+    '--namespace, --super-prefix and --attr-source rename what git reports rather than loading a program, so they are stepped over and the subcommand behind them is still found' \
     'git --namespace x diff -- cosign.pub LICENSE'
+  corpus_row options allowed '' \
+    "--bare after the subcommand is that subcommand's own flag, not the global option" \
+    'git init --bare /tmp/x'
   corpus_row options allowed '' \
     'changes the marker character rather than the destination' \
     'git log --output-indicator-new=% -1'

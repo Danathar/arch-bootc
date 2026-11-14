@@ -105,6 +105,34 @@ main() {
       "status ${status}, marker present: $([[ -e "${marker}" ]] && echo yes || echo no), output: ${output}"
   done
 
+  # The setting refuses a bare repository git finds, not one the command names:
+  # `--git-dir=evil`, and `--bare` (the current directory as the git dir), are
+  # what "explicit" means, so the planted program still runs under the settings
+  # env (issue #691). The guard hook refuses those spellings instead. Both
+  # halves are asserted, so the refusal is not vacuous.
+  local named named_dir named_args payload hook_err hook_rc
+  for named in "|--git-dir=evil log -p -1" "|--git-dir evil show" \
+    "/evil|--bare log -p -1" "/evil|--bare show"; do
+    named_dir="${victim}${named%%|*}"
+    named_args="${named#*|}"
+    rm -f -- "${marker}"
+    # shellcheck disable=SC2086 # ${named_args} is a word list on purpose
+    (cd "${named_dir}" && agent_git ${named_args} >/dev/null 2>&1)
+    ok=0
+    [[ -e "${marker}" ]] || ok=1
+    check "with the settings env, git ${named_args} still runs the planted program" "${ok}"
+
+    payload="$(jq -nc --arg c "git ${named_args}" '{tool_name: "Bash", tool_input: {command: $c}}')"
+    hook_err="$(cd "${REPO_ROOT}" && printf '%s' "${payload}" |
+      CLAUDE_PROJECT_DIR="${REPO_ROOT}" bash "${REPO_ROOT}/.claude/hooks/gate-git-diff.sh" 2>&1 >/dev/null)"
+    hook_rc=$?
+    ok=0
+    [[ "${hook_rc}" -eq 2 && "${hook_err}" == *"git global option"* ]] || ok=1
+    check "so the guard hook refuses git ${named_args} as a git global option" "${ok}" \
+      "exit ${hook_rc}, stderr: ${hook_err}"
+  done
+  rm -f -- "${marker}"
+
   # The checkout's own repository (.git/, not bare) still works.
   output="$(cd "${victim}" && agent_git log -1 --format=%s 2>&1)"
   ok=0
