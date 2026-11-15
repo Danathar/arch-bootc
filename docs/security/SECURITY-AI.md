@@ -356,11 +356,18 @@ must be described as such.
   changed path; `--config-env` names an environment variable to take the value
   from; `-C <dir>` moves git to another directory, so the containment test
   answers about a directory git has already left; `--exec-path` is the value
-  form of `GIT_EXEC_PATH`. Those four are refused rather than stepped over.
-  `--git-dir`, `--work-tree`, `--namespace`, `--super-prefix` and
-  `--attr-source` only rename or relocate what git reports and are still
-  stepped over so the subcommand behind them is found. A `-c` *after* the
-  subcommand is git's combined-diff flag and is unaffected.
+  form of `GIT_EXEC_PATH`. `--git-dir <dir>` and `--bare` (which is
+  `--git-dir=.`) point git at another repository and so at its config: a
+  bare repository committed into a branch names a `diff.x.textconv` program
+  that `git --git-dir=evil log -p` runs, and `safe.bareRepository=explicit`
+  in `.claude/settings.json` allows exactly that spelling, because naming the
+  directory is what makes it explicit. `--work-tree <dir>` makes git compare
+  tracked paths against another directory, the file-read form of `-C`. Those
+  seven are refused rather than stepped over. `--namespace`, `--super-prefix`
+  and `--attr-source` only rename what git reports and are still stepped over
+  so the subcommand behind them is found. A `-c` *after* the subcommand is
+  git's combined-diff flag, and `--bare` after it (`git init --bare`) is the
+  subcommand's own option; neither is affected.
 
   *Operands the command string does not hold.* `xargs` appends the words it
   reads from standard input, or from the file its `-a` option names, to the

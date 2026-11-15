@@ -15,9 +15,17 @@ set -uo pipefail
 # settings env is absent (so the refusal below is real, not vacuous), and shows
 # it is refused when the env is applied. The checkout's own repository (.git/,
 # not bare) must keep working under the same env.
+#
+# `explicit` refuses only a repository git discovers. Naming the directory --
+# `--git-dir=evil`, or `--bare` from inside it, which is `--git-dir=.` -- is
+# what makes it explicit, so those spellings still run the planted program
+# with the env applied. The guard hook, .claude/hooks/gate-git-diff.sh, is what
+# refuses them; the last group below shows both halves against the same
+# planted repository, so neither assertion is vacuous.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETTINGS="${REPO_ROOT}/.claude/settings.json"
+GATE="${REPO_ROOT}/.claude/hooks/gate-git-diff.sh"
 
 failures=0
 tests_run=0
@@ -103,6 +111,27 @@ main() {
     [[ "${status}" -ne 0 && "${output}" == *safe.bareRepository* && ! -e "${marker}" ]] || ok=1
     check "with the settings env, git ${route} inside the planted repository is refused and runs nothing" "${ok}" \
       "status ${status}, marker present: $([[ -e "${marker}" ]] && echo yes || echo no), output: ${output}"
+  done
+
+  # The spellings the setting allows reach the planted program, and the guard
+  # hook refuses each of them.
+  local spec dir args gate_err gate_status
+  for spec in "victim|--git-dir=evil log -p -1" "victim|--git-dir evil show" \
+    "victim/evil|--bare log -p -1"; do
+    dir="${spec%%|*}"
+    args="${spec#*|}"
+    rm -f -- "${marker}"
+    # shellcheck disable=SC2086 # ${args} is a word list on purpose
+    (cd "${WORK_DIR}/${dir}" && agent_git ${args} >/dev/null 2>&1)
+    ok=0
+    [[ -e "${marker}" ]] || ok=1
+    check "with the settings env, git ${args} still runs the planted program (so the hook refusal below is needed)" "${ok}"
+    gate_err="$(jq -nc --arg c "git ${args}" '{tool_name: "Bash", tool_input: {command: $c}}' |
+      CLAUDE_PROJECT_DIR="${REPO_ROOT}" bash "${GATE}" 2>&1 >/dev/null)"
+    gate_status=$?
+    ok=0
+    [[ "${gate_status}" -eq 2 && "${gate_err}" == *"git global option"* ]] || ok=1
+    check "the guard hook refuses git ${args}" "${ok}" "exit ${gate_status}, stderr: ${gate_err}"
   done
 
   # The checkout's own repository (.git/, not bare) still works.

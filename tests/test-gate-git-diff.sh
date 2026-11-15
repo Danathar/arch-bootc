@@ -1902,10 +1902,10 @@ if ((settings_readable)); then
   # from silence.
   assert_hook_refuses "the hook refuses the plain-file form reached through git -C" \
     'git -C / diff /dev/null etc/shadow'
-  assert_hook_refuses "the hook refuses the plain-file form reached through --git-dir" \
-    'git --git-dir /tmp/elsewhere/.git diff /dev/null ./cosign.key'
-  assert_hook_refuses "the hook refuses the plain-file form reached through --work-tree" \
-    'git --work-tree /tmp/elsewhere diff /dev/null ./cosign.key'
+  assert_hook_refuses_naming "the hook refuses the plain-file form reached through --git-dir" \
+    'git --git-dir /tmp/elsewhere/.git diff /dev/null ./cosign.key' 'git global option'
+  assert_hook_refuses_naming "the hook refuses the plain-file form reached through --work-tree" \
+    'git --work-tree /tmp/elsewhere diff /dev/null ./cosign.key' 'git global option'
   assert_hook_refuses "the hook refuses the plain-file form behind git -c" \
     'git -c core.pager=cat diff /dev/null ./cosign.key'
   assert_hook_refuses "the hook refuses the plain-file form behind --namespace" \
@@ -1995,14 +1995,37 @@ if ((settings_readable)); then
   assert_hook_permits "an ordinary git read inside a subshell is still unprompted" \
     '(git log -p -1)'
   # Two-token git global options, now that the scan follows them: an ordinary
-  # diff behind one that only renames or relocates what git reports is still
-  # an ordinary diff. `-C` and `-c` are not in that set any more -- each loads
-  # a program or moves git out of the checkout, so both are refused, which the
-  # corpus group below records as a decision rather than as an accident.
+  # diff behind one that only renames what git reports is still an ordinary
+  # diff. `-C`, `-c`, `--git-dir`, `--bare` and `--work-tree` are not in that
+  # set any more -- each loads a program, names another repository's config
+  # or moves git out of the checkout, so all are refused, which the corpus
+  # group below records as a decision rather than as an accident.
   assert_hook_permits "a two-revision diff behind --namespace is still unprompted" \
     'git --namespace ns diff HEAD HEAD'
-  assert_hook_permits "git --work-tree ... diff --stat is still unprompted" \
-    'git --work-tree . diff --stat'
+  assert_hook_permits "a diff behind --attr-source is still unprompted" \
+    'git --attr-source=HEAD diff HEAD'
+  # `--git-dir <dir>` and `--bare` (`--git-dir=.`) make git load that
+  # repository's config, so a bare repository committed into a branch can
+  # name a diff.x.textconv program that `git log -p` runs. The settings env's
+  # safe.bareRepository=explicit refuses only the discovered spelling (`-C
+  # evil`, `cd evil`); naming the directory is what makes it explicit, so
+  # these spellings are left for the hook (tests/test-claude-settings-git.sh
+  # runs them against a planted repository). `--work-tree <dir>` is -C for
+  # the files git compares against.
+  assert_hook_refuses_naming "the hook refuses git --git-dir=DIR ahead of log" \
+    'git --git-dir=evil log -p -1' 'git global option'
+  assert_hook_refuses_naming "the hook refuses git --git-dir DIR ahead of show" \
+    'git --git-dir evil show' 'git global option'
+  assert_hook_refuses_naming "the hook refuses git --bare ahead of log" \
+    'git --bare log -p -1' 'git global option'
+  assert_hook_refuses_naming "the hook refuses git --bare behind another global option" \
+    'git --no-pager --bare show' 'git global option'
+  assert_hook_refuses_naming "the hook refuses git --work-tree=DIR ahead of diff" \
+    'git --work-tree=/etc diff HEAD' 'git global option'
+  assert_hook_refuses_naming "the hook refuses git --work-tree . diff --stat" \
+    'git --work-tree . diff --stat' 'git global option'
+  assert_hook_permits "--bare after the subcommand is init's own option, not the global one" \
+    'git init --bare evil'
 
   # --- The other allow-listed command that opens a file it is pointed at ----
   #
@@ -3230,6 +3253,15 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row options refused 'git global option' \
     'the value form of GIT_EXEC_PATH, which the environment rule refuses in every other spelling' \
     'git status; git --exec-path=/tmp diff HEAD'
+  corpus_row options refused 'git global option' \
+    "loads that repository's config, so a bare repository committed into a branch names a textconv program; safe.bareRepository=explicit lets the named spelling through" \
+    'git status; git --git-dir=evil log -p -1'
+  corpus_row options refused 'git global option' \
+    '--bare is --git-dir=., the same explicit spelling with the directory left out' \
+    'git status; git --bare log -p -1'
+  corpus_row options refused 'git global option' \
+    'compares tracked paths against another directory, printing files outside the checkout as -C does' \
+    'git status; git --work-tree=/etc diff HEAD'
   corpus_row options refused '--output=FILE' \
     'writes the diff to a path instead of stdout, in every subcommand that generates one' \
     'git log -p --output=cosign.pub -1'
@@ -3279,7 +3311,7 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     "-c after the subcommand is git's combined-diff flag, not the config option" \
     'git show -c HEAD'
   corpus_row options allowed '' \
-    '--namespace, --super-prefix, --attr-source, --git-dir and --work-tree rename or relocate what git reports rather than loading a program, so they are stepped over and the subcommand behind them is still found' \
+    '--namespace, --super-prefix and --attr-source rename what git reports rather than loading a program, so they are stepped over and the subcommand behind them is still found' \
     'git --namespace x diff -- cosign.pub LICENSE'
   corpus_row options allowed '' \
     'changes the marker character rather than the destination' \
