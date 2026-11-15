@@ -75,9 +75,9 @@
 #      `GIT_DIR=`, `SHELLCHECK_OPTS=`, `LD_PRELOAD=` -- sits outside the
 #      prefix an allow rule matches; an `export` sits in another command
 #      entirely and outlives the string; and a git global option
-#      (`-c diff.external=`, `-C <dir>`) sits between the name and the
-#      subcommand. See `GATED_ENV_MSG`, `GATED_EXPORT_MSG` and
-#      `GIT_GLOBAL_MSG`.
+#      (`-c diff.external=`, `-C <dir>`, `--git-dir <dir>`, `--bare`) sits
+#      between the name and the subcommand. See `GATED_ENV_MSG`,
+#      `GATED_EXPORT_MSG` and `GIT_GLOBAL_MSG`.
 #  10. An allow rule matching by prefix covers more subcommands than it names.
 #      `Bash(git diff*)` matches `git difftool` as readily as `git diff`, and
 #      `git difftool --extcmd=PROG` (or `-x PROG`) runs PROG once per changed
@@ -361,7 +361,7 @@ GLOB_MSG='blocked: bash expands a glob before git sees the words, so one word he
 GATED_EXPORT_MSG='blocked: an export in a string that also runs an allow-listed command puts a variable in that command'"'"'s environment without being written where the command is: bash applies `export GIT_EXTERNAL_DIFF=/tmp/evil; git diff HEAD` to every later command of the string, so the gated command carries no assignment for the leading-assignment scan to find. The test is therefore the whole string, and it is deliberately not ordered: `git status --short; export GIT_EXTERNAL_DIFF=/tmp/evil` runs nothing gated after the export, matches the allow rule on its `git status` prefix, and is the same reach one Bash call later, because the tool'"'"'s shell outlives a single call. export, declare -x, typeset -x, local -x, readonly -x and `set -a` (which exports every assignment made after it) are the spellings refused. A bare `declare NAME=x` or `readonly NAME=x` exports nothing (verified against bash 5.2) and is not refused; neither is an export in a string that runs nothing this gate covers, which matches no allow rule and prompts on its own. Set the variable on the command that needs it, where this gate can see what it reaches, or drop it.'
 
 # shellcheck disable=SC2016 # the backticks quote command spellings for the reader
-GIT_GLOBAL_MSG='blocked: a git global option written before the subcommand reaches the same primitives from outside the part an allow rule matches. `-c diff.external=/tmp/evil` runs that program once per changed path -- the config spelling of GIT_EXTERNAL_DIFF, verified against git 2.39.5 -- and `-c core.sshCommand`, `-c credential.helper` and `-c alias.x=!cmd` are the same shape; `--config-env` names an environment variable to take the value from; `-C <dir>` moves git to another directory, so `git -C /home/<user> diff -- .netrc .profile` printed a file outside this checkout while the containment test below resolved both operands inside it; and `--exec-path` is the value form of GIT_EXEC_PATH, which the environment rule refuses in every other spelling. So -c, -C, --config-env and --exec-path are refused in a git invocation rather than stepped over. The options that only rename or relocate what git reports -- --git-dir, --work-tree, --namespace, --super-prefix, --attr-source -- are stepped over as before, so the subcommand behind them is still found. A `-c` after the subcommand is git'"'"'s combined-diff flag and is not affected.'
+GIT_GLOBAL_MSG='blocked: a git global option written before the subcommand reaches the same primitives from outside the part an allow rule matches. `-c diff.external=/tmp/evil` runs that program once per changed path -- the config spelling of GIT_EXTERNAL_DIFF, verified against git 2.39.5 -- and `-c core.sshCommand`, `-c credential.helper` and `-c alias.x=!cmd` are the same shape; `--config-env` names an environment variable to take the value from; `-C <dir>` moves git to another directory, so `git -C /home/<user> diff -- .netrc .profile` printed a file outside this checkout while the containment test below resolved both operands inside it; and `--exec-path` is the value form of GIT_EXEC_PATH, which the environment rule refuses in every other spelling. `--git-dir <dir>` and `--bare` (which is `--git-dir=.`) point git at another repository and so at its config: a bare repository committed into a branch names a diff.x.textconv program that `git --git-dir=evil log -p` runs, and safe.bareRepository=explicit in .claude/settings.json allows exactly this spelling, because naming the directory is what makes it explicit; and `--work-tree <dir>` makes git compare tracked paths against another directory, which prints a file outside this checkout as -C does. So -c, -C, --config-env, --exec-path, --git-dir, --bare and --work-tree are refused in a git invocation rather than stepped over. The options that only rename what git reports -- --namespace, --super-prefix, --attr-source -- are stepped over as before, so the subcommand behind them is still found. A `-c` after the subcommand is git'"'"'s combined-diff flag and is not affected.'
 
 # shellcheck disable=SC2016 # the literal ${VAR} is what the reader has to see
 BRACE_MSG='blocked: bash expands braces before git sees the words, and this gate reads the words as typed, so a brace rebuilds both spellings it refuses: `git diff {/dev/null,./cosign.key}` passes the operand scan as one word and reaches git as two operands (the plain-file read), and `--outpu{t,t}=FILE` matches no word here and reaches git as --output=FILE. Expanding braces correctly means reimplementing bash inside a hook, so a brace bash could expand -- a { followed, anywhere later in the word, by a comma or a .. and then a }, or a ${VAR} -- is refused instead, and so is a process substitution (`git diff <(...)`), which supplies an operand this gate never saw. Write the command out in full. A brace with neither, such as HEAD@{1} or main@{upstream}, is a literal to bash and is not refused; a .. between two reflog entries (HEAD@{2}..HEAD@{1}) has the refused shape, so write HEAD~2..HEAD~1. Only words of a git invocation are affected: awk and jq programs elsewhere in the string are not.'
@@ -2262,10 +2262,15 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
     # Both the attached and the separated value are the same option to git
     # (`-C/tmp`, `-ccolor.ui=false`), so the pattern is the prefix; in this
     # position no other git option begins with `-c` or `-C`.
-    -c* | -C* | --config-env | --config-env=* | --exec-path | --exec-path=*)
+    # `--git-dir`, `--bare` and `--work-tree` join them: the first two name
+    # the repository whose config git loads -- the one spelling the settings
+    # env's safe.bareRepository=explicit still lets reach a bare repository
+    # committed into a branch -- and the third is -C for the files git reads.
+    -c* | -C* | --config-env | --config-env=* | --exec-path | --exec-path=* | \
+      --git-dir | --git-dir=* | --bare | --work-tree | --work-tree=*)
       refuse "${GIT_GLOBAL_MSG}"
       ;;
-    --git-dir | --work-tree | --namespace | --super-prefix | --attr-source)
+    --namespace | --super-prefix | --attr-source)
       skip_git_option_value=1
       continue
       ;;
