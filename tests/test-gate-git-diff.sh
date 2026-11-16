@@ -1910,6 +1910,14 @@ if ((settings_readable)); then
     'git -c core.pager=cat diff /dev/null ./cosign.key'
   assert_hook_refuses "the hook refuses the plain-file form behind --namespace" \
     'git --namespace ns diff /dev/null ./cosign.key'
+  # The other two options stepped over with --namespace take their value as
+  # the next word too, and each needs its own row: dropping one from the
+  # step-over arm reads that value as the subcommand, and the plain-file read
+  # behind it went through with every other assertion here still passing.
+  assert_hook_refuses "the hook refuses the plain-file form behind --super-prefix" \
+    'git --super-prefix x/ diff /dev/null ./cosign.key'
+  assert_hook_refuses "the hook refuses the plain-file form behind a separated --attr-source" \
+    'git --attr-source HEAD diff /dev/null ./cosign.key'
   # `-C` and `-c` are no longer stepped over: each reaches a primitive of its
   # own from in front of the subcommand, so the refusal that fires first is
   # the global-option one rather than `--output`'s. The corpus group below
@@ -3665,6 +3673,10 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
     'refuse "${GIT_GLOBAL_MSG}"' \
     ':' \
     'git status; git -c diff.external=/tmp/evil diff HEAD'
+  mutation_row 'stepping over the value of --namespace, --super-prefix and --attr-source' \
+    '    --namespace | --super-prefix | --attr-source)' \
+    '    --not-a-git-option)' \
+    'git --attr-source HEAD diff /dev/null ./cosign.key'
   mutation_row 'the difftool subcommand refusal' \
     '  difftool | mergetool)' \
     '  not-a-git-subcommand)' \
