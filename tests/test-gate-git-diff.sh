@@ -3882,7 +3882,7 @@ group "The fleet's shared refusal corpus (tests/fixtures/gate-refusal-corpus.jso
 # decision is an allow.
 
 CORPUS="tests/fixtures/gate-refusal-corpus.json"
-CORPUS_SHA256="a523faf290fc1cce5db0a21641a5847619db8e94c92f539a52e97a273773f3a1"
+CORPUS_SHA256="86a3ba4c237693b7b4bf9758bae55c7b4a62a19e2176b496be0a166808d2f7cf"
 
 # The command prefix each wildcard Bash(...) allow rule covers, one per line.
 # The fleet spells a prefix rule three ways (`git diff:*`, `git diff *`,
