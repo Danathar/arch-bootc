@@ -1075,6 +1075,91 @@ while IFS= read -r name; do
 done <<<"${configured_labels}"
 assert_equal "every path label is documentation or lives under area/" "" "${unprefixed}"
 
+# Every path glob must match at least one tracked file. A rule for a path that
+# was renamed or never existed passes every check above: the label is still
+# configured and catalogued, so the catalog gate is satisfied, but the rule can
+# never fire, and sync-labels quietly leaves the pull requests it was meant to
+# label unlabelled. The labeler matches with minimatch (dotfiles included, `*`
+# and `?` stop at a slash, `**` crosses slashes), which glob_to_regex mirrors
+# for the constructs this configuration uses.
+glob_to_regex() { # glob
+  local glob="$1" re="" ch i=0
+  while ((i < ${#glob})); do
+    ch="${glob:i:1}"
+    case "${ch}" in
+      '*')
+        if [[ "${glob:i:3}" == '**/' ]]; then
+          re+='(.*/)?'
+          i=$((i + 3))
+          continue
+        elif [[ "${glob:i:2}" == '**' ]]; then
+          re+='.*'
+          i=$((i + 2))
+          continue
+        fi
+        re+='[^/]*'
+        ;;
+      '?') re+='[^/]' ;;
+      '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\') re+="\\${ch}" ;;
+      *) re+="${ch}" ;;
+    esac
+    i=$((i + 1))
+  done
+  printf '^%s$' "${re}"
+}
+
+# The globs a labeler configuration lists under any-glob-to-any-file and
+# any-glob-to-all-files: every list item that is not itself a key.
+configured_globs() { # config_file
+  sed -nE 's/^[[:space:]]+-[[:space:]]+(.*[^:[:space:]])[[:space:]]*$/\1/p' "$1" |
+    sed -E 's/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/'
+}
+
+TRACKED_FILES="$(git -C "${REPO_ROOT}" ls-files)"
+assert_extracted "git ls-files lists the tracked tree the globs are matched against" \
+  "${TRACKED_FILES}"
+
+# Prints each glob in the configuration that matches no tracked file.
+dead_globs() { # config_file
+  local glob regex
+  while IFS= read -r glob; do
+    [[ -z "${glob}" ]] && continue
+    regex="$(glob_to_regex "${glob}")"
+    printf '%s\n' "${TRACKED_FILES}" | grep -Eq -- "${regex}" || printf '%s\n' "${glob}"
+  done < <(configured_globs "$1")
+}
+
+# The translation itself, pinned on the spellings this configuration relies on.
+assert_equal "a root-level file matches a leading **/ glob" 0 \
+  "$(printf 'README.md\n' | grep -Ecv -- "$(glob_to_regex '**/*.md')")"
+assert_equal "a nested file matches a leading **/ glob" 0 \
+  "$(printf 'docs/a/b.md\n' | grep -Ecv -- "$(glob_to_regex '**/*.md')")"
+assert_equal "* does not cross a slash" 1 \
+  "$(printf 'packages/x.txt\n' | grep -Ecv -- "$(glob_to_regex 'packages-*.txt')")"
+assert_equal "a trailing ** matches dotfiles below the directory" 0 \
+  "$(printf '.github/workflows/.hidden.yml\n' | grep -Ecv -- "$(glob_to_regex '.github/workflows/**')")"
+assert_equal "a dot in a glob is literal" 1 \
+  "$(printf 'xgithub/labeler.yml\n' | grep -Ecv -- "$(glob_to_regex '.github/labeler.yml')")"
+
+committed_globs="$(configured_globs "${LABELER_CONFIG}")"
+assert_extracted "the labeler configuration still lists path globs" "${committed_globs}"
+assert_equal "every path glob in the labeler configuration matches a tracked file" "" \
+  "$(dead_globs "${LABELER_CONFIG}" | tr '\n' ' ')"
+
+# The check must be able to fail: a rule for a path that does not exist, added
+# to a copy of the committed configuration, is reported by name and nothing else
+# is.
+dir="$(config_copy dead-glob)"
+cat >>"${dir}/.github/labeler.yml" <<'EXTRA'
+
+area/dead:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "no/such/dir-zz/**"
+EXTRA
+assert_equal "a path glob that matches no tracked file is reported" "no/such/dir-zz/**" \
+  "$(dead_globs "${dir}/.github/labeler.yml" | tr '\n' ' ' | sed 's/ $//')"
+
 # docs/ci-cd.md's table is the third copy of the list and the only one no
 # workflow reads, so it is the one that rots first.
 doc_section="$(awk '
