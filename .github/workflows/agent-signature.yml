@@ -57,7 +57,7 @@ jobs:
           # The definition is agent-audit.yml's, copied exactly; it reads
           # `.body`, so the description is handed to it as that one field.
           found="$(printf '%s' "$PR_BODY" | jq -Rrs '
-            def signature: (.body // "") | split("\n") | map(select(startswith("— hive:"))) | first;
+            def signature: (.body // "") | split("\n") | map(select(startswith("-- hive:") or startswith("— hive:"))) | first;
             {body: .} | signature // empty')"
           if [ -z "$found" ]; then
             echo '::error::The description has no line starting "— hive:". Add the signature line, such as "— hive: agent=scanner backend=claude model=<model id>", as the last line of the description, then push or close and reopen the pull request to run this check again.'

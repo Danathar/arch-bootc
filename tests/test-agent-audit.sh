@@ -295,6 +295,21 @@ assert_status "a quoted signature mention does not count as a signature" 1 "${st
 assert_contains "the Hive-app pull request quoting it is still a finding" "${summary}" "#211: opened by the Hive app with no"
 assert_absent "a human pull request quoting it is not audited" "${summary}" "#212"
 
+# The hive writes the signature line as `-- hive:` since 2026-11-18 (it wrote
+# `— hive:` before). A maintainer-login pull request carrying only the new
+# spelling is still agent-written and signed.
+reset_fixtures
+stage_list "$(jq -s '.' < <(
+  pr_entry 221 "Danathar" $'An omp run.\n\n-- hive: backend=omp model=anthropic/claude-fable-5-1 effort=high'
+))"
+view_pr 221 "$(one_commit fffffff1111 "fix: g" "${SIGNED}")" "${NO_FILES}"
+output="$(run_audit "2026-09-01" 2>&1)"
+status=$?
+summary="$(cat "${SUMMARY}")"
+assert_status "a two-hyphen signature on a maintainer pull request is a clean audit" 0 "${status}"
+assert_contains "the maintainer pull request with the two-hyphen line is audited" "${summary}" "#221"
+assert_absent "it is not reported as unsigned" "${summary}" "#221: opened by the Hive app with no"
+
 # --- Signed-off-by -----------------------------------------------------------
 reset_fixtures
 stage_list "$(jq -s '.' < <(
@@ -710,6 +725,15 @@ assert_contains "the check prints the signature it found" "${output}" "Signed: $
 
 run_signature $'An omp run.\n\n— hive: backend=omp model=anthropic/claude-fable-5-1 effort=high' >/dev/null 2>&1
 assert_status "a signature with no agent key passes, as the audit counts it signed" 0 "$?"
+
+run_signature $'Does a thing.\n\n-- hive: agent=quality backend=claude model=claude-opus-5-5 effort=medium' >/dev/null 2>&1
+assert_status "a signature line in the two-hyphen spelling the hive writes since 2026-11-18 passes" 0 "$?"
+
+run_signature $'Does a thing.\n\n--- hive: agent=quality backend=claude model=m' >/dev/null 2>&1
+assert_status "three hyphens are not the signature prefix" 1 "$?"
+
+run_signature $'Does a thing.\n\n--hive: agent=quality backend=claude model=m' >/dev/null 2>&1
+assert_status "two hyphens with no space are not the signature prefix" 1 "$?"
 
 run_signature $'Written in the browser.\r\n\r\n'"${SIG_LINE}"$'\r\n' >/dev/null 2>&1
 assert_status "a description with CRLF line endings, as GitHub stores a web edit, passes" 0 "$?"

@@ -90,7 +90,7 @@ jobs:
           # carries the signature line; the second clause is what catches the
           # runs that push under the maintainer's own login. Renovate is a bot
           # too, so the app is matched by its login, not by is_bot.
-          jq -c '[.[] | select(.author.login == "app/danathar-atomic-hive" or ((.body // "") | test("(^|\n)— hive:")))]' \
+          jq -c '[.[] | select(.author.login == "app/danathar-atomic-hive" or ((.body // "") | test("(^|\n)(--|—) hive:")))]' \
             merged.json > agents.json
 
           # Commits and files are fetched one pull request at a time: asking
@@ -119,7 +119,7 @@ jobs:
             done | jq -Rn '[inputs | split(" ") | {(.[0]): (.[1] | tonumber)}] | add // {}' > parents.json
 
           jq --arg since "$SINCE" --arg total "$total" --slurpfile details details.json --slurpfile parents parents.json '
-            def signature: (.body // "") | split("\n") | map(select(startswith("— hive:"))) | first;
+            def signature: (.body // "") | split("\n") | map(select(startswith("-- hive:") or startswith("— hive:"))) | first;
             def field($key): ((. // "") | capture("(^|\\s)\($key)=(?<v>\\S+)") | .v) // null;
             # The T3 paths docs/risk-tiers.md names that exist in the tree: a
             # trailing slash is a directory prefix, anything else an exact
