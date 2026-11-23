@@ -3652,7 +3652,7 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   mutation_row "the search for a name past a wrapper's own options" \
     'if ((after_wrapper)) && [[ "${word}" == -* ]]; then' \
     'if ((after_wrapper)) && [[ "${word}" == -*-not-this-one ]]; then' \
-    'env -i GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
+    'env -u X GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   mutation_row 'the export latch over the whole string' \
     '((saw_gated && saw_export)) && refuse "${GATED_EXPORT_MSG}"' \
     '((saw_gated && saw_export)) && true' \
@@ -3882,7 +3882,29 @@ group "The fleet's shared refusal corpus (tests/fixtures/gate-refusal-corpus.jso
 # decision is an allow.
 
 CORPUS="tests/fixtures/gate-refusal-corpus.json"
-CORPUS_SHA256="86a3ba4c237693b7b4bf9758bae55c7b4a62a19e2176b496be0a166808d2f7cf"
+CORPUS_SHA256="64246cb4d92cf1226a9eb07d3f1381942850fb090cfa59fcf50e23eb5c212558"
+
+# Allow rows this gate refuses on purpose. The corpus says these commands may
+# be allowed; this gate is stricter and refuses them anyway. Each id here is
+# expected to be REFUSED. The list is checked both ways below: a listed row the
+# gate now allows fails, and so does an id that is not an allow row the gate
+# reaches, so an entry cannot go stale.
+#
+#   config-removal-allow-env-split-other-u  `env -S -u FOO git log -1`: the gate
+#       refuses every `env -S` / `--split-string`, because the split string is a
+#       command its word scans never see.
+CORPUS_OVER_REFUSED=(
+  config-removal-allow-env-split-other-u
+)
+
+# corpus_over_refused ID: true when ID is on the list above.
+corpus_over_refused() {
+  local want="$1" listed
+  for listed in "${CORPUS_OVER_REFUSED[@]}"; do
+    [[ "${listed}" == "${want}" ]] && return 0
+  done
+  return 1
+}
 
 # The command prefix each wildcard Bash(...) allow rule covers, one per line.
 # The fleet spells a prefix rule three ways (`git diff:*`, `git diff *`,
@@ -4003,6 +4025,7 @@ if ((settings_readable)) && [[ -f "${CORPUS}" ]]; then
   assert_equal "the scratch repository for the corpus has a HEAD~1" \
     "$(git -C "${shared_project}" rev-list --count HEAD 2>/dev/null)" "2"
   shared_applied=0
+  shared_over_refused_seen=''
   while IFS= read -r shared_row; do
     shared_id="$(jq -r '.id' <<<"${shared_row}")"
     shared_verdict="$(jq -r '.verdict' <<<"${shared_row}")"
@@ -4030,10 +4053,28 @@ if ((settings_readable)) && [[ -f "${CORPUS}" ]]; then
     else
       shared_got="allow"
     fi
-    assert_equal "corpus row ${shared_id}: ${shared_verdict} ${shared_row_command}" \
-      "${shared_got}" "${shared_verdict}"
+    if corpus_over_refused "${shared_id}"; then
+      shared_over_refused_seen+="${shared_id} "
+      assert_equal "corpus row ${shared_id}: allow in the corpus, refused here on purpose: ${shared_row_command}" \
+        "${shared_verdict} ${shared_got}" "allow refuse"
+    else
+      assert_equal "corpus row ${shared_id}: ${shared_verdict} ${shared_row_command}" \
+        "${shared_got}" "${shared_verdict}"
+    fi
   done < <(jq -c '.rows[]' "${CORPUS}")
   rm -rf "${shared_project}"
+
+  # Every listed id must have been run above, or it sits on the list checking
+  # nothing (a row the corpus renamed or dropped, or one the allow list stopped
+  # reaching).
+  for shared_id in "${CORPUS_OVER_REFUSED[@]}"; do
+    if [[ " ${shared_over_refused_seen}" == *" ${shared_id} "* ]]; then
+      pass "over-refused corpus row ${shared_id} was run"
+    else
+      fail "over-refused corpus row ${shared_id} was run" \
+        "no reachable corpus row has this id; remove it from CORPUS_OVER_REFUSED"
+    fi
+  done
 
   # If the allow list stopped covering `git diff`, every row would be skipped
   # and the checks above would pass on nothing.

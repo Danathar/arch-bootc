@@ -62,6 +62,14 @@ agent_git() {
     "${settings_env[@]}" git "$@"
 }
 
+# A bash command string run under the same environment, as the Bash tool runs one.
+agent_shell() {
+  local -a settings_env
+  mapfile -t settings_env < <(jq -r '.env // {} | to_entries[] | "\(.key)=\(.value)"' "${SETTINGS}")
+  env -i PATH="${PATH}" HOME="${WORK_DIR}" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+    "${settings_env[@]}" bash -c "$1"
+}
+
 main() {
   local actual expected
   actual="$(jq -S -c '.env' "${SETTINGS}")"
@@ -132,6 +140,26 @@ main() {
     ok=0
     [[ "${gate_status}" -eq 2 && "${gate_err}" == *"git global option"* ]] || ok=1
     check "the guard hook refuses git ${args}" "${ok}" "exit ${gate_status}, stderr: ${gate_err}"
+  done
+
+  # A statement earlier in the same command string can take the settings env
+  # away from the git after it, or point git at another global config. Each
+  # spelling runs the planted program for real, and the guard hook refuses it.
+  local cmd
+  for cmd in "GIT_CONFIG_COUNT=0; git log -p -1" "GIT_CONFIG_VALUE_0=all; git log -p -1" \
+    "unset GIT_CONFIG_COUNT; git log -p -1" "export -n GIT_CONFIG_COUNT; git log -p -1" \
+    "exec -c git log -p -1" "read -r GIT_CONFIG_VALUE_0 <<< all; git log -p -1"; do
+    rm -f -- "${marker}"
+    (cd "${victim}/evil" && agent_shell "${cmd}" >/dev/null 2>&1)
+    ok=0
+    [[ -e "${marker}" ]] || ok=1
+    check "with the settings env, '${cmd}' still runs the planted program (so the hook refusal below is needed)" "${ok}"
+    gate_err="$(jq -nc --arg c "${cmd}" '{tool_name: "Bash", tool_input: {command: $c}}' |
+      CLAUDE_PROJECT_DIR="${REPO_ROOT}" bash "${GATE}" 2>&1 >/dev/null)"
+    gate_status=$?
+    ok=0
+    [[ "${gate_status}" -eq 2 && "${gate_err}" == *"settings environment"* ]] || ok=1
+    check "the guard hook refuses '${cmd}'" "${ok}" "exit ${gate_status}, stderr: ${gate_err}"
   done
 
   # The checkout's own repository (.git/, not bare) still works.
