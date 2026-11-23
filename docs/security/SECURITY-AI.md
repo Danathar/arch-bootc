@@ -367,7 +367,23 @@ must be described as such.
   and `--attr-source` only rename what git reports and are still stepped over
   so the subcommand behind them is found. A `-c` *after* the subcommand is
   git's combined-diff flag, and `--bare` after it (`git init --bare`) is the
-  subcommand's own option; neither is affected.
+  subcommand's own option; neither is affected. `--shallow-file FILE` is
+  refused too: git reads FILE before the subcommand runs and its parse error
+  quotes the first line, so `git --shallow-file .env log -1` printed a line of
+  `.env`.
+
+  *Taking the settings env away from a later git.* `safe.bareRepository=explicit`
+  reaches git through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`
+  in `.claude/settings.json`, and an earlier statement in the same string can
+  undo it for the git after it: a stand-alone `GIT_CONFIG_COUNT=0;`, `unset`,
+  `export -n`, `declare +x`, `env -u`, `env -i`, `exec -c`, or a builtin that
+  stores a value (`read`, `mapfile`, `printf -v`, a `for` loop name, `let`).
+  A stand-alone `HOME=` or `PATH=` statement does the same through git's
+  global config or a different `git`, since both are already exported. Each
+  ran the planted `diff.x.textconv` program in
+  `tests/test-claude-settings-git.sh`; the hook refuses them wherever they
+  stand in the string, behind any wrapper. Removing or assigning any other
+  variable is not affected.
 
   *Operands the command string does not hold.* `xargs` appends the words it
   reads from standard input, or from the file its `-a` option names, to the
