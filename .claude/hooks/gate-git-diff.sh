@@ -2837,7 +2837,12 @@ check_settings_env_segment() {
       if [[ "${word}" == -*=* ]]; then
         prev_opt=0
       elif [[ "${word}" == -* ]]; then
-        prev_opt=1
+        # These wrappers take no option with a value, so the next word is the
+        # command: `command -p unset GIT_CONFIG_COUNT` runs unset.
+        case "${cur}" in
+        command | builtin | nohup | noglob) prev_opt=0 ;;
+        *) prev_opt=1 ;;
+        esac
       elif [[ "${word}" =~ ^[0-9.]+[smhd]?$ ]] || ((prev_opt)); then
         prev_opt=0
       else
@@ -2859,14 +2864,17 @@ check_settings_env_segment() {
     ;;
   export | declare | typeset | local | readonly)
     # `export -n NAME` and `declare/typeset/local +x NAME` stop exporting it;
-    # an assignment through any of them sets a new value.
-    local unexports=0
+    # an assignment through any of them sets a new value. `declare -n r=NAME`
+    # makes r another name for NAME, so a later `r=0` assigns NAME.
+    local unexports=0 namerefs=0
     for word in "${rest[@]}"; do
       [[ "${name}" == export && "${word}" =~ ^-[^-]*n ]] && unexports=1
       [[ "${name}" != export && "${word}" =~ ^\+.*x ]] && unexports=1
+      [[ "${name}" != export && "${word}" =~ ^-[^-]*n ]] && namerefs=1
     done
     for word in "${rest[@]}"; do
       [[ "${word}" == [-+]* ]] && continue
+      ((namerefs)) && [[ "${word}" == *=* ]] && assigns_settings_env "${word#*=}" && refuse "${SETTINGS_ENV_MSG}"
       # HOME and PATH are already exported, so `declare PATH=planted:$PATH`,
       # `readonly PATH=...` and `typeset -g PATH=...` change what every later
       # command runs under even though they export nothing new.
@@ -2885,10 +2893,11 @@ check_settings_env_segment() {
       assigns_settings_env "${rest[0]#-v}" && refuse "${SETTINGS_ENV_MSG}"
     fi
     ;;
-  read | mapfile | readarray)
+  read | mapfile | readarray | wait | getopts)
     # Every operand is read as a name, and so is the rest of an option cluster
     # (`read -raNAME`). An option value that happens to be one of the names
     # (`read -p PATH line`) is refused as well, which only over-refuses.
+    # `wait -p NAME` and `getopts OPTSTRING NAME` store into their NAME too.
     for word in "${rest[@]}"; do
       [[ "${word}" =~ ^-[a-z]*(.*)$ ]] && word="${BASH_REMATCH[1]}"
       assigns_settings_env "${word}" && refuse "${SETTINGS_ENV_MSG}"
@@ -2906,6 +2915,19 @@ check_settings_env_segment() {
         refuse "${SETTINGS_ENV_MSG}"
     done
     ;;
+  eval)
+    # eval joins its operands with spaces and runs the result, so a quoted
+    # string (`eval 'unset GIT_CONFIG_COUNT'`) is one word here and a command
+    # there. Read it as commands of its own: quotes and backslashes removed,
+    # each separator ending one.
+    local text="${rest[*]-}" line
+    text="${text//[\'\"\\]/}"
+    text="${text//[;&|(){}]/$'\n'}"
+    while IFS= read -r line; do
+      read -ra parts <<<"${line}"
+      ((${#parts[@]})) && check_settings_env_segment "${parts[@]}"
+    done <<<"${text}"
+    ;;
   git | echo | grep | egrep | fgrep) ;; # git reads its own operands; the others only print or match
   *)
     # A program the wrapper walk does not step over (`flock /tmp/l env -i
@@ -2915,7 +2937,7 @@ check_settings_env_segment() {
     local k
     for ((k = i + 1; k < n; k++)); do
       case "${seg[k]}" in
-      env | exec | unset | export | declare | typeset | local | readonly)
+      env | exec | eval | unset | export | declare | typeset | local | readonly)
         check_settings_env_segment "${seg[@]:k}"
         ;;
       *) ;;
@@ -2935,6 +2957,21 @@ check_settings_env_segment() {
 # arithmetic. A double-quoted expansion is one word and is read from the word.
 ARITHMETIC_GUARDED_NAME='(^|[^A-Za-z0-9_])(HOME|PATH|XDG_CONFIG_HOME|GIT_CONFIG[A-Za-z0-9_]*)([^A-Za-z0-9_]|$)'
 # shellcheck disable=SC2016 # '$((' and '$(' are the literal spellings being matched
+# `$[ ... ]` is the older spelling of `$(( ... ))`. It is written with its
+# spaces as separate words, so the words up to the one holding the closing
+# bracket are read.
+# shellcheck disable=SC2016 # the literal `$[` is the text matched
+for ((idx = 0; idx < ${#words[@]}; idx++)); do
+  [[ "${kinds[idx]}" == word && "${words[idx]}" == *'$['* ]] || continue
+  bracket_text="${words[idx]#*'$['}"
+  [[ "${bracket_text}" =~ ${ARITHMETIC_GUARDED_NAME} ]] && refuse "${SETTINGS_ENV_MSG}"
+  [[ "${bracket_text}" == *']'* ]] && continue
+  for ((k = idx + 1; k < ${#words[@]}; k++)); do
+    [[ "${kinds[k]}" == word ]] || continue
+    [[ "${words[k]}" =~ ${ARITHMETIC_GUARDED_NAME} ]] && refuse "${SETTINGS_ENV_MSG}"
+    [[ "${words[k]}" == *']'* ]] && break
+  done
+done
 for ((idx = 0; idx < ${#words[@]}; idx++)); do
   if [[ "${kinds[idx]}" == word && "${words[idx]}" == *'$(('* ]] &&
     [[ "${words[idx]}" =~ ${ARITHMETIC_GUARDED_NAME} ]]; then

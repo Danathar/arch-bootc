@@ -1177,6 +1177,7 @@ if ((settings_readable)); then
   # corpus row passing.
   # shellcheck disable=SC2016 # the expansions are spellings handed to the hook, not run here
   for settings_command in \
+    ': $[ GIT_CONFIG_COUNT = 0 ]; git log -p' \
     '! unset GIT_CONFIG_COUNT; git log -p' \
     '((i=1,(j=2),(k=3),PATH=4)); git log -1' \
     '/bin/env -i git log -p' \
@@ -1185,7 +1186,9 @@ if ((settings_readable)); then
     'HOME[0]=p; git log -p' \
     'builtin export -n GIT_CONFIG_COUNT; git log -p' \
     'builtin read -r HOME < f; git log -1' \
+    'command -p unset GIT_CONFIG_COUNT; git log -p' \
     'command read -r HOME < f; git log -1' \
+    'declare -n r=GIT_CONFIG_COUNT; r=0; git log -p' \
     'declare HOME=x; git log -p' \
     'declare PATH+=x; git log -p' \
     'declare PATH[0]=x; git log -p' \
@@ -1199,9 +1202,11 @@ if ((settings_readable)); then
     'env --unset FOO -i git log -p' \
     'env -uGIT_CONFIG_COUNT git log -p' \
     'env GIT_CONFIG_COUNT=0 make' \
+    'eval '"'"'unset GIT_CONFIG_COUNT'"'"'; git log -p' \
     'eval unset GIT_CONFIG_COUNT; git log -p' \
     'export -fn GIT_CONFIG_COUNT; git log -p' \
     'flock /tmp/l env -i git log -p' \
+    'getopts x PATH; git log -1' \
     'for i in 1; do HOME=p; git log -1; done' \
     'if HOME=p; then git log -1; fi' \
     'if false; then true; elif HOME=p; then git log -1; fi' \
@@ -1216,6 +1221,7 @@ if ((settings_readable)); then
     'time HOME=p; git log -1' \
     'timeout 5s unset GIT_CONFIG_COUNT' \
     'until ! HOME=p; do git log -1; done' \
+    'wait -p GIT_CONFIG_COUNT; git log -p' \
     'watch declare +x GIT_CONFIG_COUNT' \
     'watch exec -c git log -p' \
     'watch export -n GIT_CONFIG_COUNT' \
@@ -1237,9 +1243,12 @@ if ((settings_readable)); then
     '(( i = (1) )); echo HOME; git log -1' \
     'MYPATH=x; git log -1' \
     'declare +x FOO; git log -1' \
+    'declare -n r=FOO; git log -1' \
     'declare -p GIT_CONFIG_COUNT; git log -1' \
     'declare MYPATH=x; git log -1' \
     'echo env -u GIT_CONFIG_COUNT; git log -1' \
+    'eval '"'"'echo hi'"'"'; git log -1' \
+    'getopts x FOO; git log -1' \
     'echo git ls-files; env -v FOO=1 ls' \
     'egrep unset GIT_CONFIG_COUNT; git log -1' \
     'env --argv0 name git log -1' \
@@ -1252,7 +1261,8 @@ if ((settings_readable)); then
     'let MYPATH=1; git log -1' \
     'let PATHS=1; git log -1' \
     'read -r MYPATH < f; git log -1' \
-    'read -r PATHS < f; git log -1'; do
+    'read -r PATHS < f; git log -1' \
+    'wait -p FOO; git log -1'; do
     assert_hook_permits "a command that leaves git's settings environment alone is unprompted: ${settings_command}" \
       "${settings_command}"
   done
