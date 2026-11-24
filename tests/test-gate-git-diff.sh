@@ -1172,6 +1172,90 @@ if ((settings_readable)); then
     assert_hook_permits "an assignment on another command of the string is unprompted: ${assigned_command}" \
       "${assigned_command}"
   done
+  # The settings pass at the end of the hook: the spellings the shared corpus
+  # has no row for. Dropping any one of the branches they reach leaves every
+  # corpus row passing.
+  # shellcheck disable=SC2016 # the expansions are spellings handed to the hook, not run here
+  for settings_command in \
+    '! unset GIT_CONFIG_COUNT; git log -p' \
+    '((i=1,(j=2),(k=3),PATH=4)); git log -1' \
+    '/bin/env -i git log -p' \
+    '/usr/bin/env -i git log -p' \
+    'HOME+=p; git log -p' \
+    'HOME[0]=p; git log -p' \
+    'builtin export -n GIT_CONFIG_COUNT; git log -p' \
+    'builtin read -r HOME < f; git log -1' \
+    'command read -r HOME < f; git log -1' \
+    'declare HOME=x; git log -p' \
+    'declare PATH+=x; git log -p' \
+    'declare PATH[0]=x; git log -p' \
+    'declare XDG_CONFIG_HOME=x; git log -p' \
+    'echo "$(( GIT_CONFIG_COUNT = 0 ))"; git log -p' \
+    'env --argv0=x -u GIT_CONFIG_COUNT git log -p' \
+    'env --c /tmp -i git log -p' \
+    'env --i git log -p' \
+    'env --split '"'"'-i ls'"'"'' \
+    'env --u=GIT_CONFIG_COUNT git log -p' \
+    'env --unset FOO -i git log -p' \
+    'env -uGIT_CONFIG_COUNT git log -p' \
+    'env GIT_CONFIG_COUNT=0 make' \
+    'eval unset GIT_CONFIG_COUNT; git log -p' \
+    'export -fn GIT_CONFIG_COUNT; git log -p' \
+    'flock /tmp/l env -i git log -p' \
+    'for i in 1; do HOME=p; git log -1; done' \
+    'if HOME=p; then git log -1; fi' \
+    'if false; then true; elif HOME=p; then git log -1; fi' \
+    'if false; then true; else HOME=p; git log -1; fi' \
+    'if true; then HOME=p; git log -1; fi' \
+    'let '"'"'i = HOME = 1'"'"'; git log -1' \
+    'printf -v PATH[0] x; git log -p' \
+    'printf -vGIT_CONFIG_COUNT 0; git log -p' \
+    'read -raGIT_CONFIG_COUNT < f; git log -p' \
+    'readarray -t PATH < f; git log -1' \
+    'select GIT_CONFIG_COUNT in 0; do git log -p; done' \
+    'time HOME=p; git log -1' \
+    'timeout 5s unset GIT_CONFIG_COUNT' \
+    'until ! HOME=p; do git log -1; done' \
+    'watch declare +x GIT_CONFIG_COUNT' \
+    'watch exec -c git log -p' \
+    'watch export -n GIT_CONFIG_COUNT' \
+    'watch local +x GIT_CONFIG_COUNT' \
+    'watch readonly GIT_CONFIG_COUNT=0' \
+    'watch typeset +x GIT_CONFIG_COUNT' \
+    'while HOME=p; do git log -1; done' \
+    '{ HOME=p; }; git log -1'; do
+    assert_hook_refuses_naming "the hook refuses taking or overwriting git's settings environment: ${settings_command}" \
+      "${settings_command}" 'settings environment'
+  done
+  assert_hook_refuses_naming "the hook refuses the joined spelling of --shallow-file" \
+    'git --shallow-file=.env log -1' '--shallow-file'
+  # A name that only looks like a guarded one, a command that only prints or
+  # matches the words, and a wrapper option that changes nothing stay unprompted.
+  for settings_command in \
+    '(( MYPATH = 1 )); git log -1' \
+    '(( PATHS = 1 )); git log -1' \
+    '(( i = (1) )); echo HOME; git log -1' \
+    'MYPATH=x; git log -1' \
+    'declare +x FOO; git log -1' \
+    'declare -p GIT_CONFIG_COUNT; git log -1' \
+    'declare MYPATH=x; git log -1' \
+    'echo env -u GIT_CONFIG_COUNT; git log -1' \
+    'echo git ls-files; env -v FOO=1 ls' \
+    'egrep unset GIT_CONFIG_COUNT; git log -1' \
+    'env --argv0 name git log -1' \
+    'env -Ci ls' \
+    'env -u FOO ls --ignore-environment' \
+    'fgrep unset GIT_CONFIG_COUNT; git log -1' \
+    'git grep unset GIT_CONFIG_COUNT' \
+    'grep -n unset GIT_CONFIG_COUNT; git log -1' \
+    'let HOMES=1; git log -1' \
+    'let MYPATH=1; git log -1' \
+    'let PATHS=1; git log -1' \
+    'read -r MYPATH < f; git log -1' \
+    'read -r PATHS < f; git log -1'; do
+    assert_hook_permits "a command that leaves git's settings environment alone is unprompted: ${settings_command}" \
+      "${settings_command}"
+  done
   # shellcheck disable=SC2016 # the substitution is a spelling handed to the hook, not run here
   for heredoc_command in \
     $'bash -n <<\'EOF\'\necho hi\nEOF' \
