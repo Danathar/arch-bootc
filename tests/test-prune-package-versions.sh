@@ -140,7 +140,7 @@ if [[ "${method}" == "DELETE" ]]; then
       printf 'x\n' >>"${attempts_file}"
       if (($(wc -l <"${attempts_file}") <= ${GH_STUB_FLAKY_FAILS:-1})); then
         [[ -z "${GH_STUB_FLAKY_APPLIED:-}" ]] || printf '%s\n' "${version_id}" >>"${GH_STUB_DELETED}"
-        printf 'gh: Server Error (HTTP 502)\n' >&2
+        printf '%s\n' "${GH_STUB_FLAKY_ERROR:-gh: Server Error (HTTP 502)}" >&2
         exit 1
       fi
     fi
@@ -1502,6 +1502,19 @@ assert_equal "a persistent 502 is attempted four times, no more" "4" "$(delete_a
 assert_equal "no delete is attempted after the retries run out" "21" "$(pruned_ids)"
 assert_contains "the give-up names the version" \
   "${output}" "buildcache: FAILED to delete version 22 after removing 1"
+
+# An error reply with a JSON content type and an empty or cut-off body makes gh
+# print only its JSON parse error, with no status to match.
+three_stale_versions
+output="$(run_cache_step Danathar User GH_STUB_FLAKY_IDS=22 GH_STUB_FLAKY_FAILS=1 \
+  GH_STUB_FLAKY_ERROR='unexpected end of JSON input')"
+assert_status "a delete that gets one empty error reply does not fail the step" 0 "$?"
+assert_equal "every version is removed after the empty error reply" "21 22 23" "$(pruned_ids)"
+three_stale_versions
+output="$(run_cache_step Danathar User GH_STUB_FLAKY_IDS=22 GH_STUB_FLAKY_FAILS=99 \
+  GH_STUB_FLAKY_ERROR='unexpected end of JSON input')"
+assert_status "a delete that keeps getting empty error replies fails the step" 1 "$?"
+assert_equal "a persistent empty error reply is attempted four times, no more" "4" "$(delete_attempts 22)"
 
 # Everything else keeps stopping on the first try: a rate limit must not be
 # hammered, and a 404 with no earlier 5xx keeps today's behaviour.

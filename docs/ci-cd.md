@@ -975,7 +975,8 @@ repository, and `cleanup_packages` needs some of them in the same hour. At about
 four publishes a day the existing backlog clears in roughly nine days. The first
 failed delete stops the run, so a missing permission does not spend the rest of
 the budget on the same error. The one exception is a transient server error
-(HTTP 5xx), which is retried up to three times after 2, 5 and 10 seconds before
+(HTTP 5xx, or an error reply whose JSON body is empty or cut off, for which `gh`
+prints no status), which is retried up to three times after 2, 5 and 10 seconds before
 the run stops: one GitHub 502 on one delete used to turn the whole daily build
 red, although a missed delete costs nothing because the next run removes it.
 Rate limits (403, 429) are never retried. A 502 can hide a delete that applied,
