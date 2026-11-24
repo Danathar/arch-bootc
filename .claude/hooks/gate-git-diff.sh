@@ -2867,6 +2867,10 @@ check_settings_env_segment() {
     done
     for word in "${rest[@]}"; do
       [[ "${word}" == [-+]* ]] && continue
+      # HOME and PATH are already exported, so `declare PATH=planted:$PATH`,
+      # `readonly PATH=...` and `typeset -g PATH=...` change what every later
+      # command runs under even though they export nothing new.
+      [[ "${word}" =~ ^(HOME|PATH|XDG_CONFIG_HOME)(\[[^]]*\])?\+?= ]] && refuse "${SETTINGS_ENV_MSG}"
       names_settings_env "${word}" || continue
       ((unexports)) && refuse "${SETTINGS_ENV_MSG}"
       [[ "${word}" == *=* ]] && refuse "${SETTINGS_ENV_MSG}"
@@ -2921,6 +2925,36 @@ check_settings_env_segment() {
   esac
   return 0
 }
+
+# Arithmetic assigns with no NAME=value word once its operator has spaces
+# round it: `(( PATH = 1 ))` and `: $(( HOME = 1 ))` change an exported
+# variable the next git reads. The expression runs from the two opening
+# parens to the parens that close them, and any whole name in it that the
+# rules above guard is refused, so a name that is only read (`(( PATH ))`) is
+# refused too, which only over-refuses. A single paren is a subshell, not
+# arithmetic. A double-quoted expansion is one word and is read from the word.
+ARITHMETIC_GUARDED_NAME='(^|[^A-Za-z0-9_])(HOME|PATH|XDG_CONFIG_HOME|GIT_CONFIG[A-Za-z0-9_]*)([^A-Za-z0-9_]|$)'
+for ((idx = 0; idx < ${#words[@]}; idx++)); do
+  if [[ "${kinds[idx]}" == word && "${words[idx]}" == *'$(('* ]] &&
+    [[ "${words[idx]}" =~ ${ARITHMETIC_GUARDED_NAME} ]]; then
+    refuse "${SETTINGS_ENV_MSG}"
+  fi
+  [[ "${kinds[idx]}" == sep && ( "${words[idx]}" == '(' || "${words[idx]}" == '$(' ) ]] || continue
+  ((idx + 1 < ${#words[@]})) || continue
+  [[ "${kinds[idx + 1]}" == sep && "${words[idx + 1]}" == '(' ]] || continue
+  depth=2
+  for ((k = idx + 2; k < ${#words[@]} && depth > 0; k++)); do
+    if [[ "${kinds[k]}" == sep ]]; then
+      case "${words[k]}" in
+      '(' | '$(') ((depth++)) ;;
+      ')' | '$)') ((depth--)) ;;
+      *) ;;
+      esac
+    elif [[ "${kinds[k]}" == word && "${words[k]}" =~ ${ARITHMETIC_GUARDED_NAME} ]]; then
+      refuse "${SETTINGS_ENV_MSG}"
+    fi
+  done
+done
 
 segment_words=()
 for ((idx = 0; idx < ${#words[@]}; idx++)); do
