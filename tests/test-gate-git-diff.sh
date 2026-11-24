@@ -3882,7 +3882,7 @@ group "The fleet's shared refusal corpus (tests/fixtures/gate-refusal-corpus.jso
 # decision is an allow.
 
 CORPUS="tests/fixtures/gate-refusal-corpus.json"
-CORPUS_SHA256="64246cb4d92cf1226a9eb07d3f1381942850fb090cfa59fcf50e23eb5c212558"
+CORPUS_SHA256="8c013df1e981d6a17c6d5c8bd7d5589ff8f33fc798d9f6ce046d58d54844f6ae"
 
 # Allow rows this gate refuses on purpose. The corpus says these commands may
 # be allowed; this gate is stricter and refuses them anyway. Each id here is
