@@ -2956,7 +2956,6 @@ check_settings_env_segment() {
 # refused too, which only over-refuses. A single paren is a subshell, not
 # arithmetic. A double-quoted expansion is one word and is read from the word.
 ARITHMETIC_GUARDED_NAME='(^|[^A-Za-z0-9_])(HOME|PATH|XDG_CONFIG_HOME|GIT_CONFIG[A-Za-z0-9_]*)([^A-Za-z0-9_]|$)'
-# shellcheck disable=SC2016 # '$((' and '$(' are the literal spellings being matched
 # `$[ ... ]` is the older spelling of `$(( ... ))`. It is written with its
 # spaces as separate words, so the words up to the one holding the closing
 # bracket are read.
@@ -2972,6 +2971,7 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
     [[ "${words[k]}" == *']'* ]] && break
   done
 done
+# shellcheck disable=SC2016 # '$((' and '$(' are the literal spellings being matched
 for ((idx = 0; idx < ${#words[@]}; idx++)); do
   if [[ "${kinds[idx]}" == word && "${words[idx]}" == *'$(('* ]] &&
     [[ "${words[idx]}" =~ ${ARITHMETIC_GUARDED_NAME} ]]; then
