@@ -1404,6 +1404,16 @@
       "why": "mapfile assigns PATH, so bash looks git up in the first line of list"
     },
     {
+      "id": "path-getopts",
+      "class": "configuration reach",
+      "verdict": "refuse",
+      "requires": [
+        "git log"
+      ],
+      "command": "getopts ab PATH; git log -1",
+      "why": "getopts stores into the name it is given, ? once no option is left, so bash looks git up in a folder named ? a branch can commit"
+    },
+    {
       "id": "settings-env-read",
       "class": "configuration reach",
       "verdict": "refuse",
@@ -1502,6 +1512,36 @@
       ],
       "command": ": $(( XDG_CONFIG_HOME = 1 )); git log -p -1",
       "why": "an arithmetic expansion assigns as the command does, so git reads 1/git/config and runs the textconv it names"
+    },
+    {
+      "id": "path-arithmetic-after-comment-apostrophe",
+      "class": "configuration reach",
+      "verdict": "refuse",
+      "requires": [
+        "git log"
+      ],
+      "command": "git log -1 # it's the last one\n(( PATH = 1 ))\ngit log -1",
+      "why": "a comment is not shell text, so its apostrophe opens no quote that would hide the assignment on the next line"
+    },
+    {
+      "id": "home-arithmetic-after-heredoc-apostrophe",
+      "class": "configuration reach",
+      "verdict": "refuse",
+      "requires": [
+        "git log"
+      ],
+      "command": "git log -1 <<EOF\nit's\nEOF\n(( HOME = 1 ))\ngit log -p -1",
+      "why": "a quote mark in a here-document body is data, so the assignment after the body still runs"
+    },
+    {
+      "id": "path-arithmetic-after-here-string",
+      "class": "configuration reach",
+      "verdict": "refuse",
+      "requires": [
+        "git log"
+      ],
+      "command": "git log -1 <<< 'x'\n(( PATH = 1 ))\ngit log -1",
+      "why": "a here-string has no body, so the next line is a command and not here-document text"
     },
     {
       "id": "config-reach-allow-arithmetic-counter",
@@ -1612,6 +1652,156 @@
       ],
       "command": "cd tests && git log -1",
       "why": "a literal relative directory with no .. stays inside the checkout"
+    },
+    {
+      "id": "comment-apostrophe",
+      "class": "comment",
+      "verdict": "refuse",
+      "requires": [
+        "git log"
+      ],
+      "command": "git log -1 # it's the last one\ngit log --output=x -1",
+      "why": "the apostrophe is comment text to bash, so the second line runs; a gate that opens a quote there reads it as data"
+    },
+    {
+      "id": "comment-double-quote",
+      "class": "comment",
+      "verdict": "refuse",
+      "requires": [
+        "git log"
+      ],
+      "command": "git log -1 # 5\" wide\ngit log --output=x -1",
+      "why": "a double quote in a comment opens no quote either"
+    },
+    {
+      "id": "comment-backslash",
+      "class": "comment",
+      "verdict": "refuse",
+      "requires": [
+        "git log"
+      ],
+      "command": "git log -1 # one \\\ngit log --output=x -1",
+      "why": "a backslash at the end of a comment joins no line, so the second line is a command of its own"
+    },
+    {
+      "id": "comment-apostrophe-substitution",
+      "class": "comment",
+      "verdict": "refuse",
+      "requires": [
+        "git log"
+      ],
+      "command": "git log -1 # it's the last one\necho $(git log --output=x -1)",
+      "why": "the second line runs a command substitution the apostrophe must not hide"
+    },
+    {
+      "id": "comment-allow-apostrophe",
+      "class": "comment",
+      "verdict": "allow",
+      "requires": [
+        "git log"
+      ],
+      "command": "git log -1 # it's the last one",
+      "why": "an apostrophe in a comment is ordinary prose"
+    },
+    {
+      "id": "heredoc-unquoted-apostrophe",
+      "class": "here-document",
+      "verdict": "refuse",
+      "requires": [
+        "git log"
+      ],
+      "command": "git log -1 <<EOF\nit's\nEOF\ngit log --output=x -1\ncat <<EOF\nit's\nEOF",
+      "why": "an apostrophe in a here-document body is text to bash, so the line between the two bodies runs; a gate that pairs the two apostrophes reads it as one quoted word"
+    },
+    {
+      "id": "heredoc-unquoted-hash-substitution",
+      "class": "here-document",
+      "verdict": "refuse",
+      "requires": [
+        "git log"
+      ],
+      "command": "git log -1 <<EOF\n# $(git log --output=x -1)\nEOF",
+      "why": "a # in an unquoted here-document body starts no comment, and bash runs the command substitution after it"
+    },
+    {
+      "id": "heredoc-quoted-apostrophe",
+      "class": "here-document",
+      "verdict": "refuse",
+      "requires": [
+        "git log"
+      ],
+      "command": "git log -1 <<'EOF'\nit's\nEOF\ngit log --output=x -1",
+      "why": "the apostrophe in a body with a quoted delimiter is text too; a gate that opens a quote there reads every command after the body as data"
+    },
+    {
+      "id": "heredoc-quoted-apostrophe-pair",
+      "class": "here-document",
+      "verdict": "refuse",
+      "requires": [
+        "git log"
+      ],
+      "command": "git log -1 <<'EOF'\nit's\nEOF\ngit log --output=x -1\ncat <<'EOF'\nit's\nEOF",
+      "why": "the apostrophes of two such bodies pair with nothing, so the line between them runs; a gate that only refuses an unclosed quote reads them as one word"
+    },
+    {
+      "id": "compound-if-cd",
+      "class": "compound command",
+      "verdict": "refuse",
+      "requires": [
+        "git diff"
+      ],
+      "command": "if cd /tmp; then git diff -- x .env; fi",
+      "why": "if is the shell's word, not the command's: the condition moves the shell and git then runs outside any repository, where two in-tree-looking operands are a plain-file read"
+    },
+    {
+      "id": "compound-do-cd",
+      "class": "compound command",
+      "verdict": "refuse",
+      "requires": [
+        "git diff"
+      ],
+      "command": "for d in /tmp; do cd \"$d\"; git diff -- x .env; done",
+      "why": "the same move as the first command of a loop body, after do"
+    },
+    {
+      "id": "compound-not-cd",
+      "class": "compound command",
+      "verdict": "refuse",
+      "requires": [
+        "git diff"
+      ],
+      "command": "! cd /tmp || git diff -- x .env",
+      "why": "the same move after !"
+    },
+    {
+      "id": "compound-then-unset",
+      "class": "compound command",
+      "verdict": "refuse",
+      "requires": [
+        "git log"
+      ],
+      "command": "if true; then unset GIT_CONFIG_COUNT; git log -p; fi",
+      "why": "unset after then removes the safe.bareRepository setting as a plain unset does"
+    },
+    {
+      "id": "compound-allow-if-diff",
+      "class": "compound command",
+      "verdict": "allow",
+      "requires": [
+        "git diff"
+      ],
+      "command": "if git diff --quiet; then echo same; fi",
+      "why": "an ordinary condition stays allowed"
+    },
+    {
+      "id": "compound-allow-if-cd-inside",
+      "class": "compound command",
+      "verdict": "allow",
+      "requires": [
+        "git log"
+      ],
+      "command": "if cd tests; then git log -1; fi",
+      "why": "a literal directory inside the checkout stays allowed after if too"
     }
   ]
 }

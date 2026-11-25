@@ -1275,6 +1275,72 @@ if ((settings_readable)); then
     assert_hook_permits "a quoted here-document, or one on another command, is unprompted: ${heredoc_command//$'\n'/ | }" \
       "${heredoc_command}"
   done
+  # A here-document's body is text to bash, so a quote mark in it opens no quote
+  # and the commands after the body run. Read as shell, the apostrophe of `it's`
+  # opened a quote that hid them all.
+  # shellcheck disable=SC2016 # the substitutions are spellings handed to the hook, not run here
+  for heredoc_command in \
+    $'cat <<\'EOF\'\nit\'s\nEOF\ngit log --output=x -1' \
+    $'cat <<\'EOF\'\nit\'s\nEOF\ngit log --output=x -1\ncat <<\'EOF\'\nit\'s\nEOF' \
+    $'cat <<"EOF"\n5" x\nEOF\ngit log --output=x -1' \
+    $'cat <<\\EOF\nit\'s\nEOF\ngit log --output=x -1' \
+    $'cat <<EOF\nit\'s\nEOF\ngit log --output=x -1' \
+    $'cat <<EOF\nfoo \\\nEOF\nit\'s\nEOF\ngit log --output=x -1\ncat <<X\nit\'s\nX' \
+    $'cat <<EOF\nfoo \\\\\nEOF\necho \'\ncat <<EOF\n\'; git log --output=x -1' \
+    $'cat <<-\'EOF\'\n\tit\'s\n\t\tEOF\ngit log --output=x -1' \
+    $'cat <<- \'EOF\'\n\tit\'s\n\tEOF\ngit log --output=x -1' \
+    $'cat <<\'EOF\'\n\tEOF\nit\'s\nEOF\ngit log --output=x -1' \
+    $'cat <<\'A\' <<\'B\'\nx\nA\nit\'s\nB\ngit log --output=x -1' \
+    $'cat <<\'EOF\' # don\'t\nit\'s\nEOF\ngit log --output=x -1' \
+    $'cat <<EOF\n# $(git log --output=x -1)\nEOF' \
+    $'cat <<\'EOF\'\nit\'s\ngit log --output=x -1' \
+    $'x=$(cat <<\'EOF\'\nit\'s\nEOF)\ngit log --output=x -1\ncat <<\'EOF\'\nit\'s\nEOF' \
+    $'cat <<\'EOF\'\ncat <<X\nEOF\ngit log -1 --format=\'\nX\n\'; git log --output=x -1' \
+    $'bash <<\'EOF\'\ngit log --output=x -1\nEOF' \
+    $'cat <<\'A\'\nx\nA\ncat <<\'B\'\nit\'s\nB\ngit log --output=x -1' \
+    $'cat <<-\'A\'\n\tx\n\tA\ncat <<\'B\'\n\tB\nit\'s\nB\ngit log --output=x -1' \
+    $'cat <<-\'A\' <<\'B\'\n\tA\n\tB\nit\'s\nB\ngit log --output=x -1'; do
+    assert_hook_refuses_naming "the hook reads the command a here-document's text used to hide: ${heredoc_command//$'\n'/ | }" \
+      "${heredoc_command}" '--output'
+  done
+  assert_hook_refuses_naming "an extended glob a here-document body opens ends with the body" \
+    $'cat <<\'EOF\'\nwe see!(x\nEOF\nunset GIT_CONFIG_COUNT' 'settings environment'
+  # Where a body's end is not certain, or bash expands the body, its quotes are
+  # read as plain text, which splits `'x|'` at the `|` and loses the operands
+  # after it. So that text is read a second time with its quotes.
+  # shellcheck disable=SC2016 # the substitutions are spellings handed to the hook, not run here
+  for heredoc_command in \
+    $'(( x = 1 << 2 ))\ngit diff --src-prefix=\'x|\' /dev/null .env' \
+    $'x=$((1<<2))\ngit diff --src-prefix=\'x|\' /dev/null .env' \
+    $'(( x = 1 << 2 ))\n(( y = 1 << 3 ))\ngit diff --src-prefix=\'x|\' /dev/null .env' \
+    $'x=$(cat <<\'EOF\'\nhi\nEOF)\ngit diff --src-prefix=\'x|\' /dev/null .env' \
+    $'x=$(cat <<\'EOF\'\nit\'s\nEOF)\ngit diff --src-prefix=\'x|\' /dev/null .env' \
+    $'x=$(cat <<\'EOF\'\nit\'s\nEOF) && git diff --src-prefix=\'x|\' /dev/null .env' \
+    $'x=$(cat <<-\'EOF\'\n\tit\'s\n\tEOF)\ngit diff --src-prefix=\'x|\' /dev/null .env' \
+    $'sh <<EOF\ngit diff --src-prefix=\'x|\' /dev/null .env\nEOF' \
+    $'cat <<A; sh <<B\nit\'s\nA\ngit diff --src-prefix=\'x|\' /dev/null .env\nB'; do
+    assert_hook_refuses_naming "the hook reads text past a here-document or a shift with its quotes too: ${heredoc_command//$'\n'/ | }" \
+      "${heredoc_command}" 'compare paths as plain files'
+  done
+  for heredoc_command in \
+    $'cat <<\'EOF\'\nit\'s\nEOF\ngit log -1 --format=\'a > b\'' \
+    $'cat <<EOF\nit\'s\nEOF\ngit log -1 --format=\'a > b\'' \
+    $'bash -n <<\'EOF\'\necho "it\'s > fine"\nEOF' \
+    $'cat <<-EOF\n\tx\n\tEOF\ngit log -1 --format=\'a > b\'' \
+    $'cat <<- EOF\n\tx\n\tEOF\ngit log -1 --format=\'a > b\'' \
+    $'cat <<EOF\nfoo \\\\\nEOF\ngit log -1 --format=\'a > b\'' \
+    $'cat <<< it\ngit log -1 --format=\'a > b\'' \
+    $'cat <<\'EOF\'\nrun cat <<X for\nEOF\ngit log -1 --format=\'a > b\'' \
+    $'cat <<\'EOF\'\ncat <<-\nEOF\ngit log -1 --format=\'a > b\'' \
+    $'cat <<\'EOF\'\nx \\\nEOF\ngit log -1 --format=\'a > b\'' \
+    $'cat <<- EOF file\n\tx\n\tEOF\ngit log -1 --format=\'a > b\'' \
+    $'cat <<\'A\' <<-\'B\'\nx\nA\n\tB\ngit log -1 --format=\'a > b\'' \
+    $'cat <<EOF\nfoo \\\nbar\nEOF\ngit log -1 --format=\'a > b\'' \
+    $'bash -n <<\'EOF\'\ngit log -1 --format=\'a > b\'\nEOF' \
+    $'cat <<EOF\nit\'s a \'quoted\' word\nEOF\ngit log -1'; do
+    assert_hook_permits "ordinary work round a here-document is unprompted: ${heredoc_command//$'\n'/ | }" \
+      "${heredoc_command}"
+  done
   # shellcheck disable=SC2016 # the substitution is a spelling handed to the hook, not run here
   for subst_command in \
     'df -T >(cat >cosign.pub)' \
@@ -4003,7 +4069,7 @@ group "The fleet's shared refusal corpus (tests/fixtures/gate-refusal-corpus.jso
 # decision is an allow.
 
 CORPUS="tests/fixtures/gate-refusal-corpus.json"
-CORPUS_SHA256="358a28365d9d6b71ca29a561bce82e47978b3fffb1fd9f59129b8f6223caab46"
+CORPUS_SHA256="ef5b4bb95472ba94450909e9989171c94ec62a03387a033c111ff0f9d13968e2"
 
 # Allow rows this gate refuses on purpose. The corpus says these commands may
 # be allowed; this gate is stricter and refuses them anyway. Each id here is
