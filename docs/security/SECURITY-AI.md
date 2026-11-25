@@ -385,6 +385,21 @@ must be described as such.
   stand in the string, behind any wrapper. Removing or assigning any other
   variable is not affected.
 
+  *A directory change before git.* Every operand check above resolves a path
+  against the checkout, so `cd /some/dir && git diff -- a.env b` passed as two
+  in-tree operands, then git ran outside any repository, fell back to
+  `--no-index` and printed both files. It is the shell's spelling of
+  `git -C DIR` and `env -C DIR`, which are refused for the same reason. Once an
+  earlier command of the string runs `cd`, `pushd` or `popd` (also behind
+  `builtin` or `command`) to anywhere that may be outside the checkout, a later
+  git or allow-listed command is refused. A change stays allowed only when its
+  target is the project root (`cd "$CLAUDE_PROJECT_DIR"`) or a literal relative
+  path with no `..` whose real path is inside the checkout, so `cd tests && git
+  log` still runs and a committed symlink that points out does not. A bare
+  `cd`, `cd -`, a `~`, `$`, backtick or glob target, an option, every `popd`,
+  and a relative name while `CDPATH` is set or assigned in the string all count
+  as leaving. The shared corpus carries these as its directory-change rows.
+
   *Operands the command string does not hold.* `xargs` appends the words it
   reads from standard input, or from the file its `-a` option names, to the
   command it runs. So `printf '%s\n' /dev/null ./cosign.key | xargs git diff`
