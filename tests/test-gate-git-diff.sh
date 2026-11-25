@@ -3364,6 +3364,33 @@ GIT_EXTERNAL_DIFF=/tmp/evil git diff HEAD'
   corpus_row options refused 'git global option' \
     'compares tracked paths against another directory, printing files outside the checkout as -C does' \
     'git status; git --work-tree=/etc diff HEAD'
+  corpus_row options refused 'directory change' \
+    'git then runs outside any repository and falls back to the plain-file read, while both operands look like in-tree paths' \
+    'cd /tmp && git diff -- x .env'
+  corpus_row options refused 'directory change' \
+    'pushd moves the shell as cd does' \
+    'pushd /tmp && git diff -- x .env'
+  corpus_row options refused 'directory change' \
+    'a cd with no operand goes to HOME' \
+    'cd && git diff -- .netrc .env'
+  corpus_row options refused 'directory change' \
+    'a relative path that climbs out with .. leaves the checkout' \
+    'cd .. && git log -1'
+  corpus_row options refused 'directory change' \
+    'popd returns to a directory this string does not name' \
+    'popd && git log -1'
+  corpus_row options refused 'directory change' \
+    'the gated commands are held to it as git is' \
+    'cd /tmp; shellcheck tests/run-tests.sh'
+  corpus_row options refused 'directory change' \
+    'a cd behind builtin is the same move' \
+    'builtin cd /tmp && git log -1'
+  corpus_row options allowed '' \
+    'a literal relative directory with no .. stays inside the checkout' \
+    'cd tests && git log -1'
+  corpus_row options allowed '' \
+    'the project root is where the hook already runs' \
+    'cd "$CLAUDE_PROJECT_DIR" && git log -1'
   corpus_row options refused '--output=FILE' \
     'writes the diff to a path instead of stdout, in every subcommand that generates one' \
     'git log -p --output=cosign.pub -1'
@@ -3976,7 +4003,7 @@ group "The fleet's shared refusal corpus (tests/fixtures/gate-refusal-corpus.jso
 # decision is an allow.
 
 CORPUS="tests/fixtures/gate-refusal-corpus.json"
-CORPUS_SHA256="8c013df1e981d6a17c6d5c8bd7d5589ff8f33fc798d9f6ce046d58d54844f6ae"
+CORPUS_SHA256="358a28365d9d6b71ca29a561bce82e47978b3fffb1fd9f59129b8f6223caab46"
 
 # Allow rows this gate refuses on purpose. The corpus says these commands may
 # be allowed; this gate is stricter and refuses them anyway. Each id here is

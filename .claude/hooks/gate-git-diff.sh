@@ -367,6 +367,7 @@ GIT_GLOBAL_MSG='blocked: a git global option written before the subcommand reach
 SETTINGS_ENV_MSG='blocked: this command takes git'"'"'s settings environment (GIT_CONFIG_COUNT, GIT_CONFIG_KEY_*, GIT_CONFIG_VALUE_*) away from git or overwrites it. .claude/settings.json sets safe.bareRepository=explicit through those variables so git refuses a bare repository a branch commits; without them git falls back to safe.bareRepository=all, and `git log -p` loads the planted folder'"'"'s config and runs the diff textconv program it names. `unset GIT_CONFIG_COUNT`, `export -n`, `declare +x` / `typeset +x` / `local +x`, `env -u GIT_CONFIG_COUNT` (or --unset), a bare `GIT_CONFIG_COUNT=0` statement, a statement of its own that assigns HOME or PATH (both already exported, so it reaches the git after it), `env -a NAME` / `--argv0 NAME` followed by any of these (the NAME is not the command), a builtin that stores a value in one of those variables or in HOME or PATH (`read`, `mapfile` / `readarray`, `printf -v`, the name of a `for` / `select` loop, a `let` expression), and the two that empty the whole environment -- `env -i` (or a lone -, or --ignore-environment) and bash'"'"'s `exec -c` -- each made the planted program run, so they are refused wherever they stand in the string, behind any wrapper, whatever command follows. Run the command without touching those variables; removing or un-exporting any other variable is not affected.'
 
 # shellcheck disable=SC2016 # the option spellings are what the reader has to see
+DIRCHANGE_MSG='blocked: a directory change earlier in this string may move the shell out of this checkout before git or an allow-listed command runs, and every operand check here resolves paths against the checkout: `cd /some/dir && git diff -- a.env b` passed as two in-tree operands, then git ran outside any repository, fell back to --no-index on its own and printed both files. It is the shell'"'"'s spelling of `git -C DIR` and `env -C DIR`, which are refused for the same reason. cd, pushd and popd stay allowed when the target is the project root (`cd "$CLAUDE_PROJECT_DIR"`) or a literal relative path with no .. whose real path is inside the checkout (`cd tests`). A bare cd, `cd -`, a ~, a $, a backtick or a glob in the target, an option, every popd, and a relative name while CDPATH is set all count as leaving. Run the command from the checkout and name the paths instead.'
 SHALLOW_FILE_MSG='blocked: `git --shallow-file FILE` (and `--shallow-file=FILE`) makes git read FILE as the list of shallow commits before any subcommand runs, and the error it prints for a line it cannot parse quotes that line: `git --shallow-file .env log -1` prints the first NAME=value line of .env past the Read(./.env) deny rule, under the Bash(git log:*) allow row. It is a read of a file this gate cannot hold to the operand scan, so the option is refused whatever it names. Run git without it.'
 
 # shellcheck disable=SC2016 # the literal ${VAR} is what the reader has to see
@@ -1521,6 +1522,53 @@ prefix_could_match() {
   return 1
 }
 
+# Whether the directory change this command makes may leave the checkout.
+# `cmd_dir` is the builtin (cd, pushd or popd) and `cmd_dir_words` and
+# `cmd_dir_raws` its operands, as split and as typed. It is the shell's
+# spelling of `git -C DIR` and `env -C DIR`: every operand check here resolves
+# paths against the checkout, so `cd /some/dir && git diff -- a.env b` passed
+# as two in-tree operands while git ran outside any repository and printed
+# both files. A change stays inside only when its one operand is the project
+# root (a literal path to it, or `$CLAUDE_PROJECT_DIR`) or a literal relative
+# path with no `..` component whose real path is inside the checkout, symlinks
+# resolved. Anything this cannot read as a literal path leaves: no operand
+# (HOME), `-` (OLDPWD), an option, a `~`, a `$`, a backtick or a glob, a
+# substitution in the command, and every `popd`, which returns to a directory
+# this string does not name. With CDPATH set, bash searches it for a relative
+# name that does not start with `./`, so those leave too.
+dirchange_leaves() {
+  local target raw root resolved
+  [[ "${cmd_dir}" == popd ]] && return 0
+  ((cmd_subst)) && return 0
+  ((${#cmd_dir_words[@]} == 1)) || return 0
+  target="${cmd_dir_words[0]}"
+  raw="${cmd_dir_raws[0]}"
+  # shellcheck disable=SC2016 # the literal spellings of the variable are what is matched
+  case "${raw}" in
+  '$CLAUDE_PROJECT_DIR' | '"$CLAUDE_PROJECT_DIR"' | '${CLAUDE_PROJECT_DIR}' | '"${CLAUDE_PROJECT_DIR}"') return 1 ;;
+  *) ;;
+  esac
+  [[ -n "${target}" && "${target}" != -* && "${target}" != +* ]] || return 0
+  # shellcheck disable=SC2016 # the literal `$` and backtick are what is tested
+  case "${raw}" in
+  *'$'* | *'`'* | *\\* | *'~'* | *'*'* | *'?'* | *'['* | *'{'* | *'('* | *'!'*) return 0 ;;
+  *) ;;
+  esac
+  root="$(pwd -P 2>/dev/null)" || return 0
+  if [[ "${target}" == /* ]]; then
+    resolved="$(realpath -m -- "${target}" 2>/dev/null)" || return 0
+    [[ "${resolved}" == "${root}" ]] && return 1
+    return 0
+  fi
+  [[ "/${target}/" == */../* ]] && return 0
+  if [[ "${target}" != ./* && ( -n "${CDPATH-}" || "${command_string}" == *CDPATH* ) ]]; then
+    return 0
+  fi
+  resolved="$(realpath -m -- "${root}/${target}" 2>/dev/null)" || return 0
+  [[ "${resolved}" == "${root}" || "${resolved}" == "${root}"/* ]] && return 1
+  return 0
+}
+
 # The command that just ended. Only two facts about it are kept -- whether its
 # leading words matched one of the rows above, and whether a redirection in
 # it opens a path -- because a redirection can be written before the name
@@ -1528,6 +1576,14 @@ prefix_could_match() {
 # `shellcheck tests/run-tests.sh >cosign.pub`), so neither fact is complete
 # until the command ends.
 check_gated_command() {
+  # A directory change earlier in the string that may have left the checkout,
+  # and a git invocation or an allow-listed command after it: see
+  # `dirchange_leaves`. The change is read once the command it belongs to has
+  # ended, so only a *later* command is refused for it.
+  [[ -n "${dir_left}" ]] && ((cmd_gated || cmd_git_name)) && refuse "${DIRCHANGE_MSG}"
+  if [[ -n "${cmd_dir}" && -z "${dir_left}" ]] && dirchange_leaves; then
+    dir_left="${cmd_dir} ${cmd_dir_words[*]-}"
+  fi
   # `xargs` in front of a command this gate covers. Every test here reads the
   # words of the string, and xargs adds words the string does not hold: it
   # appends what it reads from standard input, or from the file `-a` names,
@@ -1623,6 +1679,9 @@ reset_command() {
   bash_options=0
   bash_optvals=''
   cmd_argv0=0
+  cmd_dir=''
+  cmd_dir_words=()
+  cmd_dir_raws=()
 }
 
 # The words of a command from its *name* onward: a leading assignment
@@ -1664,6 +1723,7 @@ cmd_argv0=0   # an exec/env option before the name set bash's zeroth argument
 cmd_name=''   # the word that names it, once seen
 cmd_export_no_add=0 # this command's export saw -n or bare -p, so it adds nothing
 cmd_stack=()  # the outer command's state, while a `$(...)` is being read
+dir_left=''   # the first directory change of this string that may leave the checkout
 saw_gated=0   # some command of this string is one this gate covers
 saw_export=0  # some command of this string exports into every later one
 reset_command
@@ -1698,6 +1758,10 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
       # `cmd_name` carries no space, and `cmd_prefix` is read last, so the two
       # come back apart with no separator of their own. Both are empty until
       # the name is seen, and `read` fills the trailing fields with nothing.
+      # The directory change of the command around a substitution
+      # (`cd $(pwd) && git diff`) is read here: its words are not kept across
+      # the substitution, and a target built by one is not literal.
+      [[ -n "${cmd_dir}" && -z "${dir_left}" ]] && dir_left="${cmd_dir} (a substitution)"
       cmd_stack+=("${cmd_writes} ${cmd_read} ${cmd_subst} ${cmd_heredoc} ${cmd_assign} ${cmd_bash} ${cmd_named} ${cmd_gated} ${cmd_git} ${cmd_git_name} ${cmd_xargs} ${cmd_export_no_add} ${cmd_name} ${cmd_prefix}")
       reset_command
       continue
@@ -1706,6 +1770,9 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
       check_gated_command
       read -r cmd_writes cmd_read cmd_subst cmd_heredoc cmd_assign cmd_bash cmd_named cmd_gated cmd_git cmd_git_name cmd_xargs cmd_export_no_add cmd_name cmd_prefix <<<"${cmd_stack[-1]}"
       unset 'cmd_stack[-1]'
+      cmd_dir=''
+      cmd_dir_words=()
+      cmd_dir_raws=()
       # The command that resumes here contains a substitution, whether or
       # not its name has been seen yet (`$(touch cosign.pub) df -T`).
       ((cmd_subst)) || cmd_subst=1
@@ -1784,6 +1851,15 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   # dash there makes bash a login shell (see `argv0_words` above).
   ((${argv0_words[idx]:-0})) && ((cmd_gated == 0)) && cmd_argv0=1
   ((cmd_named)) || ((${command_names[idx]:-0})) || continue
+  # A directory change (`cd`, `pushd`, `popd`, also behind `builtin` or
+  # `command`): its operands are kept for `dirchange_leaves`, which decides
+  # when the command ends.
+  if [[ -n "${cmd_dir}" ]]; then
+    cmd_dir_words+=("${words[idx]}")
+    cmd_dir_raws+=("${raw_words[idx]}")
+  elif ((${command_names[idx]:-0})) && [[ "${words[idx]}" == cd || "${words[idx]}" == pushd || "${words[idx]}" == popd ]]; then
+    cmd_dir="${words[idx]}"
+  fi
   if ((cmd_named == 0)); then
     cmd_named=1
     cmd_name="${words[idx]}"
