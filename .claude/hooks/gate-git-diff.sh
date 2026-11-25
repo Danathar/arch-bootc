@@ -476,8 +476,8 @@ brace_would_expand() {
 # `redirects`, because which operator it was decides whether the shell opens
 # the target for writing (see `redirection_writes_a_path`). `git diff HEAD
 # 2>&1` is a one-operand diff; counting `2` and `1` refused it. A heredoc's
-# body lines are read as words of the command that opened it, which can only
-# over-refuse.
+# body lines are read as commands, which can only over-refuse, but a quote
+# mark in a body never reaches past the body's end (see `open_heredocs`).
 #
 # No real word is ever empty in the as-typed spelling: a typed `""` keeps its
 # quotes. An unquoted `\` followed by a newline is a line continuation, which
@@ -496,6 +496,13 @@ redirect_op=''     # the operator of that redirection, as typed
 after_redirect=0   # the previous unquoted character was `<` or `>`
 subst_depth=0      # open `$(` substitutions, whose `)` is not a subshell's
 extglob_depth=0    # open parentheses of an extended glob in the word being read
+heredoc_delims=()  # delimiter words of the here-documents opened on this line
+heredoc_strips=()  # 1 beside a delimiter that `<<-` opened
+heredoc_await=0    # `<<- WORD`: the next word is the delimiter
+heredoc_strip=0    # the operator being read is `<<-`
+heredoc_end=-1     # index just past the bodies being read, or -1
+heredoc_literal=0  # in a body whose quote marks and `#` are plain text
+heredoc_rereads=() # text read as plain text that is read again with its quotes
 
 # Whether the word ends in an extglob operator (`@`, `+`, `!`, `?`, `*`) that
 # bash leaves unquoted, so a `(` right after it opens an extglob pattern. The
@@ -558,6 +565,21 @@ push_word() {
 }
 end_word() {
   [[ -n "${raw_word}" ]] || return 0
+  if ((heredoc_await)); then
+    heredoc_await=0
+    heredoc_delims+=("${raw_word}")
+    heredoc_strips+=(1)
+  elif ((redirect_pending)) && [[ "${redirect_op}" == '<<' ]]; then
+    if ((!heredoc_strip)); then
+      heredoc_delims+=("${raw_word}")
+      heredoc_strips+=(0)
+    elif [[ "${raw_word}" == '-' ]]; then
+      heredoc_await=1
+    else
+      heredoc_delims+=("${raw_word#-}")
+      heredoc_strips+=(1)
+    fi
+  fi
   if ((redirect_pending)); then
     push_word target "${redirect_op}"
     redirect_pending=0
@@ -575,11 +597,84 @@ push_sep() {
   globs+=(0)
   redirect_pending=0
   redirect_op=''
+  heredoc_await=0
+}
+
+# Finds where the bodies of the here-documents opened on the line just read
+# end, with `i` at the newline that ends the line. Bash reads a body as text:
+# an apostrophe there opens no quote, and with an unquoted delimiter a `#`
+# hides no `$(...)`. Read as more shell, the apostrophe of `it's` in a body
+# opened a quote that ran to the end of the string and hid every command after
+# the body. So the quote state is dropped where the bodies end. Inside a body
+# with a quoted delimiter quotes are read as before, because `bash <<'EOF'`
+# runs it as a script. In a body bash expands, or one whose end is not
+# certain, quote marks and `#` are plain text, so nothing in it is hidden.
+# The end is not certain when no line is the delimiter (a shift operator read
+# as `<<` is one way) or a line before it is the delimiter followed by the
+# paren or backtick that closes a substitution.
+#
+# Plain text splits at an operator that quotes would hold: past the shift of
+# `(( x = 1 << 2 ))`, `git diff --src-prefix='x|' /dev/null .env` ended at the
+# `|` and lost its operands. So whatever is read as plain text is read again,
+# with its quotes, as a command of its own (see `heredoc_rereads` below): the
+# body when its end is certain, and otherwise all that follows the line, and
+# all that follows each delimiter a substitution may have closed.
+open_heredocs() {
+  local n=0 k delim line found joined quoted body_start
+  local -a lines
+  mapfile -t lines <<<"${command_string:i+1}"
+  heredoc_end="${i}"
+  for ((k = 0; k < ${#heredoc_delims[@]}; k++)); do
+    delim="${heredoc_delims[k]}"
+    quoted=0
+    [[ "${delim}" == *[\'\"\\]* ]] && quoted=1
+    ((quoted)) || heredoc_literal=1
+    delim="${delim//[\'\"\\]/}"
+    found=0
+    joined=0
+    body_start=$((heredoc_end + 1))
+    while ((!found && n < ${#lines[@]})); do
+      line="${lines[n]}"
+      n=$((n + 1))
+      heredoc_end=$((heredoc_end + 1 + ${#line}))
+      if ((heredoc_strips[k])); then
+        line="${line#"${line%%[!$'\t']*}"}"
+      fi
+      if ((joined)); then
+        :
+      elif [[ "${line}" == "${delim}" ]]; then
+        found=1
+      elif [[ "${line}" == "${delim}"[\)\`]* ]]; then
+        heredoc_literal=1
+        heredoc_rereads+=("${line#"${delim}"}${command_string:heredoc_end}")
+      fi
+      # Bash removes a backslash-newline from a body it expands, so the next
+      # line is not a line of its own there and cannot be the delimiter.
+      joined=0
+      if ((!quoted)) && [[ "${line}" =~ (\\+)$ ]] && ((${#BASH_REMATCH[1]} % 2)); then
+        joined=1
+      fi
+    done
+    if ((!found)); then
+      heredoc_literal=1
+      heredoc_rereads+=("${command_string:body_start}")
+    elif ((!quoted)); then
+      heredoc_rereads+=("${command_string:body_start:heredoc_end-body_start}")
+    fi
+  done
 }
 
 for ((i = 0; i < ${#command_string}; i++)); do
   ch="${command_string:i:1}"
   next="${command_string:i+1:1}"
+  if ((i == heredoc_end)); then
+    raw_quote=''
+    extglob_depth=0
+    heredoc_literal=0
+    heredoc_end=-1
+    heredoc_delims=() # a `<<` in a body is text of it
+    heredoc_strips=()
+  fi
   prev_redirect="${after_redirect}"
   after_redirect=0
   if ((raw_escaped)); then
@@ -649,8 +744,11 @@ for ((i = 0; i < ${#command_string}; i++)); do
     raw_word+="${ch}"
     ;;
   "'" | '"')
-    raw_quote="${ch}"
-    raw_word+="${ch}"
+    # Plain text in a here-document body bash expands, and no part of a word.
+    if ((!heredoc_literal)); then
+      raw_quote="${ch}"
+      raw_word+="${ch}"
+    fi
     ;;
   ' ' | $'\t')
     end_word
@@ -691,6 +789,8 @@ for ((i = 0; i < ${#command_string}; i++)); do
     redirect_op+="${ch}"
     redirect_pending=1
     after_redirect=1
+    heredoc_strip=0
+    [[ "${next}" == '-' ]] && heredoc_strip=1
     ;;
   '&')
     if ((prev_redirect)); then
@@ -709,7 +809,10 @@ for ((i = 0; i < ${#command_string}; i++)); do
       push_sep '|'
     fi
     ;;
-  $'\n') push_sep ';' ;;
+  $'\n')
+    push_sep ';'
+    ((${#heredoc_delims[@]} && heredoc_end < 0)) && open_heredocs
+    ;;
   '#')
     # A `#` that begins a word after whitespace starts a comment, which bash
     # drops through the end of the line, so `shellcheck tests/run-tests.sh
@@ -717,7 +820,7 @@ for ((i = 0; i < ${#command_string}; i++)); do
     # that spelling is dropped here: a `#` inside a word (`HEAD^#x`) is a
     # character of it, and one straight after an operator (`;#`, `>#`) is
     # kept as a word, which can only over-refuse.
-    if [[ -z "${raw_word}" ]] && { ((i == 0)) || [[ "${command_string:i-1:1}" == [$' \t\n'] ]]; }; then
+    if ((!heredoc_literal)) && [[ -z "${raw_word}" ]] && { ((i == 0)) || [[ "${command_string:i-1:1}" == [$' \t\n'] ]]; }; then
       while ((i + 1 < ${#command_string})) && [[ "${command_string:i+1:1}" != $'\n' ]]; do
         ((i++))
       done
@@ -2636,6 +2739,15 @@ refuse_if_refused_alone() {
   ((status == 0)) && return 0
   refuse "${UNLISTED_PROGRAM_MSG} Here ${program} runs \`${inner}\`, and on its own that command is refused: ${reason:-the reading exited ${status}}"
 }
+
+# The text `open_heredocs` had read as plain text, read with its quotes. Text
+# with no quote mark reads the same both ways.
+for text in "${heredoc_rereads[@]}"; do
+  [[ "${text}" == *[\'\"]* ]] || continue
+  reason="$(jq -nc --arg c "${text}" '{tool_name: "Bash", tool_input: {command: $c}}' |
+    CLAUDE_PROJECT_DIR="${PWD}" "${BASH:-bash}" "${GATE_SELF}" --within-budget 2>&1 >/dev/null)" ||
+    refuse "${reason:-blocked: reading the text after a here-document failed}"
+done
 
 # One command, given as the indices of its words in order: its program is
 # the first word that names a command, and every later word is read as above.
