@@ -238,12 +238,19 @@ assert_status "a changed file listed only in UNTRACED_TARGETS: an edit nothing n
 assert_contains "the untraced file's line is edited and its tests run" "${output}" \
   "SURVIVED system_files/etc/profile.d/homebrew.sh:2 [delete] :"
 
-# --- The hook is left out -----------------------------------------------------
+# --- The hook is edited and its fast rows run ---------------------------------
+# The fixture's row file passes only when MUTATION_CHECK reaches it, so a run
+# that dropped the variable would stop at the unedited baseline (exit 2)
+# instead of reporting the survivor.
 new_fixture "${WORK_DIR}/hook"
+printf '#!/usr/bin/env bash\n[[ -n "${MUTATION_CHECK:-}" ]] || exit 1\n' \
+  >"${WORK_DIR}/hook/tests/test-gate-rows.sh"
+commit_fixture "${WORK_DIR}/hook"
 printf 'exit 0\n' >>"${WORK_DIR}/hook/.claude/hooks/gate-git-diff.sh"
 output="$(run_check "${WORK_DIR}/hook")"
-assert_status "a hook-only change runs no edits" 0 "$?"
-assert_contains "the hook's changed line is not edited" "${output}" "0 caught, 0 listed as equivalent, 0 survived"
+assert_status "a hook change nothing notices fails the run" 1 "$?"
+assert_contains "the hook's changed line is edited and its rows run" "${output}" \
+  "SURVIVED .claude/hooks/gate-git-diff.sh:3 [delete] :"
 
 printf '1..%d\n' "${tests_run}"
 if ((failures > 0)); then

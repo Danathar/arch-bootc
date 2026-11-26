@@ -318,6 +318,12 @@ is here and not in `tests/check-invariants.sh`, whose other groups read the
 tree in a few seconds. See [SECURITY-AI.md](security/SECURITY-AI.md) for what
 the hook refuses and why.
 
+`tests/test-gate-rows.sh` runs the same hook against the rows that need only a
+command and a verdict: the settings-environment spellings and the fleet's
+shared refusal corpus (`tests/fixtures/gate-refusal-corpus.json`, pinned by
+SHA-256 there). It takes seconds, so the mutation check runs it for every edit
+of a changed hook line.
+
 `just lint` shellchecks the test scripts too, so they are held to the same bar as
 the scripts they cover.
 
@@ -388,8 +394,11 @@ required check. Run it locally with `./tests/mutation-check.sh origin/main`.
 - Each script's tests run once on the unedited copy first. If they fail there
   (a host without block devices, say), the run stops instead of counting every
   edit as caught.
-- `.claude/hooks/gate-git-diff.sh` is left out. Its own test file already
-  mutation-tests each rule, and one run of that file takes minutes.
+- `.claude/hooks/gate-git-diff.sh` runs `tests/test-gate-rows.sh`, the
+  settings-environment rows and the shared refusal corpus, which take seconds.
+  `tests/test-gate-git-diff.sh` takes minutes and is not run per edit. Each
+  test file runs with `MUTATION_CHECK=1`, and the rows file stops at its first
+  failure then.
 - `system_files/etc/profile.d/homebrew.sh` is edited too, though it has no
   floor. It is sourced, so its tests load a copy and the coverage trace never
   names it, but that copy comes from the edited checkout. Such files are
