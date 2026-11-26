@@ -66,6 +66,7 @@ jobs:
             /mnt/tests/tune-coverage.sh \
             /mnt/tests/mutation-check.sh \
             /mnt/tests/test-gate-git-diff.sh \
+            /mnt/tests/test-gate-rows.sh \
             /mnt/tests/test-prune-esp.sh \
             /mnt/tests/test-homebrew-profile.sh \
             /mnt/tests/test-agent-audit.sh \
