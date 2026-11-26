@@ -29,9 +29,15 @@ set -uo pipefail
 # Before any edit, the script's own test files run once on the unedited copy.
 # If they fail there, every edit would look caught, so the run stops instead.
 #
-# .claude/hooks/gate-git-diff.sh is left out. tests/test-gate-git-diff.sh
-# already mutation-tests each of its rules, and one run of that file takes
-# minutes, so a hook change would spend the whole budget below on it.
+# .claude/hooks/gate-git-diff.sh runs tests/test-gate-rows.sh, the rows that
+# need only a command and a verdict, not tests/test-gate-git-diff.sh: one run
+# of that file takes minutes, so a hook change would spend the whole budget
+# below on it. It used to be left out on the grounds that its tests
+# mutation-test each rule, but rules added without a mutation row went
+# unchecked (#722).
+#
+# Each test file runs with MUTATION_CHECK=1 in its environment. A test file
+# may stop at its first failure then, since one is enough to catch the edit.
 #
 # UNTRACED_TARGETS adds files the coverage floors cannot gate. A sourced
 # fragment has no floor because its tests load a copy of it from a temporary
@@ -48,11 +54,14 @@ set -uo pipefail
 # Exit status: 0 every edit was caught or is listed, 1 an unlisted survivor,
 # 2 the check could not run or ran out of budget.
 
-EXCLUDED_TARGETS=(".claude/hooks/gate-git-diff.sh")
+# Files no edit is made to. None today; an entry needs a line in docs/ci-cd.md
+# saying it is left out, which tests/check-invariants.sh holds to this list.
+EXCLUDED_TARGETS=()
 UNTRACED_TARGETS=("system_files/etc/profile.d/homebrew.sh")
 
 # Script -> the test files (space separated, relative to the root) that run it.
 declare -A TESTS_FOR=(
+  [".claude/hooks/gate-git-diff.sh"]="tests/test-gate-rows.sh"
   ["scripts/boot-test.sh"]="tests/test-boot-test.sh"
   ["scripts/pr-review-state.sh"]="tests/test-pr-review-state.sh"
   ["scripts/prune-package-versions.sh"]="tests/test-prune-package-versions.sh"
@@ -157,7 +166,7 @@ not_deletable() {
 run_tests() {
   local test_file
   for test_file in "${target_tests[@]}"; do
-    (cd -- "${COPY}" && timeout "${TIMEOUT}" "${BASH}" "${test_file}") >/dev/null 2>&1 || return 1
+    (cd -- "${COPY}" && MUTATION_CHECK=1 timeout "${TIMEOUT}" "${BASH}" "${test_file}") >/dev/null 2>&1 || return 1
   done
   return 0
 }
@@ -171,7 +180,7 @@ invalid=0
 survivor_report=""
 
 for target in "${targets[@]}"; do
-  for excluded in "${EXCLUDED_TARGETS[@]}"; do
+  for excluded in "${EXCLUDED_TARGETS[@]+"${EXCLUDED_TARGETS[@]}"}"; do
     [[ "${target}" == "${excluded}" ]] && continue 2
   done
   [[ -f "${target}" ]] || die "${target} is a target and does not exist"

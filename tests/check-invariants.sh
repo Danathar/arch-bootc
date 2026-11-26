@@ -11914,12 +11914,13 @@ else
   assert_equal "${MUTATION_SCRIPT} is tracked as executable, so the page's local command runs as written" \
     "$(git ls-files -s -- "${MUTATION_SCRIPT}" | cut -d' ' -f1)" "100755"
 
-  # "`.claude/hooks/gate-git-diff.sh` is left out."
+  # A "`<file>` is left out." line on the page, one per EXCLUDED_TARGETS entry.
   mutation_excluded="$(sed -nE 's/^EXCLUDED_TARGETS=\((.*)\)$/\1/p' "${MUTATION_SCRIPT}" | grep -oE '"[^"]+"' | tr -d '"' | LC_ALL=C sort)"
   # shellcheck disable=SC2016 # backticks are Markdown, not command substitution
   mutation_doc_excluded="$(grep -E '^- `[^`]+` is left out\.' <<<"${mutation_section}" | sed -nE 's/^- `([^`]+)`.*/\1/p' | LC_ALL=C sort)"
-  if [[ -z "${mutation_excluded}" ]]; then
-    fail "the files the page says are left out are ${MUTATION_SCRIPT}'s EXCLUDED_TARGETS" "no EXCLUDED_TARGETS entry read"
+  # An empty list is read as such, so the page then has to name no file left out.
+  if ! grep -qE '^EXCLUDED_TARGETS=\(' "${MUTATION_SCRIPT}"; then
+    fail "the files the page says are left out are ${MUTATION_SCRIPT}'s EXCLUDED_TARGETS" "no EXCLUDED_TARGETS line read"
   else
     assert_equal "the files the page says are left out are ${MUTATION_SCRIPT}'s EXCLUDED_TARGETS" \
       "${mutation_doc_excluded}" "${mutation_excluded}"
