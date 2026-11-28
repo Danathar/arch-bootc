@@ -245,15 +245,28 @@ if ((settings_readable)); then
     assert_hook_refuses_naming "the hook refuses env -C in front of git or an allow-listed command: ${chdir_command}" \
       "${chdir_command}" 'env -C / --chdir'
   done
-  # env -C in front of a command nothing here covers, a -u whose value is the
-  # letter C, and the words as data are left alone.
+  # env -C in front of a command nothing here covers, a git command after it
+  # (env -C moves only the command it starts, so the mark must not carry over
+  # to the next one), a -u whose value is the letter C, and the words as data
+  # are left alone.
   for chdir_command in \
     'env -C /tmp ls' \
+    'env -C /tmp ls; git log -1' \
+    'env -C /tmp ls && git status' \
+    'env -C /tmp ls | git log -1' \
     'env -uC git log -1' \
     'echo env -C /tmp; git log -1' \
     'git log --grep=chdir -1'; do
     assert_hook_permits "an env option that moves nothing this gate covers is unprompted: ${chdir_command}" \
       "${chdir_command}"
+  done
+  # The refusal quotes two commands as its examples. Each one must be a
+  # command this hook refuses, quoted as the agent would type it.
+  for example_command in \
+    'cd /some/dir && git diff -- a.env b' \
+    'env -C /some/dir git diff -- a.env b'; do
+    assert_hook_refuses_naming "the directory-change refusal quotes its own example: ${example_command}" \
+      "${example_command}" "\`${example_command}\`"
   done
 fi
 

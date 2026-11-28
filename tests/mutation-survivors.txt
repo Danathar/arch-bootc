@@ -24,3 +24,11 @@ system_files/etc/profile.d/homebrew.sh	return 1	__ab_link=$(readlink -- "${__ab_
 # Without the strip, the leading / becomes an empty first component, and the
 # `'' | .) continue` arm skips it, so the walk is the same.
 system_files/etc/profile.d/homebrew.sh	delete	__ab_link=${__ab_link#/}
+# chdir_words is only read as ${chdir_words[idx]:-0}, which reads 0 for an
+# index never set, so the empty declaration changes nothing.
+.claude/hooks/gate-git-diff.sh	delete	chdir_words=()         # 1 at each env option that changes the directory
+# env_option is assigned from the word on the line before its only read.
+.claude/hooks/gate-git-diff.sh	delete	env_option=''          # an env option word, up to any =
+# reset_command runs right after these declarations and sets cmd_env_chdir=0
+# itself, so the first command starts from 0 either way.
+.claude/hooks/gate-git-diff.sh	delete	cmd_env_chdir=0 # an env -C / --chdir option before the name moves the command
