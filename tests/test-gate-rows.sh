@@ -223,6 +223,38 @@ if ((settings_readable)); then
     assert_hook_permits "a command that leaves git's settings environment alone is unprompted: ${settings_command}" \
       "${settings_command}"
   done
+  # env -C starts the command it runs in another directory, the wrapper's
+  # spelling of `cd DIR &&` and `git -C DIR`: every operand check resolves
+  # against the checkout, so `env -C /tmp git diff -- x .env` printed
+  # /tmp/.env. Every spelling GNU env reads as -C is refused in front of git
+  # or an allow-listed command, wherever it points.
+  for chdir_command in \
+    'env -C /tmp git diff -- x .env' \
+    'env -C/tmp git diff -- x .env' \
+    'env --chdir=/tmp git diff -- x .env' \
+    'env --chdir /tmp git diff -- x .env' \
+    'env --ch=/tmp git log -1' \
+    'env --c /tmp git log -1' \
+    'env -0C /tmp git log -1' \
+    'env -vC /tmp git log -1' \
+    'env -C . git log -1' \
+    'timeout 5 env -C /tmp git diff -- x .env' \
+    'git status; env -C /tmp git log -p -1' \
+    'env -C /tmp bash -n tests/run-tests.sh' \
+    'env -C /tmp shellcheck tests/run-tests.sh'; do
+    assert_hook_refuses_naming "the hook refuses env -C in front of git or an allow-listed command: ${chdir_command}" \
+      "${chdir_command}" 'env -C / --chdir'
+  done
+  # env -C in front of a command nothing here covers, a -u whose value is the
+  # letter C, and the words as data are left alone.
+  for chdir_command in \
+    'env -C /tmp ls' \
+    'env -uC git log -1' \
+    'echo env -C /tmp; git log -1' \
+    'git log --grep=chdir -1'; do
+    assert_hook_permits "an env option that moves nothing this gate covers is unprompted: ${chdir_command}" \
+      "${chdir_command}"
+  done
 fi
 
 group "The fleet's shared refusal corpus (tests/fixtures/gate-refusal-corpus.json)"
@@ -243,7 +275,7 @@ group "The fleet's shared refusal corpus (tests/fixtures/gate-refusal-corpus.jso
 # decision is an allow.
 
 CORPUS="tests/fixtures/gate-refusal-corpus.json"
-CORPUS_SHA256="ef5b4bb95472ba94450909e9989171c94ec62a03387a033c111ff0f9d13968e2"
+CORPUS_SHA256="9a4bb59d04da75d1a1a06ecb95c186eff82a977da6a8bb9dc3baa7cb2a9c723f"
 
 # Allow rows this gate refuses on purpose. The corpus says these commands may
 # be allowed; this gate is stricter and refuses them anyway. Each id here is

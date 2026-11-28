@@ -367,7 +367,7 @@ GIT_GLOBAL_MSG='blocked: a git global option written before the subcommand reach
 SETTINGS_ENV_MSG='blocked: this command takes git'"'"'s settings environment (GIT_CONFIG_COUNT, GIT_CONFIG_KEY_*, GIT_CONFIG_VALUE_*) away from git or overwrites it. .claude/settings.json sets safe.bareRepository=explicit through those variables so git refuses a bare repository a branch commits; without them git falls back to safe.bareRepository=all, and `git log -p` loads the planted folder'"'"'s config and runs the diff textconv program it names. `unset GIT_CONFIG_COUNT`, `export -n`, `declare +x` / `typeset +x` / `local +x`, `env -u GIT_CONFIG_COUNT` (or --unset), a bare `GIT_CONFIG_COUNT=0` statement, a statement of its own that assigns HOME or PATH (both already exported, so it reaches the git after it), `env -a NAME` / `--argv0 NAME` followed by any of these (the NAME is not the command), a builtin that stores a value in one of those variables or in HOME or PATH (`read`, `mapfile` / `readarray`, `printf -v`, the name of a `for` / `select` loop, a `let` expression), and the two that empty the whole environment -- `env -i` (or a lone -, or --ignore-environment) and bash'"'"'s `exec -c` -- each made the planted program run, so they are refused wherever they stand in the string, behind any wrapper, whatever command follows. Run the command without touching those variables; removing or un-exporting any other variable is not affected.'
 
 # shellcheck disable=SC2016 # the option spellings are what the reader has to see
-DIRCHANGE_MSG='blocked: a directory change earlier in this string may move the shell out of this checkout before git or an allow-listed command runs, and every operand check here resolves paths against the checkout: `cd /some/dir && git diff -- a.env b` passed as two in-tree operands, then git ran outside any repository, fell back to --no-index on its own and printed both files. It is the shell'"'"'s spelling of `git -C DIR` and `env -C DIR`, which are refused for the same reason. cd, pushd and popd stay allowed when the target is the project root (`cd "$CLAUDE_PROJECT_DIR"`) or a literal relative path with no .. whose real path is inside the checkout (`cd tests`). A bare cd, `cd -`, a ~, a $, a backtick or a glob in the target, an option, every popd, and a relative name while CDPATH is set all count as leaving. Run the command from the checkout and name the paths instead.'
+DIRCHANGE_MSG='blocked: a directory change in this string -- an earlier cd, pushd or popd, or env -C / --chdir in front of the command -- may move git or an allow-listed command out of this checkout, and every operand check here resolves paths against the checkout: `cd /some/dir && git diff -- a.env b` passed as two in-tree operands, then git ran outside any repository, fell back to --no-index on its own and printed both files, and `env -C /some/dir git diff -- a.env b` did the same. cd is the shell'"'"'s spelling of `git -C DIR`, which is refused for the same reason, and env -C in front of git or an allow-listed command is refused wherever DIR points, as git -C is. cd, pushd and popd stay allowed when the target is the project root (`cd "$CLAUDE_PROJECT_DIR"`) or a literal relative path with no .. whose real path is inside the checkout (`cd tests`). A bare cd, `cd -`, a ~, a $, a backtick or a glob in the target, an option, every popd, and a relative name while CDPATH is set all count as leaving. Run the command from the checkout and name the paths instead.'
 # shellcheck disable=SC2016 # the backticks quote command spellings for the reader
 SHALLOW_FILE_MSG='blocked: `git --shallow-file FILE` (and `--shallow-file=FILE`) makes git read FILE as the list of shallow commits before any subcommand runs, and the error it prints for a line it cannot parse quotes that line: `git --shallow-file .env log -1` prints the first NAME=value line of .env past the Read(./.env) deny rule, under the Bash(git log:*) allow row. It is a read of a file this gate cannot hold to the operand scan, so the option is refused whatever it names. Run git without it.'
 
@@ -1013,6 +1013,8 @@ after_wrapper=0        # a wrapper ran: every remaining word may be the name
 command_names=()       # 1 at each index that names, or may name, a command
 xargs_wrappers=()      # 1 at each index where `xargs` runs the rest of its command
 argv0_words=()         # 1 at each exec/env option that sets the zeroth argument
+chdir_words=()         # 1 at each env option that changes the directory
+env_option=''          # an env option word, up to any =
 xargs_state=0          # 1: xargs's own options are being read; 2: after its `--`
 xargs_optarg=0         # the next word is the value of an xargs option
 xargs_command_idx=-1   # the word xargs runs, once its options are read
@@ -1196,6 +1198,22 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   if [[ "${wrapper_name}" == exec && "${raw_word}" =~ ^-[^-]*[al] ]] ||
     [[ "${wrapper_name}" == env && ("${raw_word}" =~ ^-[^-]*a || "${raw_word}" == --argv0*) ]]; then
     argv0_words[idx]=1
+  fi
+  # `env -C DIR` (`-CDIR`, `--chdir DIR`, `--chdir=DIR`, any prefix of
+  # --chdir from --c, or a cluster such as `-iC`) starts the command it runs
+  # in DIR: the shell's `cd DIR &&` and git's `-C DIR` in one option, and
+  # `env -C /tmp git diff -- x .env` printed /tmp/.env past the operand
+  # checks, which resolve paths against the checkout. Marked here and
+  # refused once the command env runs is known to be git or an allow-listed
+  # one, since `env -C dir ls` reaches nothing this gate covers. Only the
+  # letters that take no value (-0, -i, -v) can stand before the C in a
+  # cluster; after -u, -S or -a the rest of the word is that option's value.
+  if [[ "${wrapper_name}" == env ]]; then
+    env_option="${word%%=*}"
+    if [[ "${word}" =~ ^-[0iv]*C ]] ||
+      { ((${#env_option} >= 3)) && [[ --chdir == "${env_option}"* ]]; }; then
+      chdir_words[idx]=1
+    fi
   fi
   name_is_literal "${raw_word}" "${word}" || refuse "${CMD_MSG}"
   # A wrapper, found by its last path component once the word is known to be
@@ -1685,6 +1703,13 @@ check_gated_command() {
   # `dirchange_leaves`. The change is read once the command it belongs to has
   # ended, so only a *later* command is refused for it.
   [[ -n "${dir_left}" ]] && ((cmd_gated || cmd_git_name)) && refuse "${DIRCHANGE_MSG}"
+  # `env -C DIR` in front of git or an allow-listed command: the same move
+  # made by the wrapper rather than by an earlier command. Refused wherever
+  # DIR points, as `git -C DIR` is, so `env -C . git log` is refused too.
+  # Only latched here and refused at the end of this file, after the
+  # settings-environment scan, so `env --c /tmp -i git log -p` still names
+  # the emptied environment it carries as well.
+  ((cmd_env_chdir && (cmd_gated || cmd_git_name))) && saw_env_chdir=1
   if [[ -n "${cmd_dir}" && -z "${dir_left}" ]] && dirchange_leaves; then
     dir_left="${cmd_dir} ${cmd_dir_words[*]-}"
   fi
@@ -1783,6 +1808,7 @@ reset_command() {
   bash_options=0
   bash_optvals=''
   cmd_argv0=0
+  cmd_env_chdir=0
   cmd_dir=''
   cmd_dir_words=()
   cmd_dir_raws=()
@@ -1824,6 +1850,8 @@ cmd_findmnt_tab=0 # 1: a -F/--tab-file word in this findmnt command; 2: a word b
 bash_options=0 # a gated bash is still reading option words, as bash itself does
 bash_optvals='' # one letter per -o/-O still waiting for its value, in order
 cmd_argv0=0   # an exec/env option before the name set bash's zeroth argument
+cmd_env_chdir=0 # an env -C / --chdir option before the name moves the command
+saw_env_chdir=0 # some git or allow-listed command of this string runs behind env -C
 cmd_name=''   # the word that names it, once seen
 cmd_export_no_add=0 # this command's export saw -n or bare -p, so it adds nothing
 cmd_stack=()  # the outer command's state, while a `$(...)` is being read
@@ -1954,6 +1982,9 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   # An exec or env option that sets the zeroth argument, before the name: a
   # dash there makes bash a login shell (see `argv0_words` above).
   ((${argv0_words[idx]:-0})) && ((cmd_gated == 0)) && cmd_argv0=1
+  # An env option that moves the command to another directory, before the
+  # name (see `chdir_words` above).
+  ((${chdir_words[idx]:-0})) && ((cmd_gated == 0)) && cmd_env_chdir=1
   ((cmd_named)) || ((${command_names[idx]:-0})) || continue
   # A directory change (`cd`, `pushd`, `popd`, also behind `builtin` or
   # `command`): its operands are kept for `dirchange_leaves`, which decides
@@ -3195,5 +3226,8 @@ for ((idx = 0; idx < ${#words[@]}; idx++)); do
   esac
 done
 check_settings_env_segment "${segment_words[@]}"
+
+# env -C in front of git or an allow-listed command (see `check_gated_command`).
+((saw_env_chdir)) && refuse "${DIRCHANGE_MSG}"
 
 exit 0
